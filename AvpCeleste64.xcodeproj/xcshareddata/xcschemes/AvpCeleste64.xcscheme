@@ -16,7 +16,7 @@
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "732C7D37307EBA4C00C3A31D"
-               BuildableName = "AvpCeleste64.app"
+               BuildableName = "Mountain64.app"
                BlueprintName = "AvpCeleste64"
                ReferencedContainer = "container:AvpCeleste64.xcodeproj">
             </BuildableReference>
@@ -47,7 +47,7 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "732C7D37307EBA4C00C3A31D"
-            BuildableName = "AvpCeleste64.app"
+            BuildableName = "Mountain64.app"
             BlueprintName = "AvpCeleste64"
             ReferencedContainer = "container:AvpCeleste64.xcodeproj">
          </BuildableReference>
@@ -71,7 +71,7 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "732C7D37307EBA4C00C3A31D"
-            BuildableName = "AvpCeleste64.app"
+            BuildableName = "Mountain64.app"
             BlueprintName = "AvpCeleste64"
             ReferencedContainer = "container:AvpCeleste64.xcodeproj">
          </BuildableReference>

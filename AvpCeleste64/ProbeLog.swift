@@ -13,7 +13,7 @@ import Metal
 import os
 
 /// Unified Log, Subsystem der App. In Console.app nach "c64-" filtern.
-nonisolated let c64Log = Logger(subsystem: "com.lowriderxr.AvpCeleste64", category: "probe")
+nonisolated let c64Log = Logger(subsystem: "com.lowriderxr.Mountain64", category: "probe")
 
 /// Fortschrittsdatei im Documents-Ordner der App. Anhängend; jeder Start beginnt mit einer
 /// Trennzeile, damit mehrere Läufe nachvollziehbar bleiben.
