@@ -1,0 +1,13 @@
+# Symlink to the private docs repo (no trailing slash: git stores symlinks as files)
+/Docs
+# Local clones until submodules are set up (M0a)
+/Source/
+# Own downloads and build output
+/ThirdParty/
+/Frameworks/
+build/
+DerivedData/
+# Xcode user state
+xcuserdata/
+*.xcuserstate
+.DS_Store
