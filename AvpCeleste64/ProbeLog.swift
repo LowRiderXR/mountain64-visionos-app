@@ -98,6 +98,8 @@ nonisolated enum ProbeContext {
         case .rgba8Unorm: return "rgba8Unorm"
         case .rgba8Unorm_srgb: return "rgba8Unorm_srgb"
         case .rgba16Float: return "rgba16Float"
+        case .bgr10a2Unorm: return "bgr10a2Unorm"       // Rohwert 94 (MTLPixelFormat.h:114)
+        case .rgba16Unorm: return "rgba16Unorm"         // Rohwert 110 (MTLPixelFormat.h:172)
         case .depth32Float: return "depth32Float"
         case .depth16Unorm: return "depth16Unorm"
         case .depth32Float_stencil8: return "depth32Float_stencil8"

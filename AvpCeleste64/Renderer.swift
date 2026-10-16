@@ -67,6 +67,27 @@ nonisolated final class Renderer: @unchecked Sendable {
     private var lastFrameIndex: UInt64?
     private var totalFrames: UInt64 = 0
 
+    // Wanduhr-Intervall zwischen aufeinanderfolgenden Rückkehren von queryNextFrame.
+    // Zeigt den Block, weil es am Render-Thread misst, nicht am Frame-Zähler des Compositors.
+    private var lastQueryReturn: CFAbsoluteTime?
+    private var statWallMin = Double.greatestFiniteMagnitude
+    private var statWallMax = 0.0
+    private var statWallSum = 0.0
+    private var statWallCount = 0
+
+    // Verspätung pro Frame: presentationTime minus Compositor-Uhr unmittelbar vor encodePresent,
+    // gleiche Zeitbasis (Mach-Zeit, frame_timing.h:67-68). Negativ = die Präsentationszeit ist
+    // beim Encodieren schon vorbei.
+    private var statLateMin = Double.greatestFiniteMagnitude
+    private var statLateMax = -Double.greatestFiniteMagnitude
+    private var statLateFrames = 0
+
+    // Die ersten drei Frames nach einem Stall-Block: frameIndex, presentationTime relativ zur
+    // Compositor-Uhr beim Erhalt der Drawables, Verspätung vor encodePresent.
+    private var postStallWanted = 0
+    private var postStallBlock = 0
+    private var postStallSamples: [(index: UInt64, relative: Double, late: Double)] = []
+
     private init(layerRenderer: LayerRenderer, appModel: AppModel) {
         self.layerRenderer = layerRenderer
         self.appModel = appModel
@@ -184,7 +205,12 @@ nonisolated final class Renderer: @unchecked Sendable {
 
         stallIndex += 1
         nextStallAt = CFAbsoluteTimeGetCurrent() + Self.stallSpacing
-        lastPresentationTime = nil   // das Intervall über den Block hinweg nicht in die Statistik nehmen
+        // Das Intervall über den Block hinweg bleibt in der Statistik: lastPresentationTime und
+        // lastQueryReturn werden nicht zurückgesetzt, damit die [c64-frame]-Zeile der
+        // Block-Sekunde den Sprung zeigt (max ≈ Block + ein Takt).
+        postStallWanted = 3
+        postStallBlock = nummer
+        postStallSamples.removeAll()
         if stallIndex == stallPlan.count {
             c64Record("[c64-stall] Sequenz beendet, alle \(stallPlan.count) Blöcke überstanden")
         }
@@ -198,6 +224,17 @@ nonisolated final class Renderer: @unchecked Sendable {
             Thread.sleep(forTimeInterval: 0.001)
             return
         }
+
+        // Wanduhr-Intervall seit der letzten Rückkehr von queryNextFrame.
+        let queryReturn = CFAbsoluteTimeGetCurrent()
+        if let last = lastQueryReturn {
+            let wall = queryReturn - last
+            statWallMin = min(statWallMin, wall)
+            statWallMax = max(statWallMax, wall)
+            statWallSum += wall
+            statWallCount += 1
+        }
+        lastQueryReturn = queryReturn
 
         // Update-Phase: hier läuft später Celestes Update (ein Schritt pro Frame).
         frame.startUpdate()
@@ -241,6 +278,8 @@ nonisolated final class Renderer: @unchecked Sendable {
         // ohne Anker. Der Anker wird auf alle Drawables gesetzt.
         let primary = drawables.first(where: { $0.target == .builtIn }) ?? drawables[0]
         let presentationTime = primary.frameTiming.presentationTime.timeInterval
+        // presentationTime relativ zur Compositor-Uhr beim Erhalt der Drawables (gleiche Zeitbasis).
+        let relativeToNow = presentationTime - LayerRenderer.Clock().now.timeInterval
         let deviceAnchor = worldTracking.queryDeviceAnchor(atTimestamp: presentationTime)
 
         for drawable in drawables {
@@ -250,6 +289,10 @@ nonisolated final class Renderer: @unchecked Sendable {
             encodeClearPasses(drawable: drawable, commandBuffer: commandBuffer)
         }
 
+        // Verspätung unmittelbar vor encodePresent: Präsentationszeit minus jetzt, gleiche
+        // Zeitbasis. Negativ heisst, der Frame wird nach seiner Präsentationszeit abgeschickt.
+        let lateness = presentationTime - LayerRenderer.Clock().now.timeInterval
+
         // encodePresent zuletzt, nach allen Inhalts-Pässen.
         for drawable in drawables {
             drawable.encodePresent(commandBuffer: commandBuffer)
@@ -257,8 +300,20 @@ nonisolated final class Renderer: @unchecked Sendable {
         commandBuffer.commit()
         frame.endSubmission()
 
+        if postStallWanted > 0 {
+            postStallSamples.append((frame.frameIndex, relativeToNow, lateness))
+            postStallWanted -= 1
+            if postStallWanted == 0 {
+                let text = postStallSamples.map {
+                    String(format: "idx=%llu rel=%+.1f ms late=%+.1f ms", $0.index, $0.relative * 1000, $0.late * 1000)
+                }.joined(separator: " | ")
+                c64Record("[c64-stall] Block \(postStallBlock)/\(stallPlan.count) erste Frames: \(text)")
+            }
+        }
+
         recordStats(frameIndex: frame.frameIndex,
                     presentationTime: presentationTime,
+                    lateness: lateness,
                     hasAnchor: deviceAnchor != nil,
                     drawableCount: drawables.count)
     }
@@ -307,12 +362,15 @@ nonisolated final class Renderer: @unchecked Sendable {
 
     // MARK: Statistik
 
-    private func recordStats(frameIndex: UInt64, presentationTime: TimeInterval, hasAnchor: Bool, drawableCount: Int) {
+    private func recordStats(frameIndex: UInt64, presentationTime: TimeInterval, lateness: TimeInterval, hasAnchor: Bool, drawableCount: Int) {
         totalFrames += 1
         statFrames += 1
         if !hasAnchor { statFramesWithoutAnchor += 1 }
         statDrawablesMin = min(statDrawablesMin, drawableCount)
         statDrawablesMax = max(statDrawablesMax, drawableCount)
+        statLateMin = min(statLateMin, lateness)
+        statLateMax = max(statLateMax, lateness)
+        if lateness < 0 { statLateFrames += 1 }
 
         if let last = lastPresentationTime {
             let interval = presentationTime - last
@@ -336,8 +394,14 @@ nonisolated final class Renderer: @unchecked Sendable {
             let hz = mean > 0 ? 1.0 / mean : 0
             let minMs = statIntervalCount > 0 ? statIntervalMin * 1000 : 0
             let drawablesMin = statFrames > 0 ? statDrawablesMin : 0
-            let line = String(format: "[c64-frame] frames=%d interval(ms) min=%.2f mean=%.2f max=%.2f rate=%.1f Hz gaps=%llu drawables min=%d/max=%d cancelled=%d noCmdBuf=%d noAnchor=%d thermal=%@ total=%llu",
+            let wallMean = statWallCount > 0 ? statWallSum / Double(statWallCount) : 0
+            let wallMin = statWallCount > 0 ? statWallMin : 0
+            let lateMin = statFrames > 0 ? statLateMin : 0
+            let lateMax = statFrames > 0 ? statLateMax : 0
+            let line = String(format: "[c64-frame] frames=%d interval(ms) min=%.2f mean=%.2f max=%.2f rate=%.1f Hz wall(ms) min=%.2f mean=%.2f max=%.1f late(ms) min=%+.1f max=%+.1f lateFrames=%d gaps=%llu drawables min=%d/max=%d cancelled=%d noCmdBuf=%d noAnchor=%d thermal=%@ total=%llu",
                               statFrames, minMs, mean * 1000, statIntervalMax * 1000, hz,
+                              wallMin * 1000, wallMean * 1000, statWallMax * 1000,
+                              lateMin * 1000, lateMax * 1000, statLateFrames,
                               statGaps, drawablesMin, statDrawablesMax, statCancelled, statNoCmdBuf,
                               statFramesWithoutAnchor, ProbeContext.thermalState, totalFrames)
             c64Log.notice("\(line, privacy: .public)")
@@ -356,6 +420,13 @@ nonisolated final class Renderer: @unchecked Sendable {
             statNoCmdBuf = 0
             statDrawablesMin = Int.max
             statDrawablesMax = 0
+            statWallMin = Double.greatestFiniteMagnitude
+            statWallMax = 0
+            statWallSum = 0
+            statWallCount = 0
+            statLateMin = Double.greatestFiniteMagnitude
+            statLateMax = -Double.greatestFiniteMagnitude
+            statLateFrames = 0
         }
     }
 
