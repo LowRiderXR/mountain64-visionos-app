@@ -165,10 +165,12 @@ nonisolated enum KitProbe {
 
     /// K2: ein Frame; `viewProjection` pro View (Projektion · inverse(deviceAnchor · view.transform)),
     /// Quad aus center/right/up in Metern. Ohne Quad nur der Clear im Zwei-View-Pass.
+    /// K3: `rateMap` ist die Map des Compositors (Foveation an) oder nil.
     static func multiviewFrame(session: OpaquePointer, color: MTLTexture, depth: MTLTexture,
                                rgba: (Float, Float, Float, Float), depthClear: Float,
                                quad: (center: SIMD3<Float>, right: SIMD3<Float>, up: SIMD3<Float>)?,
-                               viewProjection: [simd_float4x4]) -> Bool {
+                               viewProjection: [simd_float4x4],
+                               rateMap: MTLRasterizationRateMap? = nil) -> Bool {
         var clear: [Float] = [rgba.0, rgba.1, rgba.2, rgba.3]
         var matrices = [Float](repeating: 0, count: 32)
         for (index, matrix) in viewProjection.prefix(2).enumerated() {
@@ -186,8 +188,16 @@ nonisolated enum KitProbe {
             right = [quad.right.x, quad.right.y, quad.right.z]
             up = [quad.up.x, quad.up.y, quad.up.z]
         }
+        let mapPointer = rateMap.map { pointer($0 as AnyObject) }
         return kit_multiview_frame(session, pointer(color as AnyObject), pointer(depth as AnyObject),
-                                   &clear, depthClear, quad != nil, &matrices, &center, &right, &up)
+                                   &clear, depthClear, quad != nil, &matrices, &center, &right, &up, mapPointer)
+    }
+
+    /// K3: Messbild gegen die Map des Compositors (eigene Float-Textur in physischer Grösse).
+    static func multiviewMeasure(session: OpaquePointer, rateMap: MTLRasterizationRateMap, verbose: Bool) -> kit_multiview_measure? {
+        var result = kit_multiview_measure()
+        guard kit_multiview_measure_map(session, pointer(rateMap as AnyObject), verbose, &result) else { return nil }
+        return result
     }
 
     static func takeMultiviewStats(session: OpaquePointer) -> kit_multiview_stats {

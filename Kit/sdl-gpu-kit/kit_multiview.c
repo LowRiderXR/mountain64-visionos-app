@@ -36,6 +36,13 @@ struct kit_multiview_session {
     bool first_logged;
     Uint64 last_fail_log;
     kit_multiview_stats stats;
+    /* K3: Messbild */
+    SDL_GPUGraphicsPipeline *measure_pipeline;  /* RG32F, ohne Tiefe, view_count 2 */
+    SDL_GPUTexture *measure_texture;            /* 2D-Array RG32F in physischer Grösse */
+    SDL_GPUTransferBuffer *measure_transfer;
+    unsigned measure_width;
+    unsigned measure_height;
+    unsigned measure_layers;
     char line[KIT_LINE_MAX];
 };
 
@@ -108,9 +115,9 @@ static SDL_GPUShader *kit_create_shader(SDL_GPUDevice *device, const char *msl, 
 
 /* Pipeline: Dreiecke aus der Vertex-ID (kein Vertex-Puffer), Reverse-Z (greater, Schreiben an),
  * kein Culling, kein Blending. view_count über die P6-Property. */
-static SDL_GPUGraphicsPipeline *kit_create_pipeline(SDL_GPUDevice *device, SDL_GPUShader *vs, SDL_GPUShader *fs,
-                                                    SDL_GPUTextureFormat color, SDL_GPUTextureFormat depth,
-                                                    Uint32 view_count)
+static SDL_GPUGraphicsPipeline *kit_create_pipeline_ex(SDL_GPUDevice *device, SDL_GPUShader *vs, SDL_GPUShader *fs,
+                                                       SDL_GPUTextureFormat color, SDL_GPUTextureFormat depth,
+                                                       bool with_depth, Uint32 view_count)
 {
     SDL_GPUColorTargetDescription target;
     SDL_zero(target);
@@ -127,13 +134,13 @@ static SDL_GPUGraphicsPipeline *kit_create_pipeline(SDL_GPUDevice *device, SDL_G
     info.rasterizer_state.front_face = SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE;
     info.rasterizer_state.enable_depth_clip = true;
     info.multisample_state.sample_count = SDL_GPU_SAMPLECOUNT_1;
-    info.depth_stencil_state.enable_depth_test = true;
-    info.depth_stencil_state.enable_depth_write = true;
+    info.depth_stencil_state.enable_depth_test = with_depth;
+    info.depth_stencil_state.enable_depth_write = with_depth;
     info.depth_stencil_state.compare_op = SDL_GPU_COMPAREOP_GREATER;
     info.target_info.color_target_descriptions = &target;
     info.target_info.num_color_targets = 1;
     info.target_info.depth_stencil_format = depth;
-    info.target_info.has_depth_stencil_target = true;
+    info.target_info.has_depth_stencil_target = with_depth;
     info.props = SDL_CreateProperties();
 #ifdef SDL_PROP_GPU_GRAPHICSPIPELINE_CREATE_VIEW_COUNT_NUMBER
     SDL_SetNumberProperty(info.props, SDL_PROP_GPU_GRAPHICSPIPELINE_CREATE_VIEW_COUNT_NUMBER, view_count);
@@ -145,8 +152,17 @@ static SDL_GPUGraphicsPipeline *kit_create_pipeline(SDL_GPUDevice *device, SDL_G
     return pipeline;
 }
 
-static SDL_GPURenderPass *kit_begin_pass_at(SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *color, SDL_GPUTexture *depth,
-                                            const float rgba[4], float depth_clear, Uint32 view_count, Uint32 base_layer)
+static SDL_GPUGraphicsPipeline *kit_create_pipeline(SDL_GPUDevice *device, SDL_GPUShader *vs, SDL_GPUShader *fs,
+                                                    SDL_GPUTextureFormat color, SDL_GPUTextureFormat depth,
+                                                    Uint32 view_count)
+{
+    return kit_create_pipeline_ex(device, vs, fs, color, depth, true, view_count);
+}
+
+/* Pass mit optionaler Rate Map (K3, P4) und optionalem Tiefenziel. */
+static SDL_GPURenderPass *kit_begin_pass_map(SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *color, SDL_GPUTexture *depth,
+                                             const float rgba[4], float depth_clear, Uint32 view_count, Uint32 base_layer,
+                                             void *rate_map)
 {
     SDL_GPUColorTargetInfo ct;
     SDL_zero(ct);
@@ -169,19 +185,30 @@ static SDL_GPURenderPass *kit_begin_pass_at(SDL_GPUCommandBuffer *cmd, SDL_GPUTe
     dt.stencil_load_op = SDL_GPU_LOADOP_DONT_CARE;
     dt.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
 
-    if (view_count == 1) {
-        return SDL_BeginGPURenderPass(cmd, &ct, 1, &dt);
+    if (view_count == 1 && rate_map == NULL) {
+        return SDL_BeginGPURenderPass(cmd, &ct, 1, depth ? &dt : NULL);
     }
 #ifdef SDL_PROP_GPU_RENDERPASS_CREATE_VIEW_COUNT_NUMBER
     SDL_PropertiesID props = SDL_CreateProperties();
     SDL_SetNumberProperty(props, SDL_PROP_GPU_RENDERPASS_CREATE_VIEW_COUNT_NUMBER, view_count);
-    SDL_GPURenderPass *pass = SDL_BeginGPURenderPassWithProperties(cmd, &ct, 1, &dt, props);
+#ifdef SDL_PROP_GPU_RENDERPASS_CREATE_METAL_RASTERIZATION_RATE_MAP_POINTER
+    if (rate_map) {
+        SDL_SetPointerProperty(props, SDL_PROP_GPU_RENDERPASS_CREATE_METAL_RASTERIZATION_RATE_MAP_POINTER, rate_map);
+    }
+#endif
+    SDL_GPURenderPass *pass = SDL_BeginGPURenderPassWithProperties(cmd, &ct, 1, depth ? &dt : NULL, props);
     SDL_DestroyProperties(props);
     return pass;
 #else
     SDL_SetError("SDL-Header ohne P6");
     return NULL;
 #endif
+}
+
+static SDL_GPURenderPass *kit_begin_pass_at(SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *color, SDL_GPUTexture *depth,
+                                            const float rgba[4], float depth_clear, Uint32 view_count, Uint32 base_layer)
+{
+    return kit_begin_pass_map(cmd, color, depth, rgba, depth_clear, view_count, base_layer, NULL);
 }
 
 static SDL_GPURenderPass *kit_begin_pass(SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *color, SDL_GPUTexture *depth,
@@ -303,7 +330,7 @@ static void kit_frame_fail(kit_multiview_session *s, const char *step, SDL_GPUCo
 bool kit_multiview_frame(kit_multiview_session *s, void *color_texture, void *depth_texture,
                          const float rgba[4], float depth_clear, bool draw_quad,
                          const float view_projection[32], const float center[3],
-                         const float right[3], const float up[3])
+                         const float right[3], const float up[3], void *rate_map)
 {
     if (!s || !s->device) {
         return false;
@@ -335,9 +362,17 @@ bool kit_multiview_frame(kit_multiview_session *s, void *color_texture, void *de
 
     if (!s->first_logged) {
         s->first_logged = true;
-        kit_logf(s, "[c64-kit] step=multiview-frame color{size=%ux%u layers=%u mtl=%p} depth{layers=%u mtl=%p} pass{view_count=%d baseLayer=0 clear=%.2f,%.2f,%.2f,%.2f depth=%.4f} draw=%d",
+        kit_metal_map_desc md;
+        const bool has_map = rate_map && kit_metal_map_info(rate_map, &md);
+        kit_logf(s, "[c64-kit] step=multiview-frame color{size=%ux%u layers=%u mtl=%p} depth{layers=%u mtl=%p} pass{view_count=%d baseLayer=0 clear=%.2f,%.2f,%.2f,%.2f depth=%.4f} draw=%d rateMap=%p%s",
                  cdesc.width, cdesc.height, cdesc.layers, color_texture, ddesc.layers, depth_texture,
-                 KIT_VIEW_COUNT, rgba[0], rgba[1], rgba[2], rgba[3], depth_clear, draw_quad ? 1 : 0);
+                 KIT_VIEW_COUNT, rgba[0], rgba[1], rgba[2], rgba[3], depth_clear, draw_quad ? 1 : 0, rate_map,
+                 has_map ? "" : " (keine Map: Viewport = Texturgroesse)");
+        if (has_map) {
+            kit_logf(s, "[c64-kit] step=multiview-ratemap layers=%u screen=%ux%u physicalL0=%ux%u physicalL1=%ux%u granularity=%ux%u viewport=logisch",
+                     md.layers, md.screen_width, md.screen_height, md.physical_width[0], md.physical_height[0],
+                     md.physical_width[1], md.physical_height[1], md.granularity_width, md.granularity_height);
+        }
     }
 
     SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(s->device);
@@ -345,7 +380,7 @@ bool kit_multiview_frame(kit_multiview_session *s, void *color_texture, void *de
         kit_frame_fail(s, "multiview-cmdbuf", NULL, color, depth);
         return false;
     }
-    SDL_GPURenderPass *pass = kit_begin_pass(cmd, color, depth, rgba, depth_clear, KIT_VIEW_COUNT);
+    SDL_GPURenderPass *pass = kit_begin_pass_map(cmd, color, depth, rgba, depth_clear, KIT_VIEW_COUNT, 0, rate_map);
     if (!pass) {
         kit_frame_fail(s, "multiview-renderpass", cmd, color, depth);
         return false;
@@ -400,6 +435,9 @@ void kit_multiview_end(kit_multiview_session *s)
     }
     if (s->device) {
         SDL_WaitForGPUIdle(s->device);
+        if (s->measure_pipeline) SDL_ReleaseGPUGraphicsPipeline(s->device, s->measure_pipeline);
+        if (s->measure_texture) SDL_ReleaseGPUTexture(s->device, s->measure_texture);
+        if (s->measure_transfer) SDL_ReleaseGPUTransferBuffer(s->device, s->measure_transfer);
         if (s->pipeline) SDL_ReleaseGPUGraphicsPipeline(s->device, s->pipeline);
         if (s->vertex) SDL_ReleaseGPUShader(s->device, s->vertex);
         if (s->fragment) SDL_ReleaseGPUShader(s->device, s->fragment);
@@ -410,6 +448,203 @@ void kit_multiview_end(kit_multiview_session *s)
              s->stats.frames_total, s->stats.fails_total, s->stats.passes_total, s->stats.draws_total,
              mean, s->stats.total_max_ms, s->stats.wrappers_created, s->stats.wrappers_released);
     SDL_free(s);
+}
+
+/* ------------------------------------------------------------------ K3: Messbild gegen die Map */
+
+#define KIT_MEASURE_SAMPLES 9
+
+/* Stichproben als Anteile der physischen Grösse: Mitte, vier Ränder, vier Zwischenlagen. */
+static const float kit_measure_points[KIT_MEASURE_SAMPLES][2] = {
+    { 0.5f, 0.5f }, { 0.08f, 0.5f }, { 0.92f, 0.5f }, { 0.5f, 0.08f }, { 0.5f, 0.92f },
+    { 0.08f, 0.08f }, { 0.92f, 0.92f }, { 0.3f, 0.7f }, { 0.7f, 0.3f }
+};
+
+/* Messung; tex_w/tex_h >= physische Grösse der Map (0 = genau die Map-Grösse). Die Stichproben
+ * liegen immer in der physischen Grösse der Map, nicht der Textur. */
+static bool kit_measure_impl(kit_multiview_session *s, void *rate_map, bool verbose,
+                             unsigned tex_w, unsigned tex_h, kit_multiview_measure *out)
+{
+    if (!s || !s->device || !rate_map || !out) {
+        return false;
+    }
+    const Uint64 t0 = SDL_GetPerformanceCounter();
+    SDL_zero(*out);
+    kit_metal_map_desc md;
+    if (!kit_metal_map_info(rate_map, &md) || md.layers < KIT_VIEW_COUNT) {
+        SDL_SetError("Rate Map ohne zwei Schichten");
+        return false;
+    }
+    if (md.physical_width[0] != md.physical_width[1] || md.physical_height[0] != md.physical_height[1]) {
+        SDL_SetError("Rate Map: Schichten mit verschiedener physischer Groesse (%ux%u, %ux%u)",
+                     md.physical_width[0], md.physical_height[0], md.physical_width[1], md.physical_height[1]);
+        return false;
+    }
+    /* W/H: physische Grösse der Map = Raum der Stichproben; die Textur darf grösser sein. */
+    const unsigned W = md.physical_width[0], H = md.physical_height[0];
+    if (tex_w < W) tex_w = W;
+    if (tex_h < H) tex_h = H;
+    out->screen_width = md.screen_width;
+    out->screen_height = md.screen_height;
+    out->physical_width = W;
+    out->physical_height = H;
+    out->layers = md.layers;
+
+    /* Mess-Pipeline und -Textur beim ersten Aufruf oder bei neuer Grösse anlegen. */
+    if (!s->measure_pipeline) {
+        s->measure_pipeline = kit_create_pipeline_ex(s->device, s->vertex, s->fragment, SDL_GPU_TEXTUREFORMAT_R32G32_FLOAT,
+                                                     SDL_GPU_TEXTUREFORMAT_D32_FLOAT, false, KIT_VIEW_COUNT);
+        if (!s->measure_pipeline) {
+            return false;
+        }
+    }
+    if (!s->measure_texture || s->measure_width != tex_w || s->measure_height != tex_h) {
+        if (s->measure_texture) {
+            SDL_ReleaseGPUTexture(s->device, s->measure_texture);
+            s->measure_texture = NULL;
+        }
+        SDL_GPUTextureCreateInfo info;
+        SDL_zero(info);
+        info.type = SDL_GPU_TEXTURETYPE_2D_ARRAY;
+        info.format = SDL_GPU_TEXTUREFORMAT_R32G32_FLOAT;
+        info.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET;
+        info.width = tex_w;
+        info.height = tex_h;
+        info.layer_count_or_depth = KIT_VIEW_COUNT;
+        info.num_levels = 1;
+        info.sample_count = SDL_GPU_SAMPLECOUNT_1;
+        s->measure_texture = SDL_CreateGPUTexture(s->device, &info);
+        if (!s->measure_texture) {
+            return false;
+        }
+        s->measure_width = tex_w;
+        s->measure_height = tex_h;
+        s->measure_layers = KIT_VIEW_COUNT;
+    }
+    if (!s->measure_transfer) {
+        SDL_GPUTransferBufferCreateInfo tinfo;
+        SDL_zero(tinfo);
+        tinfo.usage = SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD;
+        tinfo.size = KIT_MEASURE_SAMPLES * KIT_VIEW_COUNT * 8;
+        s->measure_transfer = SDL_CreateGPUTransferBuffer(s->device, &tinfo);
+        if (!s->measure_transfer) {
+            return false;
+        }
+    }
+
+    /* Pass mit Map: Vollbild-Quad (Einheitsmatrizen), Muster 2 = Fragmentposition. */
+    SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(s->device);
+    if (!cmd) {
+        return false;
+    }
+    const float clear[4] = { -1, -1, 0, 1 };
+    SDL_GPURenderPass *pass = kit_begin_pass_map(cmd, s->measure_texture, NULL, clear, 0.0f, KIT_VIEW_COUNT, 0, rate_map);
+    if (!pass) {
+        SDL_CancelGPUCommandBuffer(cmd);
+        return false;
+    }
+    if (!kit_bind_checked(pass, s->measure_pipeline)) {
+        SDL_EndGPURenderPass(pass);
+        SDL_CancelGPUCommandBuffer(cmd);
+        return false;
+    }
+    float vp[32] = { 0 };
+    for (int v = 0; v < 2; v++) {
+        vp[v * 16 + 0] = 1; vp[v * 16 + 5] = 1; vp[v * 16 + 10] = 1; vp[v * 16 + 15] = 1;
+        vp[v * 16 + 14] = 0.5f;
+    }
+    const float center[3] = { 0, 0, 0 }, right[3] = { 1, 0, 0 }, up[3] = { 0, 1, 0 };
+    const float white[2][4] = { { 1, 1, 1, 1 }, { 1, 1, 1, 1 } };
+    kit_mv_uniforms u;
+    kit_fill_uniforms(&u, vp, center, right, up, white, 2.0f);
+    u.params[1] = (float)md.screen_width;   /* logische Grösse für die interpolierte Koordinate */
+    u.params[2] = (float)md.screen_height;
+    SDL_PushGPUVertexUniformData(cmd, 0, &u, sizeof(u));
+    SDL_DrawGPUPrimitives(pass, 6, 1, 0, 0);
+    SDL_EndGPURenderPass(pass);
+
+    /* Stichproben zurücklesen: 1×1 pro Punkt und Schicht. */
+    unsigned px[KIT_MEASURE_SAMPLES], py[KIT_MEASURE_SAMPLES];
+    for (unsigned k = 0; k < KIT_MEASURE_SAMPLES; k++) {
+        px[k] = (unsigned)(kit_measure_points[k][0] * (float)(W - 1));
+        py[k] = (unsigned)(kit_measure_points[k][1] * (float)(H - 1));
+    }
+    SDL_GPUCopyPass *copy = SDL_BeginGPUCopyPass(cmd);
+    if (!copy) {
+        SDL_CancelGPUCommandBuffer(cmd);
+        return false;
+    }
+    for (unsigned layer = 0; layer < KIT_VIEW_COUNT; layer++) {
+        for (unsigned k = 0; k < KIT_MEASURE_SAMPLES; k++) {
+            SDL_GPUTextureRegion src;
+            SDL_zero(src);
+            src.texture = s->measure_texture;
+            src.layer = layer;
+            src.x = px[k];
+            src.y = py[k];
+            src.w = 1;
+            src.h = 1;
+            src.d = 1;
+            SDL_GPUTextureTransferInfo dst;
+            SDL_zero(dst);
+            dst.transfer_buffer = s->measure_transfer;
+            dst.offset = (layer * KIT_MEASURE_SAMPLES + k) * 8;
+            dst.pixels_per_row = 1;
+            dst.rows_per_layer = 1;
+            SDL_DownloadFromGPUTexture(copy, &src, &dst);
+        }
+    }
+    SDL_EndGPUCopyPass(copy);
+    SDL_GPUFence *fence = SDL_SubmitGPUCommandBufferAndAcquireFence(cmd);
+    if (!fence || !SDL_WaitForGPUFences(s->device, true, &fence, 1)) {
+        if (fence) SDL_ReleaseGPUFence(s->device, fence);
+        return false;
+    }
+    SDL_ReleaseGPUFence(s->device, fence);
+
+    const float *data = (const float *)SDL_MapGPUTransferBuffer(s->device, s->measure_transfer, false);
+    if (!data) {
+        return false;
+    }
+    double sum = 0;
+    float maxdev = 0;
+    unsigned count = 0;
+    for (unsigned layer = 0; layer < KIT_VIEW_COUNT; layer++) {
+        for (unsigned k = 0; k < KIT_MEASURE_SAMPLES; k++) {
+            const float *v = data + (layer * KIT_MEASURE_SAMPLES + k) * 2;
+            const float sx = v[0], sy = v[1];             /* logisch, aus dem Fragment */
+            const float cx = (float)px[k] + 0.5f, cy = (float)py[k] + 0.5f;
+            float ex, ey, bx, by;
+            kit_metal_map_physical_to_screen(rate_map, layer, cx, cy, &ex, &ey); /* Soll logisch */
+            kit_metal_map_screen_to_physical(rate_map, layer, sx, sy, &bx, &by); /* Ist zurück physisch */
+            const float dev = SDL_sqrtf((bx - cx) * (bx - cx) + (by - cy) * (by - cy));
+            if (sx < 0 || sy < 0) {
+                /* Clear-Wert: das Fragment wurde nicht geschrieben */
+                maxdev = 1e9f;
+            }
+            sum += dev;
+            count += 1;
+            if (dev > maxdev) maxdev = dev;
+            if (verbose) {
+                kit_logf(s, "[c64-kit] step=fov-sample layer=%u physical=%u,%u fragment=%.2f,%.2f expectedScreen=%.2f,%.2f backToPhysical=%.2f,%.2f devPx=%.3f",
+                         layer, px[k], py[k], sx, sy, ex, ey, bx, by, dev);
+            }
+        }
+    }
+    SDL_UnmapGPUTransferBuffer(s->device, s->measure_transfer);
+    if (verbose) {
+        kit_logf(s, "[c64-kit] step=fov-sample-space samplesIn=mapPhysical %ux%u measureTexture=%ux%u", W, H, tex_w, tex_h);
+    }
+    out->samples = count;
+    out->max_dev_px = maxdev;
+    out->mean_dev_px = count ? (float)(sum / count) : 0;
+    out->ms = kit_ms_since(t0);
+    return true;
+}
+
+bool kit_multiview_measure_map(kit_multiview_session *s, void *rate_map, bool verbose, kit_multiview_measure *out)
+{
+    return kit_measure_impl(s, rate_map, verbose, 0, 0, out);
 }
 
 /* ------------------------------------------------------------------ Mac-Selbsttest */
@@ -785,5 +1020,141 @@ done:
     }
     kit_metal_release_host_objects(host_device, host_queue);
     self_logf(&ctx, "[c64-kit] result=%s failedStep=%d mode=multiview", result == 0 ? "ok" : "fail", result);
+    return result;
+}
+
+/* ------------------------------------------------------------------ Mac-Selbsttest K3 (P4) */
+
+int kit_multiview_foveation_selftest(kit_log_fn log, void *user)
+{
+    kit_self_ctx ctx;
+    SDL_zero(ctx);
+    ctx.log = log;
+    ctx.user = user;
+
+    int result = 0;
+    void *host_device = NULL, *host_queue = NULL;
+    void *map = NULL;
+    void *mtl_color_small = NULL;
+    SDL_GPUTexture *color_small = NULL;
+    kit_multiview_session *s = NULL;
+
+    if (!kit_metal_create_host_objects(&host_device, &host_queue)) {
+        self_logf(&ctx, "[c64-kit] FAIL step=selftest-host error=\"Device/Queue nicht erzeugt\"");
+        return 70;
+    }
+    self_logf(&ctx, "[c64-kit] step=fov-support layers1=%d layers2=%d layers4=%d",
+              kit_metal_supports_rate_map_layers(host_device, 1) ? 1 : 0,
+              kit_metal_supports_rate_map_layers(host_device, 2) ? 1 : 0,
+              kit_metal_supports_rate_map_layers(host_device, 4) ? 1 : 0);
+    s = kit_multiview_begin(host_device, host_queue, log, user);
+    if (!s) {
+        result = 71;
+        goto done;
+    }
+
+    /* Eigene Map: 1024×1024 logisch, 2 Schichten, 16×16 Stützstellen, asymmetrisches
+     * Zweistufen-Profil (erstes Drittel 1,0, Rest 0,5), beide Schichten gleich. */
+    if (!kit_metal_create_rate_map(host_device, 1024, 1024, KIT_VIEW_COUNT, 16, 0.5f, &map)) {
+        self_logf(&ctx, "[c64-kit] FAIL step=fov-map error=\"Rate Map nicht erzeugt (Gerät ohne Unterstützung?)\"");
+        result = 72;
+        goto done;
+    }
+    kit_metal_map_desc md;
+    kit_metal_map_info(map, &md);
+    self_logf(&ctx, "[c64-kit] step=fov-map layers=%u screen=%ux%u physicalL0=%ux%u physicalL1=%ux%u granularity=%ux%u profile=firstThird1.0/rest0.5 layersEqual=1",
+              md.layers, md.screen_width, md.screen_height, md.physical_width[0], md.physical_height[0],
+              md.physical_width[1], md.physical_height[1], md.granularity_width, md.granularity_height);
+    {
+        /* Zur Anschauung: Mitte und Rand der logischen Fläche in physischen Koordinaten, Schicht 0. */
+        float cx, cy, lx, ly, rx, ry;
+        kit_metal_map_screen_to_physical(map, 0, 512, 512, &cx, &cy);
+        kit_metal_map_screen_to_physical(map, 0, 64, 512, &lx, &ly);
+        kit_metal_map_screen_to_physical(map, 0, 960, 512, &rx, &ry);
+        self_logf(&ctx, "[c64-kit] step=fov-map-shape L0 screen(64,512)->physical(%.1f,%.1f) screen(512,512)->physical(%.1f,%.1f) screen(960,512)->physical(%.1f,%.1f)",
+                  lx, ly, cx, cy, rx, ry);
+    }
+
+    /* Messbild gegen die Map. */
+    kit_multiview_measure m;
+    if (!kit_multiview_measure_map(s, map, true, &m)) {
+        self_logf(&ctx, "[c64-kit] FAIL step=fov-measure error=\"%s\"", SDL_GetError());
+        result = 73;
+        goto done;
+    }
+    const bool within = m.max_dev_px <= 1.0f;
+    self_logf(&ctx, "[c64-kit] step=fov-measure case=textureEqualsMap samples=%u maxDevPx=%.3f meanDevPx=%.3f screen=%ux%u physical=%ux%u layers=%u ms=%.2f ok=%d",
+              m.samples, m.max_dev_px, m.mean_dev_px, m.screen_width, m.screen_height,
+              m.physical_width, m.physical_height, m.layers, m.ms, within ? 1 : 0);
+    if (!within) {
+        result = 74;
+        goto done;
+    }
+
+    /* Positivtest: Textur grösser als die physische Grösse der Map (wie der Compositor auf der
+     * M2: Map 1856×1792, Textur 1888×1792). Stichproben bleiben im Raum der Map. */
+    {
+        kit_multiview_measure m2;
+        const unsigned bigger_w = m.physical_width + 32, bigger_h = m.physical_height + 32;
+        if (!kit_measure_impl(s, map, false, bigger_w, bigger_h, &m2)) {
+            self_logf(&ctx, "[c64-kit] FAIL step=fov-measure case=textureLargerThanMap error=\"%s\"", SDL_GetError());
+            result = 77;
+            goto done;
+        }
+        const bool within2 = m2.max_dev_px <= 1.0f;
+        self_logf(&ctx, "[c64-kit] step=fov-measure case=textureLargerThanMap texture=%ux%u mapPhysical=%ux%u samples=%u maxDevPx=%.3f meanDevPx=%.3f ok=%d",
+                  bigger_w, bigger_h, m2.physical_width, m2.physical_height, m2.samples, m2.max_dev_px, m2.mean_dev_px, within2 ? 1 : 0);
+        if (!within2) {
+            result = 78;
+            goto done;
+        }
+    }
+
+    /* Negativtest 1: Textur kleiner als die physische Grösse der Map (64×64×2 gegen die Map). */
+    {
+        if (!kit_metal_create_array_texture(host_device, false, 64, 64, KIT_VIEW_COUNT, &mtl_color_small)) {
+            result = 75;
+            goto done;
+        }
+        color_small = kit_wrap(s->device, mtl_color_small, false, NULL);
+        SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(s->device);
+        const float clear[4] = { 0, 0, 0, 1 };
+        SDL_GPURenderPass *pass = (cmd && color_small) ? kit_begin_pass_map(cmd, color_small, NULL, clear, 0.0f, KIT_VIEW_COUNT, 0, map) : NULL;
+        const bool failed = (pass == NULL);
+        self_logf(&ctx, "[c64-kit] step=fov-negative case=textureSmallerThanMap failed=%d error=\"%s\"",
+                  failed ? 1 : 0, failed ? SDL_GetError() : "(kein Fehler, Pass begann)");
+        if (pass) SDL_EndGPURenderPass(pass);
+        if (cmd) SDL_CancelGPUCommandBuffer(cmd);
+        if (!failed) result = 76;
+    }
+
+    /* Negativtest 2: Map mit Startschicht 1 (Ein-View-Pass auf Schicht 1 der Mess-Textur). */
+    {
+        SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(s->device);
+        const float clear[4] = { 0, 0, 0, 1 };
+        SDL_GPURenderPass *pass = (cmd && s->measure_texture) ? kit_begin_pass_map(cmd, s->measure_texture, NULL, clear, 0.0f, 1, 1, map) : NULL;
+        const bool failed = (pass == NULL);
+        self_logf(&ctx, "[c64-kit] step=fov-negative case=mapWithBaseLayer1 failed=%d error=\"%s\"",
+                  failed ? 1 : 0, failed ? SDL_GetError() : "(kein Fehler, Pass begann)");
+        if (pass) SDL_EndGPURenderPass(pass);
+        if (cmd) SDL_CancelGPUCommandBuffer(cmd);
+        if (!failed && result == 0) result = 79;
+    }
+
+done:
+    if (s && s->device && color_small) {
+        SDL_ReleaseGPUTexture(s->device, color_small);
+    }
+    if (s) {
+        kit_multiview_end(s);
+    }
+    if (mtl_color_small) {
+        kit_metal_release_texture(mtl_color_small);
+    }
+    if (map) {
+        kit_metal_release_map(map);
+    }
+    kit_metal_release_host_objects(host_device, host_queue);
+    self_logf(&ctx, "[c64-kit] result=%s failedStep=%d mode=foveation", result == 0 ? "ok" : "fail", result);
     return result;
 }

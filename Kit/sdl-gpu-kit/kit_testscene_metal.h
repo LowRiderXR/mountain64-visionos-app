@@ -59,6 +59,34 @@ bool kit_metal_create_array_texture(void *device, bool depth, unsigned width, un
 
 void kit_metal_release_texture(void *texture);
 
+/* Rasterization Rate Map (K3, Baustein P4). Zeiger ist id<MTLRasterizationRateMap> als void*. */
+typedef struct kit_metal_map_desc {
+    unsigned screen_width;
+    unsigned screen_height;
+    unsigned layers;
+    unsigned physical_width[8];   /* pro Schicht */
+    unsigned physical_height[8];
+    unsigned granularity_width;
+    unsigned granularity_height;
+} kit_metal_map_desc;
+
+bool kit_metal_map_info(void *map, kit_metal_map_desc *out);
+
+/* Physische Fragmentkoordinate → logische Bildschirmkoordinate einer Schicht und zurück. */
+void kit_metal_map_physical_to_screen(void *map, unsigned layer, float px, float py, float *sx, float *sy);
+void kit_metal_map_screen_to_physical(void *map, unsigned layer, float sx, float sy, float *px, float *py);
+
+/* Eigene Zweischicht-Map für den Mac-Test: screen_width × screen_height logisch, Qualität in
+ * einem samples × samples Raster, Mitte 1,0 und Rand edge_quality (Schicht 1 horizontal
+ * gespiegelt, damit die Schichten verschieden abbilden). +1 zurückgegeben, Freigabe über
+ * kit_metal_release_map. false, wenn das Gerät keine Maps mit so vielen Schichten kann. */
+bool kit_metal_create_rate_map(void *device, unsigned screen_width, unsigned screen_height, unsigned layers,
+                               unsigned samples, float edge_quality, void **map_out);
+
+void kit_metal_release_map(void *map);
+
+bool kit_metal_supports_rate_map_layers(void *device, unsigned layers);
+
 #ifdef __cplusplus
 }
 #endif

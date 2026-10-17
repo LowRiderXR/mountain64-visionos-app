@@ -155,3 +155,96 @@ void kit_metal_release_texture(void *texture)
         CFBridgingRelease(texture);
     }
 }
+
+/* ------------------------------------------------------------------ Rate Maps (K3) */
+
+bool kit_metal_map_info(void *map, kit_metal_map_desc *out)
+{
+    if (!map || !out) {
+        return false;
+    }
+    id<MTLRasterizationRateMap> m = (__bridge id<MTLRasterizationRateMap>)map;
+    out->screen_width = (unsigned)m.screenSize.width;
+    out->screen_height = (unsigned)m.screenSize.height;
+    out->layers = (unsigned)m.layerCount;
+    for (unsigned i = 0; i < 8; i++) {
+        if (i < out->layers) {
+            MTLSize p = [m physicalSizeForLayer:i];
+            out->physical_width[i] = (unsigned)p.width;
+            out->physical_height[i] = (unsigned)p.height;
+        } else {
+            out->physical_width[i] = out->physical_height[i] = 0;
+        }
+    }
+    out->granularity_width = (unsigned)m.physicalGranularity.width;
+    out->granularity_height = (unsigned)m.physicalGranularity.height;
+    return true;
+}
+
+void kit_metal_map_physical_to_screen(void *map, unsigned layer, float px, float py, float *sx, float *sy)
+{
+    id<MTLRasterizationRateMap> m = (__bridge id<MTLRasterizationRateMap>)map;
+    MTLCoordinate2D s = [m mapPhysicalToScreenCoordinates:MTLCoordinate2DMake(px, py) forLayer:layer];
+    *sx = s.x;
+    *sy = s.y;
+}
+
+void kit_metal_map_screen_to_physical(void *map, unsigned layer, float sx, float sy, float *px, float *py)
+{
+    id<MTLRasterizationRateMap> m = (__bridge id<MTLRasterizationRateMap>)map;
+    MTLCoordinate2D p = [m mapScreenToPhysicalCoordinates:MTLCoordinate2DMake(sx, sy) forLayer:layer];
+    *px = p.x;
+    *py = p.y;
+}
+
+bool kit_metal_supports_rate_map_layers(void *device, unsigned layers)
+{
+    id<MTLDevice> d = (__bridge id<MTLDevice>)device;
+    return [d supportsRasterizationRateMapWithLayerCount:layers];
+}
+
+bool kit_metal_create_rate_map(void *device, unsigned screen_width, unsigned screen_height, unsigned layers,
+                               unsigned samples, float edge_quality, void **map_out)
+{
+    @autoreleasepool {
+        id<MTLDevice> d = (__bridge id<MTLDevice>)device;
+        if (![d supportsRasterizationRateMapWithLayerCount:layers] || samples < 2 || samples > 64) {
+            return false;
+        }
+        MTLRasterizationRateMapDescriptor *desc = [MTLRasterizationRateMapDescriptor
+            rasterizationRateMapDescriptorWithScreenSize:MTLSizeMake(screen_width, screen_height, 1)];
+        float profile[64];
+        for (unsigned i = 0; i < samples; i++) {
+            /* Asymmetrisches Zweistufen-Profil: 1,0 im ersten Drittel, edge_quality danach.
+             * Metal interpoliert zwischen den Stützstellen und rundet die physische Grösse auf
+             * die Granularität; weder Permutation noch Spiegelung desselben Profils ergaben
+             * gleiche physische Breiten (Messungen 2026-10-17: 712/688, 816/784, 688/682).
+             * Deshalb bekommen alle Schichten dasselbe Profil (wie die Compositor-Map, deren
+             * Schichten gleich gross sind); die Schichtwahl der Map prüft der Gerätelauf. */
+            profile[i] = (i < samples / 3) ? 1.0f : edge_quality;
+        }
+        for (unsigned layer = 0; layer < layers; layer++) {
+            float horizontal[64];
+            for (unsigned i = 0; i < samples; i++) {
+                horizontal[i] = profile[i];
+            }
+            MTLRasterizationRateLayerDescriptor *ld = [[MTLRasterizationRateLayerDescriptor alloc]
+                initWithSampleCount:MTLSizeMake(samples, samples, 1) horizontal:horizontal vertical:profile];
+            [desc setLayer:ld atIndex:layer];
+        }
+        desc.label = @"kit-host-rate-map";
+        id<MTLRasterizationRateMap> map = [d newRasterizationRateMapWithDescriptor:desc];
+        if (map == nil) {
+            return false;
+        }
+        *map_out = (void *)CFBridgingRetain(map);
+        return true;
+    }
+}
+
+void kit_metal_release_map(void *map)
+{
+    if (map) {
+        CFBridgingRelease(map);
+    }
+}

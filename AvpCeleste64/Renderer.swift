@@ -115,6 +115,16 @@ nonisolated final class Renderer: @unchecked Sendable {
     // und ein Pass mit Clear und Schachbrett für beide Augen. Nur vom Render-Thread berührt.
     private var kitMultiviewSession: OpaquePointer?
     private var kitQuad = KitQuadPlacement()
+    // K3 (C64_KIT=multiview mit C64_FOVEATION=1): Messbild gegen die Compositor-Map einmal pro
+    // Sekunde; maximale Abweichung in physischen Pixeln über den Lauf.
+    private var fovMeasureLast: CFAbsoluteTime = 0
+    private var fovMeasureCount = 0
+    private var fovMaxDevPx: Float = 0
+    private var fovMeanDevSum: Double = 0
+    private var fovMeasureMsSum: Double = 0
+    // Bildrate über den ganzen Lauf (Intervalle aus presentationTime), für die Zusammenfassung.
+    private var intervalTotalSum = 0.0
+    private var intervalTotalCount = 0
     private var statSdlFail = 0               // Frames im Fenster, in denen SDL scheiterte
     private var sdlFailTotal = 0
     private var footprintStartMB = 0.0        // phys_footprint beim Start der Schleife, in jedem Modus
@@ -320,13 +330,43 @@ nonisolated final class Renderer: @unchecked Sendable {
                 matrices[slot] = drawable.computeProjection(viewIndex: slot) * (anchorTransform * view.transform).inverse
             }
         }
-        return KitProbe.multiviewFrame(session: session,
-                                       color: drawable.colorTextures[index],
-                                       depth: drawable.depthTextures[index],
-                                       rgba: Self.importClearColor,
-                                       depthClear: importClearDepth,
-                                       quad: quad,
-                                       viewProjection: matrices)
+        // K3: Map des Compositors an den SDL-Pass, wenn Foveation an ist (sonst wie K2).
+        let rateMap = layerRenderer.configuration.isFoveationEnabled ? drawable.rasterizationRateMaps.first : nil
+        let ok = KitProbe.multiviewFrame(session: session,
+                                         color: drawable.colorTextures[index],
+                                         depth: drawable.depthTextures[index],
+                                         rgba: Self.importClearColor,
+                                         depthClear: importClearDepth,
+                                         quad: quad,
+                                         viewProjection: matrices,
+                                         rateMap: rateMap)
+        if ok, let rateMap {
+            measureFoveationIfDue(session: session, rateMap: rateMap)
+        }
+        return ok
+    }
+
+    /// K3: einmal pro Sekunde das Messbild gegen die Compositor-Map (eigene Textur, kostet einen
+    /// Pass plus Rücklesen mit Warten); erste Messung ausführlich mit allen Stichproben.
+    private func measureFoveationIfDue(session: OpaquePointer, rateMap: MTLRasterizationRateMap) {
+        let now = CFAbsoluteTimeGetCurrent()
+        guard now - fovMeasureLast >= 1.0 else { return }
+        fovMeasureLast = now
+        let verbose = fovMeasureCount == 0
+        guard let m = KitProbe.multiviewMeasure(session: session, rateMap: rateMap, verbose: verbose) else {
+            c64Record("[c64-kit] step=fov-measure FAIL (Messbild nicht gerendert oder nicht gelesen)")
+            return
+        }
+        fovMeasureCount += 1
+        fovMeanDevSum += Double(m.mean_dev_px)
+        fovMeasureMsSum += m.ms
+        let newMax = m.max_dev_px > fovMaxDevPx
+        fovMaxDevPx = max(fovMaxDevPx, m.max_dev_px)
+        if verbose || newMax {
+            c64Record(String(format: "[c64-kit] step=fov-measure n=%d samples=%u maxDevPx=%.3f meanDevPx=%.3f screen=%ux%u physical=%ux%u layers=%u ms=%.2f runMax=%.3f",
+                             fovMeasureCount, m.samples, m.max_dev_px, m.mean_dev_px, m.screen_width, m.screen_height,
+                             m.physical_width, m.physical_height, m.layers, m.ms, fovMaxDevPx))
+        }
     }
 
     /// Zusammenfassung am Ende der Schleife, in jedem Modus: Frames, cmdErr, Speicher am Anfang und
@@ -358,9 +398,17 @@ nonisolated final class Renderer: @unchecked Sendable {
         let cmdErr = cmdErrTotal
         cmdErrLock.unlock()
         let mode = KitProbe.mode?.rawValue ?? "-"
-        c64Record(String(format: "[c64-loop] summary C64_KIT=%@ frames=%llu cancelled=%d cmdErr=%d footprintMB start=%.1f end=%.1f delta=%+.1f%@",
-                         mode, totalFrames, cancelledTotal, cmdErr,
-                         footprintStartMB, footprintEnd, footprintEnd - footprintStartMB, kitPart))
+        // Bildrate über den Lauf: mittleres Intervall aus presentationTime und daraus Hz.
+        let meanInterval = intervalTotalCount > 0 ? intervalTotalSum / Double(intervalTotalCount) : 0
+        let hz = meanInterval > 0 ? 1.0 / meanInterval : 0
+        var fovPart = ""
+        if fovMeasureCount > 0 {
+            fovPart = String(format: " fov{measurements=%d maxDevPx=%.3f meanDevPx=%.3f measureMs=%.2f}",
+                             fovMeasureCount, fovMaxDevPx, fovMeanDevSum / Double(fovMeasureCount), fovMeasureMsSum / Double(fovMeasureCount))
+        }
+        c64Record(String(format: "[c64-loop] summary C64_KIT=%@ foveation=%d frames=%llu interval(ms) mean=%.3f rate=%.1f Hz cancelled=%d cmdErr=%d footprintMB start=%.1f end=%.1f delta=%+.1f%@%@",
+                         mode, layerRenderer.configuration.isFoveationEnabled ? 1 : 0, totalFrames, meanInterval * 1000, hz,
+                         cancelledTotal, cmdErr, footprintStartMB, footprintEnd, footprintEnd - footprintStartMB, kitPart, fovPart))
     }
 
     /// K1b-Diagnose: dieselbe Stelle, die SDL nach seinem Clear zurückgelesen hat, im Gerüst-Buffer
@@ -838,6 +886,8 @@ nonisolated final class Renderer: @unchecked Sendable {
                 statIntervalMax = max(statIntervalMax, interval)
                 statIntervalSum += interval
                 statIntervalCount += 1
+                intervalTotalSum += interval
+                intervalTotalCount += 1
             }
         }
         lastPresentationTime = presentationTime

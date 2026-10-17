@@ -16,7 +16,11 @@ cbuffer MultiviewUniforms : register(b0, space1)
     float4   u_right;               // Rechtsvektor * halbe Breite (m)
     float4   u_up;                  // Hochvektor * halbe Höhe (m)
     float4   u_viewColor[2];        // Farbfaktor pro View (Gerät: weiss; Selbsttest: rot, blau)
-    float4   u_params;              // x: 1 = Schachbrett mit Fadenkreuz, 0 = flache Farbe
+    float4   u_params;              // x: 1 = Schachbrett mit Fadenkreuz, 0 = flache Farbe,
+                                    //    2 = Messbild (K3): logische Position in R,G, interpoliert
+                                    //    aus dem Vertex-Shader; y,z = logische Grösse (screenSize).
+                                    //    SV_Position ist unter einer Rate Map physisch (Messung
+                                    //    2026-10-17), deshalb nicht als Mass brauchbar.
 };
 
 struct VertexOutput
@@ -24,6 +28,7 @@ struct VertexOutput
     float2 uv       : TEXCOORD0;
     float4 color    : COLOR0;
     float  pattern  : TEXCOORD1;
+    float2 logical  : TEXCOORD2;    // logische Bildschirmkoordinate (Ursprung oben links)
     float4 position : SV_Position;
 };
 
@@ -44,13 +49,22 @@ VertexOutput vertex_main(uint vertexID : SV_VertexID, uint viewID : SV_ViewID)
     output.uv = uv;
     output.color = u_viewColor[viewID];
     output.pattern = u_params.x;
+    // Vollbild-Quad: uv (0,0) unten links in NDC → logisch x = uv.x·W, y = (1 − uv.y)·H.
+    output.logical = float2(uv.x * u_params.y, (1.0 - uv.y) * u_params.z);
     return output;
 }
 
-// Schachbrett 64 × 64 Felder mit dünnem rotem Fadenkreuz (pattern 1) oder flache Farbe (0).
+// Schachbrett 64 × 64 Felder mit dünnem rotem Fadenkreuz (pattern 1), flache Farbe (0) oder
+// Messbild (2): die interpolierte logische Bildschirmkoordinate als R,G in ein Float-Ziel; der
+// Vergleich mit mapPhysicalToScreenCoordinates der Map misst die Abweichung des Rasterizers in
+// physischen Pixeln. (SV_Position wäre hier die physische Fragmentposition.)
 float4 fragment_main(VertexOutput input) : SV_Target0
 {
     float3 color = input.color.rgb;
+    if (input.pattern > 1.5)
+    {
+        return float4(input.logical.x, input.logical.y, 0.0, 1.0);
+    }
     if (input.pattern > 0.5)
     {
         const float fields = 64.0;

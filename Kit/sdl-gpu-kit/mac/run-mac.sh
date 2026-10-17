@@ -7,6 +7,7 @@
 #   --inject*: K1a, Baustein P1 (geteiltes MTLDevice/MTLCommandQueue), siehe kit_main.c.
 #   --import:  K1b, Baustein P3 (externe 2D-Array-Texturen, Clear pro Schicht, Rücklesen, Negativtests).
 #   --multiview: K2, Baustein P6 (ein Pass mit view_count 2, ein Draw, Rücklesen pro Schicht, Negativtests).
+#   --foveation: K3, Baustein P4 (eigene Rate Map am Pass, Messbild gegen die Map, Negativtest).
 
 set -euo pipefail
 

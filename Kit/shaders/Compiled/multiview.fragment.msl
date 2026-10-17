@@ -13,33 +13,45 @@ struct fragment_main_in
     float2 in_var_TEXCOORD0 [[user(locn0)]];
     float4 in_var_COLOR0 [[user(locn1)]];
     float in_var_TEXCOORD1 [[user(locn2)]];
+    float2 in_var_TEXCOORD2 [[user(locn3)]];
 };
 
 fragment fragment_main_out fragment_main(fragment_main_in in [[stage_in]])
 {
     fragment_main_out out = {};
-    float3 _65;
-    if (in.in_var_TEXCOORD1 > 0.5)
+    float4 _88;
+    do
     {
-        int2 _45 = int2(floor(in.in_var_TEXCOORD0 * 64.0));
-        float2 _54 = abs(in.in_var_TEXCOORD0 - float2(0.5));
-        float _55 = _54.x;
-        bool _61;
-        if ((isunordered(_55, 0.0030000000260770320892333984375) || _55 >= 0.0030000000260770320892333984375))
+        if (in.in_var_TEXCOORD1 > 1.5)
         {
-            _61 = _54.y < 0.0030000000260770320892333984375;
+            _88 = float4(in.in_var_TEXCOORD2.x, in.in_var_TEXCOORD2.y, 0.0, 1.0);
+            break;
+        }
+        float3 _81;
+        if (in.in_var_TEXCOORD1 > 0.5)
+        {
+            int2 _61 = int2(floor(in.in_var_TEXCOORD0 * 64.0));
+            float2 _70 = abs(in.in_var_TEXCOORD0 - float2(0.5));
+            float _71 = _70.x;
+            bool _77;
+            if ((isunordered(_71, 0.0030000000260770320892333984375) || _71 >= 0.0030000000260770320892333984375))
+            {
+                _77 = _70.y < 0.0030000000260770320892333984375;
+            }
+            else
+            {
+                _77 = true;
+            }
+            _81 = in.in_var_COLOR0.xyz * select(select(float3(0.07999999821186065673828125), float3(0.89999997615814208984375), bool3(((_61.x + _61.y) & 1) == 0)), float3(0.89999997615814208984375, 0.100000001490116119384765625, 0.100000001490116119384765625), bool3(_77));
         }
         else
         {
-            _61 = true;
+            _81 = in.in_var_COLOR0.xyz;
         }
-        _65 = in.in_var_COLOR0.xyz * select(select(float3(0.07999999821186065673828125), float3(0.89999997615814208984375), bool3(((_45.x + _45.y) & 1) == 0)), float3(0.89999997615814208984375, 0.100000001490116119384765625, 0.100000001490116119384765625), bool3(_61));
-    }
-    else
-    {
-        _65 = in.in_var_COLOR0.xyz;
-    }
-    out.out_var_SV_Target0 = float4(_65, in.in_var_COLOR0.w);
+        _88 = float4(_81, in.in_var_COLOR0.w);
+        break;
+    } while(false);
+    out.out_var_SV_Target0 = _88;
     return out;
 }
 
