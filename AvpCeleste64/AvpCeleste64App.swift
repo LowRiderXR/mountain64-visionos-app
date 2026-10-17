@@ -44,15 +44,32 @@ struct ImmersiveContent: CompositorContent {
 nonisolated struct ProbeLayerConfiguration: CompositorLayerConfiguration {
     func makeConfiguration(capabilities: LayerRenderer.Capabilities,
                            configuration: inout LayerRenderer.Configuration) {
-        // Foveation in dieser Runde aus (port-analyse.md, Frage 2 und Phasenplan P0/M4b).
-        configuration.isFoveationEnabled = false
+        let environment = ProcessInfo.processInfo.environment
 
-        // Layout .dedicated: eine 2D-Textur pro Auge, ein Pass pro Textur.
-        let layouts = capabilities.supportedLayouts(options: [])
-        if layouts.contains(.dedicated) {
+        // Foveation nur mit Schalter C64_FOVEATION=1 (P0b), sonst aus.
+        let foveation = environment["C64_FOVEATION"] == "1" && capabilities.supportsFoveation
+        configuration.isFoveationEnabled = foveation
+
+        // Layout: Standard .layered (eine 2D-Array-Textur, Auge = Slice; Zielformat des Ports,
+        // weil Multiview eingeplant ist). Schalter C64_LAYOUT=dedicated für den Vergleich.
+        let layoutOptions: LayerRenderer.Capabilities.SupportedLayoutsOptions = foveation ? [.foveationEnabled] : []
+        let layouts = capabilities.supportedLayouts(options: layoutOptions)
+        let wantDedicated = environment["C64_LAYOUT"] == "dedicated"
+        if wantDedicated, layouts.contains(.dedicated) {
+            configuration.layout = .dedicated
+        } else if layouts.contains(.layered) {
+            configuration.layout = .layered
+        } else if layouts.contains(.dedicated) {
             configuration.layout = .dedicated
         } else if let first = layouts.first {
             configuration.layout = first
+        }
+
+        // Render Quality: Obergrenze nur mit Foveation sinnvoll (Apple-Doku zu maxRenderQuality,
+        // Plattformwissen: beide Regler setzen). Schalter C64_RENDERQUALITY, Wert 0..1; der
+        // Laufzeitwert wird im Renderer gesetzt (layer_renderer.h:230-232).
+        if foveation, let wanted = environment["C64_RENDERQUALITY"].flatMap({ Float($0) }) {
+            configuration.maxRenderQuality = LayerRenderer.RenderQuality(max(0.0, min(1.0, wanted)))
         }
 
         // Farbformat: 8 Bit sRGB, falls angeboten (geplantes Format des Ports), sonst Vorgabe.
@@ -70,7 +87,10 @@ nonisolated struct ProbeLayerConfiguration: CompositorLayerConfiguration {
         let layoutNames = layouts.map { Self.name($0) }.joined(separator: ",")
         let colorNames = colorFormats.map { ProbeContext.name($0) }.joined(separator: ",")
         let depthNames = depthFormats.map { ProbeContext.name($0) }.joined(separator: ",")
-        c64Log.notice("[c64-caps] supportsFoveation=\(capabilities.supportsFoveation, privacy: .public) layouts=\(layoutNames, privacy: .public) colorFormats=\(colorNames, privacy: .public) depthFormats=\(depthNames, privacy: .public)")
+        let maxQuality = configuration.maxRenderQuality.rawValue
+        let defaultQuality = capabilities.defaultRenderQuality.rawValue
+        let layoutMode = foveation ? "foveated" : "plain"
+        c64Log.notice("[c64-caps] supportsFoveation=\(capabilities.supportsFoveation, privacy: .public) layouts(\(layoutMode, privacy: .public))=\(layoutNames, privacy: .public) colorFormats=\(colorNames, privacy: .public) depthFormats=\(depthNames, privacy: .public) defaultRenderQuality=\(defaultQuality, privacy: .public) maxRenderQuality=\(maxQuality, privacy: .public)")
     }
 
     static func name(_ layout: LayerRenderer.Layout) -> String {

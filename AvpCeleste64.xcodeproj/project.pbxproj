@@ -6,8 +6,26 @@
 	objectVersion = 110;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		7331B4BD30839B6B00F4FDA9 /* SDL3.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 7331B4BC30839B6B00F4FDA9 /* SDL3.framework */; };
+		7331B4BE30839B6B00F4FDA9 /* SDL3.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 7331B4BC30839B6B00F4FDA9 /* SDL3.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+/* End PBXBuildFile section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		7331B4BF30839B6B00F4FDA9 /* Embed Frameworks */ = {
+			isa = PBXCopyFilesBuildPhase;
+			dstPath = "";
+			dstSubfolder = Frameworks;
+			files = (
+				7331B4BE30839B6B00F4FDA9 /* SDL3.framework in Embed Frameworks */,
+			);
+			name = "Embed Frameworks";
+		};
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXFileReference section */
 		732C7D38307EBA4C00C3A31D /* Mountain64.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Mountain64.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		7331B4BC30839B6B00F4FDA9 /* SDL3.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SDL3.framework; path = Frameworks/SDL3.framework; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -15,6 +33,15 @@
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Info.plist,
+			);
+			target = 732C7D37307EBA4C00C3A31D /* AvpCeleste64 */;
+		};
+		7331B4BA30839A6200F4FDA9 /* Exceptions for "sdl-gpu-kit" folder in "AvpCeleste64" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				mac/kit_main.c,
+				"mac/run-mac.sh",
+				"tools/msl-amplification.sh",
 			);
 			target = 732C7D37307EBA4C00C3A31D /* AvpCeleste64 */;
 		};
@@ -29,12 +56,22 @@
 			path = AvpCeleste64;
 			sourceTree = "<group>";
 		};
+		7331B4B5308398B200F4FDA9 /* sdl-gpu-kit */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				7331B4BA30839A6200F4FDA9 /* Exceptions for "sdl-gpu-kit" folder in "AvpCeleste64" target */,
+			);
+			name = "sdl-gpu-kit";
+			path = "Kit/sdl-gpu-kit";
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		732C7D35307EBA4C00C3A31D /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			files = (
+				7331B4BD30839B6B00F4FDA9 /* SDL3.framework in Frameworks */,
 			);
 		};
 /* End PBXFrameworksBuildPhase section */
@@ -44,6 +81,8 @@
 			isa = PBXGroup;
 			children = (
 				732C7D3A307EBA4C00C3A31D /* AvpCeleste64 */,
+				7331B4B5308398B200F4FDA9 /* sdl-gpu-kit */,
+				7331B4BB30839B6B00F4FDA9 /* Frameworks */,
 				732C7D39307EBA4C00C3A31D /* Products */,
 			);
 			sourceTree = "<group>";
@@ -56,6 +95,14 @@
 			name = Products;
 			sourceTree = "<group>";
 		};
+		7331B4BB30839B6B00F4FDA9 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				7331B4BC30839B6B00F4FDA9 /* SDL3.framework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -66,11 +113,13 @@
 				732C7D34307EBA4C00C3A31D /* Sources */,
 				732C7D35307EBA4C00C3A31D /* Frameworks */,
 				732C7D36307EBA4C00C3A31D /* Resources */,
+				7331B4BF30839B6B00F4FDA9 /* Embed Frameworks */,
 			);
 			buildRules = (
 			);
 			fileSystemSynchronizedGroups = (
 				732C7D3A307EBA4C00C3A31D /* AvpCeleste64 */,
+				7331B4B5308398B200F4FDA9 /* sdl-gpu-kit */,
 			);
 			name = AvpCeleste64;
 			productName = Mountain64;
@@ -137,8 +186,15 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = DTG5LF3YCH;
 				ENABLE_PREVIEWS = YES;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(SRCROOT)/Frameworks",
+					"$(PROJECT_DIR)/Frameworks",
+				);
 				GENERATE_INFOPLIST_FILE = YES;
+				HEADER_SEARCH_PATHS = "$(SRCROOT)/Kit/sdl-gpu-kit";
 				INFOPLIST_FILE = "$(TARGET_NAME)/Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = "Mountain 64";
+				INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -151,6 +207,7 @@
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
 				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = "$(SRCROOT)/AvpCeleste64/Kit-Bridging-Header.h";
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = 7;
@@ -166,8 +223,15 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = DTG5LF3YCH;
 				ENABLE_PREVIEWS = YES;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(SRCROOT)/Frameworks",
+					"$(PROJECT_DIR)/Frameworks",
+				);
 				GENERATE_INFOPLIST_FILE = YES;
+				HEADER_SEARCH_PATHS = "$(SRCROOT)/Kit/sdl-gpu-kit";
 				INFOPLIST_FILE = "$(TARGET_NAME)/Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = "Mountain 64";
+				INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -180,6 +244,7 @@
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
 				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = "$(SRCROOT)/AvpCeleste64/Kit-Bridging-Header.h";
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = 7;

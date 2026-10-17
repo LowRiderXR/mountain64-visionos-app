@@ -40,7 +40,19 @@ struct ContentView: View {
         }
         .padding(40)
         .frame(minWidth: 520)
+        .task {
+            // Kit-Stufe K0: SDL_GPU-Testszene einmal beim Start, hinter C64_KIT=1 (Standard aus).
+            // Läuft auf dem Hauptthread, sobald das Fenster steht; der ImmersiveSpace ist noch zu.
+            guard KitProbe.isRequested, !kitProbeRan else { return }
+            kitProbeRan = true
+            let result = KitProbe.runOnce()
+            appModel.statusLine = result == 0
+                ? "Kit-Testszene (SDL_GPU, SDL main) bestanden. Siehe Log [c64-kit]."
+                : "Kit-Testszene fehlgeschlagen in Schritt \(result). Siehe Log [c64-kit]."
+        }
     }
+
+    @State private var kitProbeRan = false
 
     private func openSpace() async {
         appModel.immersiveState = .opening

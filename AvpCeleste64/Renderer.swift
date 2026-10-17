@@ -88,6 +88,24 @@ nonisolated final class Renderer: @unchecked Sendable {
     private var postStallBlock = 0
     private var postStallSamples: [(index: UInt64, relative: Double, late: Double)] = []
 
+    // Foveation-Sonde (P0b): Beschreibung der Drawables und Rate Maps, Fingerabdruck pro Sekunde.
+    private var lastFovSignature: String?
+    private var lastFovLog: CFAbsoluteTime = 0
+    private var lastFovPrint: String?
+    private var lastFovPrintTime: CFAbsoluteTime = 0
+    private var renderQualityApplied = false
+
+    // Testszene (P0b-2, Schalter C64_TESTSCENE=1): lazy erzeugt auf dem Render-Thread.
+    private let testSceneRequested = TestScene.isRequested
+    private var testScene: TestScene?
+    private var testSceneFailed = false
+
+    // Fehlerstatus der Command Buffer. Der Completed-Handler läuft auf einem Metal-Thread,
+    // deshalb hinter einem Lock; der Render-Thread liest und nullt den Zähler pro Sekunde.
+    private let cmdErrLock = NSLock()
+    private var cmdErrCount = 0
+    private var lastCmdErrLog: CFAbsoluteTime = 0
+
     private init(layerRenderer: LayerRenderer, appModel: AppModel) {
         self.layerRenderer = layerRenderer
         self.appModel = appModel
@@ -147,6 +165,12 @@ nonisolated final class Renderer: @unchecked Sendable {
             + " color=\(ProbeContext.name(config.colorFormat))"
             + " depth=\(ProbeContext.name(config.depthFormat))"
             + " foveation=\(config.isFoveationEnabled)"
+            + " maxRenderQuality=\(config.maxRenderQuality.rawValue)"
+            + " renderQuality=\(layerRenderer.renderQuality.rawValue)"
+            + " C64_RENDERQUALITY=\(ProbeContext.environment("C64_RENDERQUALITY"))"
+            + " C64_LAYOUT=\(ProbeContext.environment("C64_LAYOUT"))"
+            + " C64_TESTSCENE=\(ProbeContext.environment(TestScene.environmentKey))"
+            + " C64_KIT=\(ProbeContext.environment(KitProbe.environmentKey))"
             + " views=\(layerRenderer.properties.viewCount)"
             + " stallSeq=\(stallPlan.isEmpty ? "-" : stallPlan.map { String(Int($0 * 1000)) }.joined(separator: ","))"
         c64Record(line)
@@ -257,6 +281,9 @@ nonisolated final class Renderer: @unchecked Sendable {
         // abgeschlossen (encodePresent, commit, endSubmission).
 
         logTargetsIfChanged(drawables)
+        applyRenderQualityIfRequested()
+        logFoveationIfChanged(drawables)
+        logFoveationFingerprint(drawables)
 
         guard let commandBuffer = commandQueue.makeCommandBuffer() else {
             // Ohne Command Buffer lässt sich nichts präsentieren; Submission trotzdem beenden,
@@ -271,6 +298,10 @@ nonisolated final class Renderer: @unchecked Sendable {
             return
         }
         commandBuffer.label = "c64-frame \(frame.frameIndex)"
+        let frameIndexForHandler = frame.frameIndex
+        commandBuffer.addCompletedHandler { [weak self] buffer in
+            self?.noteCommandBufferCompletion(buffer, frameIndex: frameIndexForHandler)
+        }
 
         // Pose und Timing aus dem Drawable für das eingebaute Display (target builtIn,
         // drawable.h:36-44, Vorrang laut drawable.h:428-429), Rückfall auf das erste.
@@ -286,7 +317,7 @@ nonisolated final class Renderer: @unchecked Sendable {
             if let anchor = deviceAnchor {
                 drawable.deviceAnchor = anchor
             }
-            encodeClearPasses(drawable: drawable, commandBuffer: commandBuffer)
+            encodeClearPasses(drawable: drawable, commandBuffer: commandBuffer, deviceAnchor: deviceAnchor)
         }
 
         // Verspätung unmittelbar vor encodePresent: Präsentationszeit minus jetzt, gleiche
@@ -330,33 +361,248 @@ nonisolated final class Renderer: @unchecked Sendable {
         c64Record("[c64-targets] drawables=\(drawables.count) \(names) frames=\(totalFrames)")
     }
 
-    /// Pro Auge ein Pass auf die eigene Textur (Layout .dedicated): Farbe Schwarz, Alpha 1,
-    /// Tiefe 0 (Reverse-Z, 0 = fern). Keine Draws; der Clear ist der Inhalt.
-    private func encodeClearPasses(drawable: LayerRenderer.Drawable, commandBuffer: MTLCommandBuffer) {
-        for (viewIndex, view) in drawable.views.enumerated() {
-            let map = view.textureMap
-            let descriptor = MTLRenderPassDescriptor()
+    /// Clear-Pässe: Farbe Schwarz, Alpha 1, Tiefe 0 (Reverse-Z, 0 = fern). Keine Draws; der
+    /// Clear ist der Inhalt.
+    ///
+    /// Layout .layered (Standard): **ein** Pass über alle Schichten mit
+    /// `renderTargetArrayLength = Anzahl Views` (MTLRenderPass.h:321-324, „number of active
+    /// layers“), Slice = kleinster sliceIndex der Views. Das ist der Pass, den Celeste später
+    /// mit Vertex Amplification fährt; Clear und Rate Map laufen damit genau dort, wo sie im
+    /// Port laufen werden. Rate Map: `rasterizationRateMaps[0]`, eine Map mit `layerCount ==
+    /// Schichten` (Metal-Doku MTLRasterizationRateMap: „one layer map for each layer“; Vice City
+    /// misst für .layered eine Map mit layerCount 2, angle-stereo-multiview.md Abschnitt 2).
+    ///
+    /// Layout .dedicated oder .shared: ein Pass pro View auf dessen Textur. Rate Map: die Map
+    /// mit dem Index der View-Textur, falls so viele Maps vorhanden sind, sonst die erste.
+    /// Dass bei .dedicated eine Map pro Textur kommt, ist nicht dokumentiert; [c64-fov] loggt
+    /// die tatsächliche Anzahl.
+    private func encodeClearPasses(drawable: LayerRenderer.Drawable, commandBuffer: MTLCommandBuffer, deviceAnchor: DeviceAnchor?) {
+        let scene = currentTestScene()
+        let maps = layerRenderer.configuration.isFoveationEnabled ? drawable.rasterizationRateMaps : []
+        let views = drawable.views
+        guard let firstView = views.first else { return }
+        let isArray = drawable.colorTextures[firstView.textureMap.textureIndex].textureType == .type2DArray
 
-            let color = descriptor.colorAttachments[0]!
-            color.texture = drawable.colorTextures[map.textureIndex]
-            color.slice = map.sliceIndex
-            color.loadAction = .clear
-            color.storeAction = .store
-            color.clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
+        if isArray, views.count > 1 {
+            let baseSlice = views.map { $0.textureMap.sliceIndex }.min() ?? 0
+            let descriptor = Self.clearDescriptor(color: drawable.colorTextures[firstView.textureMap.textureIndex],
+                                                  depth: drawable.depthTextures[firstView.textureMap.textureIndex],
+                                                  slice: baseSlice)
+            descriptor.renderTargetArrayLength = views.count
+            if let map = maps.first {
+                descriptor.rasterizationRateMap = map
+            }
+            guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: descriptor) else {
+                c64Log.error("[c64-frame] makeRenderCommandEncoder lieferte nil (layered, \(views.count) Schichten)")
+                return
+            }
+            encoder.label = "c64-clear layered x\(views.count)"
+            // Testszene: beide Schichten in einem Draw, Amplification 2, Map bleibt am Pass.
+            scene?.encode(encoder: encoder, drawable: drawable, views: Array(views.prefix(2)),
+                          viewIndices: Array(0..<min(views.count, 2)), deviceAnchor: deviceAnchor)
+            encoder.endEncoding()
+            return
+        }
 
-            let depth = descriptor.depthAttachment!
-            depth.texture = drawable.depthTextures[map.textureIndex]
-            depth.slice = map.sliceIndex
-            depth.loadAction = .clear
-            depth.storeAction = .store
-            depth.clearDepth = 0.0
-
+        for (viewIndex, view) in views.enumerated() {
+            let textureMap = view.textureMap
+            let descriptor = Self.clearDescriptor(color: drawable.colorTextures[textureMap.textureIndex],
+                                                  depth: drawable.depthTextures[textureMap.textureIndex],
+                                                  slice: textureMap.sliceIndex)
+            if !maps.isEmpty {
+                descriptor.rasterizationRateMap = textureMap.textureIndex < maps.count ? maps[textureMap.textureIndex] : maps[0]
+            }
             guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: descriptor) else {
                 c64Log.error("[c64-frame] makeRenderCommandEncoder lieferte nil (view \(viewIndex))")
                 continue
             }
             encoder.label = "c64-clear view\(viewIndex)"
+            // Testszene bei .dedicated/.shared: pro View ein Draw ohne Amplification.
+            scene?.encode(encoder: encoder, drawable: drawable, views: [view],
+                          viewIndices: [viewIndex], deviceAnchor: deviceAnchor)
             encoder.endEncoding()
+        }
+    }
+
+    /// Testszene beim ersten Bedarf erzeugen (Render-Thread); scheitert sie, bleibt sie aus.
+    private func currentTestScene() -> TestScene? {
+        guard testSceneRequested, !testSceneFailed else { return nil }
+        if let testScene { return testScene }
+        let config = layerRenderer.configuration
+        guard let mode = TestScene.requestedMode else { return nil }
+        let scene = TestScene(mode: mode,
+                              device: device,
+                              colorFormat: config.colorFormat,
+                              depthFormat: config.depthFormat,
+                              viewCount: layerRenderer.properties.viewCount)
+        if scene == nil { testSceneFailed = true }
+        testScene = scene
+        return scene
+    }
+
+    private static func clearDescriptor(color colorTexture: MTLTexture, depth depthTexture: MTLTexture, slice: Int) -> MTLRenderPassDescriptor {
+        let descriptor = MTLRenderPassDescriptor()
+        let color = descriptor.colorAttachments[0]!
+        color.texture = colorTexture
+        color.slice = slice
+        color.loadAction = .clear
+        color.storeAction = .store
+        color.clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
+
+        let depth = descriptor.depthAttachment!
+        depth.texture = depthTexture
+        depth.slice = slice
+        depth.loadAction = .clear
+        depth.storeAction = .store
+        depth.clearDepth = 0.0
+        return descriptor
+    }
+
+    // MARK: Foveation-Sonde (P0b)
+
+    /// Render Quality zur Laufzeit setzen, einmal nach dem ersten Drawable. Nur mit Foveation
+    /// und gesetzter Obergrenze; der Wert wird auf maxRenderQuality geklemmt, weil ein höherer
+    /// Wert CompositorServices abbrechen lässt (Plattformwissen, Vice City [vc-rq]).
+    private func applyRenderQualityIfRequested() {
+        guard !renderQualityApplied else { return }
+        renderQualityApplied = true
+        guard let wanted = ProcessInfo.processInfo.environment["C64_RENDERQUALITY"].flatMap({ Float($0) }) else { return }
+        let config = layerRenderer.configuration
+        guard config.isFoveationEnabled else {
+            c64Record("[c64-rq] C64_RENDERQUALITY=\(wanted) ignoriert: Foveation aus")
+            return
+        }
+        let before = layerRenderer.renderQuality.rawValue
+        let clamped = max(0.0, min(config.maxRenderQuality.rawValue, wanted))
+        layerRenderer.renderQuality = LayerRenderer.RenderQuality(clamped)
+        c64Record(String(format: "[c64-rq] renderQuality %.3f -> %.3f (gewünscht %.3f, max %.3f); Übergang dauert laut Header einige Frames",
+                         before, layerRenderer.renderQuality.rawValue, wanted, config.maxRenderQuality.rawValue))
+    }
+
+    /// [c64-fov]: Rate Maps (Anzahl, layerCount, screenSize, physicalSize pro Layer,
+    /// Granularität) und pro View die Farb- und Tiefentextur (Typ, Grösse, arrayLength,
+    /// Format), Viewport, Slice- und Texturindex. Beim ersten Frame und bei jeder Änderung,
+    /// höchstens einmal pro Sekunde (während eines Render-Quality-Übergangs ändert sich die
+    /// physicalSize über mehrere Frames).
+    private func logFoveationIfChanged(_ drawables: [LayerRenderer.Drawable]) {
+        guard let drawable = drawables.first(where: { $0.target == .builtIn }) ?? drawables.first else { return }
+        let maps = drawable.rasterizationRateMaps
+        var parts: [String] = []
+        for (index, map) in maps.enumerated() {
+            let layers = (0..<map.layerCount).map { layer -> String in
+                let p = map.physicalSize(layer: layer)
+                return "L\(layer)=\(p.width)x\(p.height)"
+            }.joined(separator: ",")
+            let g = map.physicalGranularity
+            parts.append("map\(index){layers=\(map.layerCount) screen=\(map.screenSize.width)x\(map.screenSize.height) physical[\(layers)] granularity=\(g.width)x\(g.height)}")
+        }
+        for (index, view) in drawable.views.enumerated() {
+            let tm = view.textureMap
+            let c = drawable.colorTextures[tm.textureIndex]
+            let d = drawable.depthTextures[tm.textureIndex]
+            let vp = tm.viewport
+            parts.append("view\(index){tex=\(tm.textureIndex) slice=\(tm.sliceIndex) viewport=\(Int(vp.originX)),\(Int(vp.originY)) \(Int(vp.width))x\(Int(vp.height)) color=\(Self.name(c.textureType)) \(c.width)x\(c.height) arr=\(c.arrayLength) \(ProbeContext.name(c.pixelFormat)) depth=\(Self.name(d.textureType)) \(d.width)x\(d.height) arr=\(d.arrayLength) \(ProbeContext.name(d.pixelFormat))}")
+        }
+        let signature = parts.joined(separator: " ")
+        guard signature != lastFovSignature else { return }
+        let now = CFAbsoluteTimeGetCurrent()
+        guard lastFovSignature == nil || now - lastFovLog >= 1.0 else { return }
+        lastFovSignature = signature
+        lastFovLog = now
+        c64Record(String(format: "[c64-fov] maps=%d renderQuality=%.3f frames=%llu %@",
+                         maps.count, layerRenderer.renderQuality.rawValue, totalFrames, signature))
+    }
+
+    /// [c64-fovprint] einmal pro Sekunde: physische Koordinaten zu fünf festen Bildschirmpunkten
+    /// (Mitte, 25 % links, rechts, oben, unten) pro Map und Layer, gerundet. Ändert sich der
+    /// Abdruck gegenüber der Vorsekunde, zusätzlich [c64-fovchange]. Konstanter Abdruck bei
+    /// bewegtem Blick = feste Foveation; wandernder Abdruck = blickabhängig.
+    private func logFoveationFingerprint(_ drawables: [LayerRenderer.Drawable]) {
+        let now = CFAbsoluteTimeGetCurrent()
+        guard now - lastFovPrintTime >= 1.0 else { return }
+        lastFovPrintTime = now
+        guard layerRenderer.configuration.isFoveationEnabled,
+              let drawable = drawables.first(where: { $0.target == .builtIn }) ?? drawables.first else { return }
+        let maps = drawable.rasterizationRateMaps
+        guard !maps.isEmpty else { return }
+
+        var parts: [String] = []
+        for (index, map) in maps.enumerated() {
+            let w = Float(map.screenSize.width), h = Float(map.screenSize.height)
+            let points: [(String, Float, Float)] = [
+                ("c", w * 0.5, h * 0.5), ("l", w * 0.25, h * 0.5), ("r", w * 0.75, h * 0.5),
+                ("u", w * 0.5, h * 0.25), ("d", w * 0.5, h * 0.75),
+            ]
+            for layer in 0..<map.layerCount {
+                let coords = points.map { name, x, y -> String in
+                    let p = map.physicalCoordinates(screenCoordinates: MTLCoordinate2D(x: x, y: y), layer: layer)
+                    return "\(name)=\(Int(p.x.rounded())),\(Int(p.y.rounded()))"
+                }.joined(separator: " ")
+                parts.append("map\(index)L\(layer)[\(coords)]")
+            }
+        }
+        let print = parts.joined(separator: " ")
+        c64Log.notice("[c64-fovprint] \(print, privacy: .public)")
+        if let last = lastFovPrint, last != print {
+            c64Record("[c64-fovchange] frames=\(totalFrames) neu: \(print)")
+        }
+        lastFovPrint = print
+    }
+
+    // MARK: Command-Buffer-Fehler
+
+    /// Completed-Handler (Metal-Thread): Status ungleich .completed oder gesetzter Fehler zählt
+    /// als Fehler; Zeile [c64-cmderr] höchstens einmal pro Sekunde, auch in die Datei.
+    private func noteCommandBufferCompletion(_ buffer: MTLCommandBuffer, frameIndex: UInt64) {
+        let status = buffer.status
+        let error = buffer.error
+        guard status != .completed || error != nil else { return }
+
+        cmdErrLock.lock()
+        cmdErrCount += 1
+        let now = CFAbsoluteTimeGetCurrent()
+        let shouldLog = now - lastCmdErrLog >= 1.0
+        if shouldLog { lastCmdErrLog = now }
+        cmdErrLock.unlock()
+
+        guard shouldLog else { return }
+        let errorText: String
+        if let error = error as NSError? {
+            errorText = "\(error.domain) code=\(error.code) \(error.localizedDescription)"
+        } else {
+            errorText = "-"
+        }
+        c64Record("[c64-cmderr] frame=\(frameIndex) status=\(Self.name(status)) error=\(errorText)")
+    }
+
+    /// Zähler lesen und nullen (Render-Thread, einmal pro Sekunde).
+    private func takeCommandBufferErrors() -> Int {
+        cmdErrLock.lock()
+        defer { cmdErrLock.unlock() }
+        let count = cmdErrCount
+        cmdErrCount = 0
+        return count
+    }
+
+    private static func name(_ status: MTLCommandBufferStatus) -> String {
+        switch status {
+        case .notEnqueued: return "notEnqueued"
+        case .enqueued: return "enqueued"
+        case .committed: return "committed"
+        case .scheduled: return "scheduled"
+        case .completed: return "completed"
+        case .error: return "error"
+        @unknown default: return "status\(status.rawValue)"
+        }
+    }
+
+    private static func name(_ type: MTLTextureType) -> String {
+        switch type {
+        case .type2D: return "type2D"
+        case .type2DArray: return "type2DArray"
+        case .type2DMultisample: return "type2DMultisample"
+        case .type2DMultisampleArray: return "type2DMultisampleArray"
+        default: return "textureType\(type.rawValue)"
         }
     }
 
@@ -398,11 +644,12 @@ nonisolated final class Renderer: @unchecked Sendable {
             let wallMin = statWallCount > 0 ? statWallMin : 0
             let lateMin = statFrames > 0 ? statLateMin : 0
             let lateMax = statFrames > 0 ? statLateMax : 0
-            let line = String(format: "[c64-frame] frames=%d interval(ms) min=%.2f mean=%.2f max=%.2f rate=%.1f Hz wall(ms) min=%.2f mean=%.2f max=%.1f late(ms) min=%+.1f max=%+.1f lateFrames=%d gaps=%llu drawables min=%d/max=%d cancelled=%d noCmdBuf=%d noAnchor=%d thermal=%@ total=%llu",
+            let cmdErr = takeCommandBufferErrors()
+            let line = String(format: "[c64-frame] frames=%d interval(ms) min=%.2f mean=%.2f max=%.2f rate=%.1f Hz wall(ms) min=%.2f mean=%.2f max=%.1f late(ms) min=%+.1f max=%+.1f lateFrames=%d gaps=%llu drawables min=%d/max=%d cancelled=%d noCmdBuf=%d cmdErr=%d noAnchor=%d thermal=%@ total=%llu",
                               statFrames, minMs, mean * 1000, statIntervalMax * 1000, hz,
                               wallMin * 1000, wallMean * 1000, statWallMax * 1000,
                               lateMin * 1000, lateMax * 1000, statLateFrames,
-                              statGaps, drawablesMin, statDrawablesMax, statCancelled, statNoCmdBuf,
+                              statGaps, drawablesMin, statDrawablesMax, statCancelled, statNoCmdBuf, cmdErr,
                               statFramesWithoutAnchor, ProbeContext.thermalState, totalFrames)
             c64Log.notice("\(line, privacy: .public)")
             Task { @MainActor [appModel] in
