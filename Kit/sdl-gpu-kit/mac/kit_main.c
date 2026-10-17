@@ -17,6 +17,7 @@
 #include "../kit_testscene.h"
 #include "../kit_testscene_metal.h"
 #include "../kit_import.h"
+#include "../kit_multiview.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -38,6 +39,7 @@ int main(int argc, char **argv)
     bool want_device = false;
     bool want_queue = false;
     bool want_import = false;
+    bool want_multiview = false;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--debug") == 0) {
             opt.debug_mode = true;
@@ -51,18 +53,21 @@ int main(int argc, char **argv)
             want_queue = true;
         } else if (strcmp(argv[i], "--import") == 0) {
             want_import = true;
+        } else if (strcmp(argv[i], "--multiview") == 0) {
+            want_multiview = true;
         } else {
             fprintf(stderr, "Unbekanntes Argument: %s\n", argv[i]);
             return 64;
         }
     }
 
-    if (want_import) {
-        /* K1b: SDL_Init hier wie am Gerät im Hauptthread, Selbsttest mit eigenen Objekten. */
+    if (want_import || want_multiview) {
+        /* K1b/K2: SDL_Init hier wie am Gerät im Hauptthread, Selbsttest mit eigenen Objekten. */
         if (!kit_testscene_init_sdl(log_stdout, NULL)) {
             return 1;
         }
-        const int rc = kit_import_selftest(log_stdout, NULL, opt.debug_mode);
+        const int rc = want_multiview ? kit_multiview_selftest(log_stdout, NULL)
+                                      : kit_import_selftest(log_stdout, NULL, opt.debug_mode);
         kit_testscene_quit_sdl();
         return rc;
     }

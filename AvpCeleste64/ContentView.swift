@@ -66,6 +66,11 @@ struct ContentView: View {
                 appModel.statusLine = ok
                     ? "SDL initialisiert (Hauptthread). Import-Test: SDL löscht im ImmersiveSpace jedes Frame dunkelblau."
                     : "SDL_Init fehlgeschlagen, siehe Log [c64-kit]."
+            case .multiview:
+                let ok = KitProbe.initSDL(for: mode)
+                appModel.statusLine = ok
+                    ? "SDL initialisiert (Hauptthread). Multiview-Test: SDL zeichnet im ImmersiveSpace das Schachbrett für beide Augen in einem Pass."
+                    : "SDL_Init fehlgeschlagen, siehe Log [c64-kit]."
             }
         }
     }

@@ -80,7 +80,7 @@
          </EnvironmentVariable>
          <EnvironmentVariable
             key = "C64_KIT"
-            value = "import"
+            value = "multiview"
             isEnabled = "NO">
          </EnvironmentVariable>
          <EnvironmentVariable

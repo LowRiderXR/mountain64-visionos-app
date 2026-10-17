@@ -6,6 +6,7 @@
 # Aufruf: Kit/sdl-gpu-kit/mac/run-mac.sh [--debug] [--size N] [--inject | --inject-device | --inject-queue | --import]
 #   --inject*: K1a, Baustein P1 (geteiltes MTLDevice/MTLCommandQueue), siehe kit_main.c.
 #   --import:  K1b, Baustein P3 (externe 2D-Array-Texturen, Clear pro Schicht, Rücklesen, Negativtests).
+#   --multiview: K2, Baustein P6 (ein Pass mit view_count 2, ein Draw, Rücklesen pro Schicht, Negativtests).
 
 set -euo pipefail
 
@@ -25,6 +26,7 @@ clang -std=gnu17 -Wall -Wextra -O1 -fobjc-arc \
     -o "$BIN" \
     "$ROOT/Kit/sdl-gpu-kit/kit_testscene.c" \
     "$ROOT/Kit/sdl-gpu-kit/kit_import.c" \
+    "$ROOT/Kit/sdl-gpu-kit/kit_multiview.c" \
     "$ROOT/Kit/sdl-gpu-kit/kit_testscene_metal.m" \
     "$ROOT/Kit/sdl-gpu-kit/mac/kit_main.c" \
     -L "$MAC_DIR" -lSDL3 \

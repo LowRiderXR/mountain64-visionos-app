@@ -11,5 +11,6 @@
 
 #include "kit_testscene.h"
 #include "kit_import.h"
+#include "kit_multiview.h"
 
 #endif /* Kit_Bridging_Header_h */

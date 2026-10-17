@@ -39,9 +39,21 @@ if [[ "$sigs" -ne 1 ]]; then
     exit 3
 fi
 
+# SPIRV-Cross legt bei aktivem ViewIndex zusätzlich `uint gl_Layer [[render_target_array_index]]`
+# in die Ausgabestruktur (Instanz-Emulation), ohne sie zu beschreiben. Unter Amplification wählt
+# das View-Mapping die Schicht; der unbenutzte Ausgang verlangt sonst inputPrimitiveTopology an
+# der Pipeline («Vertex shader writes render_target_array_index but inputPrimitiveTopology is
+# not specified», Metal auf macOS). Er wird entfernt, wenn der Shader ihn nirgends zuweist.
+STRIP_LAYER=0
+if grep -qE '^\s*uint gl_Layer \[\[render_target_array_index\]\];' "$IN" && ! grep -qE 'gl_Layer\s*=' "$IN"; then
+    STRIP_LAYER=1
+fi
+
 perl -pe '
     # Fixup-Zeile entfernen
     if (/^\s*const u?int gl_ViewIndex = 0;\s*$/) { $_ = ""; next; }
+    # Unbenutzten Layer-Ausgang entfernen
+    if ('"$STRIP_LAYER"' && /^\s*uint gl_Layer \[\[render_target_array_index\]\];\s*$/) { $_ = ""; next; }
     # Parameter anhängen (leere Parameterliste berücksichtigen)
     if (/^vertex [^(]+\(/) {
         if (/\(\)\s*$/) { s/\(\)\s*$/('"$VIEW_TYPE"' gl_ViewIndex [[amplification_id]])\n/; }
@@ -49,5 +61,5 @@ perl -pe '
     }
 ' "$IN" > "$OUT"
 
-echo "OK: $OUT (Parameter: $VIEW_TYPE gl_ViewIndex [[amplification_id]])"
+echo "OK: $OUT (Parameter: $VIEW_TYPE gl_ViewIndex [[amplification_id]]; gl_Layer-Ausgang entfernt: $STRIP_LAYER)"
 diff -u "$IN" "$OUT" || true

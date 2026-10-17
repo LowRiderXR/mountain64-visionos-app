@@ -111,6 +111,10 @@ nonisolated final class Renderer: @unchecked Sendable {
     // jedem Frame die Drawable-Texturen importiert und löscht. Nur vom Render-Thread berührt.
     private var kitImportSession: OpaquePointer?
     private var kitImportFailed = false       // Sitzung liess sich nicht anlegen: Gerüst löscht selbst
+    // Kit-Stufe K2 (C64_KIT=multiview): SDL_GPU-Device mit Pipeline view_count 2; pro Frame Import
+    // und ein Pass mit Clear und Schachbrett für beide Augen. Nur vom Render-Thread berührt.
+    private var kitMultiviewSession: OpaquePointer?
+    private var kitQuad = KitQuadPlacement()
     private var statSdlFail = 0               // Frames im Fenster, in denen SDL scheiterte
     private var sdlFailTotal = 0
     private var footprintStartMB = 0.0        // phys_footprint beim Start der Schleife, in jedem Modus
@@ -221,6 +225,12 @@ nonisolated final class Renderer: @unchecked Sendable {
             kitImportFailed = (kitImportSession == nil)
             c64Record("[c64-kit] import session=\(kitImportSession == nil ? "FEHLT, Gerüst löscht selbst" : "ok")")
         }
+        // Kit-Stufe K2 (C64_KIT=multiview): Sitzung mit Pipeline view_count 2 für die ganze Schleife.
+        if KitProbe.mode == .multiview {
+            kitMultiviewSession = KitProbe.beginMultiview(device: device, queue: commandQueue)
+            kitImportFailed = (kitMultiviewSession == nil)
+            c64Record("[c64-kit] multiview session=\(kitMultiviewSession == nil ? "FEHLT, Gerüst löscht selbst" : "ok")")
+        }
 
         while true {
             switch layerRenderer.state {
@@ -294,8 +304,34 @@ nonisolated final class Renderer: @unchecked Sendable {
         return true
     }
 
+    /// K2: Farb- und Tiefentextur importieren, ein Pass mit view_count 2: Clear (dunkelblau, Tiefe
+    /// aus importClearDepth) und das Schachbrett für beide Augen, Matrizen wie TestScene
+    /// (Projektion · inverse(deviceAnchor · view.transform)). Ohne Pose nur der Clear.
+    private func kitMultiviewFrame(drawable: LayerRenderer.Drawable, deviceAnchor: DeviceAnchor?) -> Bool {
+        guard let session = kitMultiviewSession, let firstView = drawable.views.first else { return false }
+        let index = firstView.textureMap.textureIndex
+        var quad: (center: SIMD3<Float>, right: SIMD3<Float>, up: SIMD3<Float>)?
+        var matrices = [matrix_identity_float4x4, matrix_identity_float4x4]
+        if let deviceAnchor {
+            let anchorTransform = deviceAnchor.originFromAnchorTransform
+            kitQuad.update(anchor: anchorTransform)
+            quad = kitQuad.quad
+            for (slot, view) in drawable.views.prefix(2).enumerated() {
+                matrices[slot] = drawable.computeProjection(viewIndex: slot) * (anchorTransform * view.transform).inverse
+            }
+        }
+        return KitProbe.multiviewFrame(session: session,
+                                       color: drawable.colorTextures[index],
+                                       depth: drawable.depthTextures[index],
+                                       rgba: Self.importClearColor,
+                                       depthClear: importClearDepth,
+                                       quad: quad,
+                                       viewProjection: matrices)
+    }
+
     /// Zusammenfassung am Ende der Schleife, in jedem Modus: Frames, cmdErr, Speicher am Anfang und
-    /// Ende. Im Modus import zusätzlich sdlFail, Wrapper und Rotation; die Sitzung wird geschlossen.
+    /// Ende. Im Modus import zusätzlich sdlFail, Wrapper und Rotation; im Modus multiview Pässe und
+    /// Draws pro Frame und die CPU-Zeit des SDL-Teils; die Sitzung wird geschlossen.
     private func logLoopSummary() {
         var kitPart = ""
         if let session = kitImportSession {
@@ -305,6 +341,15 @@ nonisolated final class Renderer: @unchecked Sendable {
                              stats.distinct_color, stats.distinct_depth)
             KitProbe.endImport(session: session)
             kitImportSession = nil
+        } else if let session = kitMultiviewSession {
+            let stats = KitProbe.takeMultiviewStats(session: session)
+            let frames = max(stats.frames_total, 1)
+            let meanMs = stats.total_sum_ms / Double(frames)
+            kitPart = String(format: " sdlFail=%d passesPerFrame=%.2f drawsPerFrame=%.2f sdl(ms) mean=%.3f max=%.3f wrappers created=%lu released=%lu",
+                             sdlFailTotal, Double(stats.passes_total) / Double(frames), Double(stats.draws_total) / Double(frames),
+                             meanMs, stats.total_max_ms, stats.wrappers_created, stats.wrappers_released)
+            KitProbe.endMultiview(session: session)
+            kitMultiviewSession = nil
         } else if kitImportFailed {
             kitPart = " sdlFail=\(sdlFailTotal) session=none"
         }
@@ -460,7 +505,13 @@ nonisolated final class Renderer: @unchecked Sendable {
             // der Gerüst-Buffer mit nur encodePresent. Scheitert SDL, zählt das Gerüst sdlFail und
             // löscht selbst: Schwarz mit Tiefe 0, also bewusst «leer» für den Compositor (Alpha > 0
             // und Tiefe > 0 wären Inhalt); der Frame wird trotzdem präsentiert.
-            if kitImportSession != nil || kitImportFailed {
+            if kitMultiviewSession != nil {
+                if kitMultiviewFrame(drawable: drawable, deviceAnchor: deviceAnchor) {
+                    continue
+                }
+                statSdlFail += 1
+                sdlFailTotal += 1
+            } else if kitImportSession != nil || kitImportFailed {
                 if kitImportClear(drawable: drawable) {
                     // Diagnose: hat SDL in diesem Frame zurückgelesen, liest das Gerüst vor dem
                     // Present dieselbe Stelle (erste Textur des Drawables).
@@ -818,6 +869,10 @@ nonisolated final class Renderer: @unchecked Sendable {
                 let stats = KitProbe.takeImportStats(session: session)
                 let meanMs = stats.frames > 0 ? stats.sum_ms / Double(stats.frames) : 0
                 line += String(format: " sdl(ms) mean=%.3f max=%.3f sdlFrames=%u sdlFail=%d", meanMs, stats.max_ms, stats.frames, statSdlFail)
+            } else if let session = kitMultiviewSession {
+                let stats = KitProbe.takeMultiviewStats(session: session)
+                let meanMs = stats.frames > 0 ? stats.sum_ms / Double(stats.frames) : 0
+                line += String(format: " sdl(ms) mean=%.3f max=%.3f sdlFrames=%u sdlFail=%d passes=%lu draws=%lu", meanMs, stats.max_ms, stats.frames, statSdlFail, stats.passes_total, stats.draws_total)
             } else if kitImportFailed {
                 line += " sdl=none sdlFail=\(statSdlFail)"
             }
