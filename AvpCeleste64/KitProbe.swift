@@ -10,8 +10,11 @@
 //                    Device des Layer-Renderers und der Queue des Gerüsts, einmal vor dem ersten
 //                    Frame. Danach läuft die Renderschleife normal weiter; SDL bleibt
 //                    initialisiert (SDL_Quit vom Render-Thread wäre auf UIKit nicht sauber).
+//    C64_KIT=import  Stufe K1b (Baustein P3): wie inject beim Fenster; im ImmersiveSpace
+//                    importiert SDL in jedem Frame Farb- und Tiefentextur des Drawables und
+//                    löscht beide Schichten (dunkelblau, Tiefe 0); das Gerüst präsentiert.
 //
-//  Prüft Risiko R1 (K0) und die Besitzregeln von P1 (K1a) aus
+//  Prüft Risiko R1 (K0), die Besitzregeln von P1 (K1a) und den Texturimport P3 (K1b) aus
 //  Docs/celeste64/sdl-gpu-kit-analyse.md. Jede Zeile der Szene geht ins Unified Log und in die
 //  Fortschrittsdatei.
 //
@@ -30,6 +33,7 @@ nonisolated enum KitProbe {
     enum Mode: String {
         case basic = "1"
         case inject = "inject"
+        case `import` = "import"
     }
 
     static var mode: Mode? {
@@ -43,9 +47,14 @@ nonisolated enum KitProbe {
     }
 
     /// C-Callback ohne Kontext: schreibt jede Zeile der Szene ins Log und in die Datei.
-    private static let logLine: kit_log_fn = { line, _ in
+    static let logLine: kit_log_fn = { line, _ in
         guard let line else { return }
         c64Record(String(cString: line))
+    }
+
+    /// Unretained Zeiger auf ein Metal-Objekt für die C-Seite; der Host bleibt Besitzer.
+    static func pointer(_ object: AnyObject) -> UnsafeMutableRawPointer {
+        Unmanaged.passUnretained(object).toOpaque()
     }
 
     /// K0: alles im Hauptthread, SDL erzeugt Device und Queue selbst.
@@ -66,11 +75,11 @@ nonisolated enum KitProbe {
         return result
     }
 
-    /// K1a, Teil 1 (Hauptthread, beim Fenster): nur SDL_SetMainReady + SDL_Init(VIDEO).
+    /// K1a/K1b, Teil 1 (Hauptthread, beim Fenster): nur SDL_SetMainReady + SDL_Init(VIDEO).
     @MainActor
     @discardableResult
-    static func initSDLForInject() -> Bool {
-        c64Record("[c64-kit] start mode=inject thread=main step=init-only")
+    static func initSDL(for mode: Mode) -> Bool {
+        c64Record("[c64-kit] start mode=\(mode.rawValue) thread=main step=init-only")
         return kit_testscene_init_sdl(logLine, nil)
     }
 
@@ -79,8 +88,8 @@ nonisolated enum KitProbe {
     /// sie in SDL_DestroyGPUDevice ab. Der Host bleibt Besitzer.
     @discardableResult
     static func runInject(device: MTLDevice, queue: MTLCommandQueue) -> Int32 {
-        let devicePointer = Unmanaged.passUnretained(device as AnyObject).toOpaque()
-        let queuePointer = Unmanaged.passUnretained(queue as AnyObject).toOpaque()
+        let devicePointer = pointer(device as AnyObject)
+        let queuePointer = pointer(queue as AnyObject)
         c64Record("[c64-kit] start mode=inject thread=\(Thread.current.name ?? "?") host.device=\(devicePointer) host.queue=\(queuePointer) device=\"\(device.name)\" queue=\"\(queue.label ?? "-")\" debug=\(debugRequested)")
         var options = kit_testscene_options()
         options.init_sdl = false
@@ -95,5 +104,47 @@ nonisolated enum KitProbe {
         let ms = (CFAbsoluteTimeGetCurrent() - began) * 1000
         c64Record("[c64-kit] end mode=inject result=\(result) totalMs=\(String(format: "%.1f", ms))")
         return result
+    }
+
+    /// K1b: Import-Sitzung auf Device und Queue des Hosts (SDL_GPU-Device lebt bis `endImport`).
+    /// Diagnose-Schalter: C64_KIT_WAIT=1 (auf SDLs Fence warten, bevor das Gerüst committet),
+    /// C64_KIT_VERIFY=1 (alle 90 Frames den Mittelpixel der importierten Farbtextur zurücklesen).
+    static func beginImport(device: MTLDevice, queue: MTLCommandQueue) -> OpaquePointer? {
+        let environment = ProcessInfo.processInfo.environment
+        let wait = environment["C64_KIT_WAIT"] == "1"
+        let verify = environment["C64_KIT_VERIFY"] == "1"
+        c64Record("[c64-kit] start mode=import thread=\(Thread.current.name ?? "?") device=\"\(device.name)\" queue=\"\(queue.label ?? "-")\" C64_KIT_WAIT=\(wait) C64_KIT_VERIFY=\(verify)")
+        guard let session = kit_import_begin(pointer(device as AnyObject), pointer(queue as AnyObject), logLine, nil) else {
+            return nil
+        }
+        if wait || verify {
+            kit_import_set_diagnostics(session, wait, verify ? 90 : 0)
+        }
+        return session
+    }
+
+    /// K1b: Farb- und Tiefentextur eines Frames importieren und alle Schichten löschen.
+    static func importClear(session: OpaquePointer, color: MTLTexture, depth: MTLTexture,
+                            rgba: (Float, Float, Float, Float), depthValue: Float) -> Bool {
+        var components: [Float] = [rgba.0, rgba.1, rgba.2, rgba.3]
+        return kit_import_clear_frame(session, pointer(color as AnyObject), pointer(depth as AnyObject),
+                                      &components, depthValue)
+    }
+
+    /// K1b-Diagnose: Pixel, den SDL in diesem Frame nach seinem Clear zurückgelesen hat (b,g,r,a).
+    static func lastVerify(session: OpaquePointer) -> [UInt8]? {
+        var bytes: [UInt8] = [0, 0, 0, 0]
+        let present = bytes.withUnsafeMutableBufferPointer { kit_import_last_verify(session, $0.baseAddress) }
+        return present ? bytes : nil
+    }
+
+    static func takeImportStats(session: OpaquePointer) -> kit_import_stats {
+        var stats = kit_import_stats()
+        kit_import_take_stats(session, &stats)
+        return stats
+    }
+
+    static func endImport(session: OpaquePointer) {
+        kit_import_end(session)
     }
 }

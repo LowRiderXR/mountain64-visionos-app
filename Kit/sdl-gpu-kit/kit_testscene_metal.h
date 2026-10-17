@@ -1,9 +1,9 @@
 /*
- * kit_testscene_metal.h — Metal-Hilfen für die Kit-Testszene (K1a, Baustein P1).
+ * kit_testscene_metal.h — Metal-Hilfen für die Kit-Testszene (K1a P1, K1b P3).
  *
- * Für Hosts ohne Objective-C (die C-Kommandozeile auf dem Mac) und für die Prüfung nach
- * SDL_DestroyGPUDevice. Zeiger sind id<MTLDevice> / id<MTLCommandQueue> als void*.
- * Implementierung in kit_testscene_metal.m (ARC).
+ * Für Hosts ohne Objective-C (die C-Kommandozeile auf dem Mac) und für Prüfungen nach
+ * SDL_DestroyGPUDevice. Zeiger sind id<MTLDevice> / id<MTLCommandQueue> / id<MTLTexture> als
+ * void*. Implementierung in kit_testscene_metal.m (ARC).
  */
 
 #ifndef KIT_TESTSCENE_METAL_H
@@ -33,6 +33,31 @@ const char *kit_metal_device_name(void *device, char *buf, size_t cap);
  * Status MTLCommandBufferStatusCompleted ist und kein Fehler anliegt; status_out erhält eine
  * kurze Beschreibung (Status, Fehlertext). */
 bool kit_metal_hostqueue_check(void *queue, char *status_out, size_t cap);
+
+/* Beschreibung eines MTLTexture für den Import (K1b). sdl_type / sdl_format sind Werte der
+ * SDL-Enums SDL_GPUTextureType / SDL_GPUTextureFormat; sdl_type < 0 bzw.
+ * sdl_format == SDL_GPU_TEXTUREFORMAT_INVALID (0), wenn es kein Gegenstück gibt. */
+typedef struct kit_metal_texture_desc {
+    int sdl_type;
+    int sdl_format;
+    unsigned width;
+    unsigned height;
+    unsigned layers;      /* arrayLength */
+    unsigned levels;      /* mipmapLevelCount */
+    unsigned samples;     /* sampleCount */
+    unsigned long usage;  /* MTLTextureUsage */
+    int mtl_pixel_format; /* Rohwert MTLPixelFormat */
+    int mtl_type;         /* Rohwert MTLTextureType */
+} kit_metal_texture_desc;
+
+bool kit_metal_texture_info(void *texture, kit_metal_texture_desc *out);
+
+/* 2D-Array-Textur anlegen (StorageMode private, Usage RenderTarget): Farbe bgra8Unorm_srgb oder
+ * Tiefe depth32Float. +1 zurückgegeben, Freigabe über kit_metal_release_texture. */
+bool kit_metal_create_array_texture(void *device, bool depth, unsigned width, unsigned height,
+                                    unsigned layers, void **texture_out);
+
+void kit_metal_release_texture(void *texture);
 
 #ifdef __cplusplus
 }

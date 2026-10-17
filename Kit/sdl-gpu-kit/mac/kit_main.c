@@ -1,19 +1,22 @@
 /*
- * kit_main.c — Kommandozeilenlauf der Kit-Testszene auf macOS (Stufen K0 und K1a).
+ * kit_main.c — Kommandozeilenlauf der Kit-Testszene auf macOS (Stufen K0, K1a, K1b).
  *
- * Gleicher Code wie am Gerät (kit_testscene.c), gegen Frameworks/macos/libSDL3.0.dylib aus
- * scripts/build-sdl3.sh. Ausgabe: die [c64-kit]-Zeilen auf stdout, Exit-Code = gescheiterter
- * Schritt (0 = bestanden). Aufruf über run-mac.sh.
+ * Gleicher Code wie am Gerät (kit_testscene.c, kit_import.c), gegen
+ * Frameworks/macos/libSDL3.0.dylib aus scripts/build-sdl3.sh. Ausgabe: die [c64-kit]-Zeilen
+ * auf stdout, Exit-Code = gescheiterter Schritt (0 = bestanden). Aufruf über run-mac.sh.
  *
- *   kit-testscene [--debug] [--size N] [--inject | --inject-device | --inject-queue]
+ *   kit-testscene [--debug] [--size N] [--inject | --inject-device | --inject-queue | --import]
  *
- *   --inject         Device und Queue des Runners an SDL geben (P1, beide Properties)
+ *   --inject         K1a: Device und Queue des Runners an SDL geben (P1, beide Properties)
  *   --inject-device  nur das Device; SDL legt eine eigene Queue darauf an
  *   --inject-queue   nur die Queue; SDL übernimmt deren Device
+ *   --import         K1b: eigene 2D-Array-Texturen importieren (P3), pro Schicht löschen,
+ *                    zurücklesen, Negativtests
  */
 
 #include "../kit_testscene.h"
 #include "../kit_testscene_metal.h"
+#include "../kit_import.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -34,6 +37,7 @@ int main(int argc, char **argv)
     opt.quit_sdl = true;
     bool want_device = false;
     bool want_queue = false;
+    bool want_import = false;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--debug") == 0) {
             opt.debug_mode = true;
@@ -45,10 +49,22 @@ int main(int argc, char **argv)
             want_device = true;
         } else if (strcmp(argv[i], "--inject-queue") == 0) {
             want_queue = true;
+        } else if (strcmp(argv[i], "--import") == 0) {
+            want_import = true;
         } else {
             fprintf(stderr, "Unbekanntes Argument: %s\n", argv[i]);
             return 64;
         }
+    }
+
+    if (want_import) {
+        /* K1b: SDL_Init hier wie am Gerät im Hauptthread, Selbsttest mit eigenen Objekten. */
+        if (!kit_testscene_init_sdl(log_stdout, NULL)) {
+            return 1;
+        }
+        const int rc = kit_import_selftest(log_stdout, NULL, opt.debug_mode);
+        kit_testscene_quit_sdl();
+        return rc;
     }
 
     void *host_device = NULL;
@@ -63,8 +79,6 @@ int main(int argc, char **argv)
                kit_metal_device_name(host_device, name, sizeof(name)),
                (want_device && want_queue) ? "device+queue" : (want_device ? "device" : "queue"));
         opt.metal_device = want_device ? host_device : NULL;
-        /* Bei --inject-device bleibt die Host-Queue trotzdem gesetzt? Nein: die Szene prüft die
-         * Host-Queue nach dem Zerstören nur, wenn sie eingespeist wurde. */
         opt.metal_queue = want_queue ? host_queue : NULL;
     }
 

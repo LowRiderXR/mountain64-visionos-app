@@ -10,5 +10,6 @@
 #define Kit_Bridging_Header_h
 
 #include "kit_testscene.h"
+#include "kit_import.h"
 
 #endif /* Kit_Bridging_Header_h */

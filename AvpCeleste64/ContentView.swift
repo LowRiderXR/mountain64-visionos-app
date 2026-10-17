@@ -46,6 +46,8 @@ struct ContentView: View {
             //   =1       K0: ganze Szene hier, SDL erzeugt Device und Queue selbst, SDL_Quit am Ende.
             //   =inject  K1a: hier nur SDL_Init; die Szene läuft im Render-Thread vor dem ersten
             //            Frame mit Device und Queue des Gerüsts (Renderer.runKitInjectProbe).
+            //   =import  K1b: hier nur SDL_Init; im ImmersiveSpace löscht SDL jedes Frame die
+            //            importierten Drawable-Texturen (Renderer, kitImportSession).
             guard let mode = KitProbe.mode, !kitProbeRan else { return }
             kitProbeRan = true
             switch mode {
@@ -55,9 +57,14 @@ struct ContentView: View {
                     ? "Kit-Testszene (SDL_GPU, SDL main) bestanden. Siehe Log [c64-kit]."
                     : "Kit-Testszene fehlgeschlagen in Schritt \(result). Siehe Log [c64-kit]."
             case .inject:
-                let ok = KitProbe.initSDLForInject()
+                let ok = KitProbe.initSDL(for: mode)
                 appModel.statusLine = ok
                     ? "SDL initialisiert (Hauptthread). Inject-Test läuft beim Öffnen des ImmersiveSpace vor dem ersten Frame."
+                    : "SDL_Init fehlgeschlagen, siehe Log [c64-kit]."
+            case .import:
+                let ok = KitProbe.initSDL(for: mode)
+                appModel.statusLine = ok
+                    ? "SDL initialisiert (Hauptthread). Import-Test: SDL löscht im ImmersiveSpace jedes Frame dunkelblau."
                     : "SDL_Init fehlgeschlagen, siehe Log [c64-kit]."
             }
         }

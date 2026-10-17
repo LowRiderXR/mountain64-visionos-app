@@ -104,7 +104,29 @@ nonisolated final class Renderer: @unchecked Sendable {
     // deshalb hinter einem Lock; der Render-Thread liest und nullt den Zähler pro Sekunde.
     private let cmdErrLock = NSLock()
     private var cmdErrCount = 0
+    private var cmdErrTotal = 0
     private var lastCmdErrLog: CFAbsoluteTime = 0
+
+    // Kit-Stufe K1b (C64_KIT=import): SDL_GPU-Device auf Device und Queue dieses Gerüsts, das in
+    // jedem Frame die Drawable-Texturen importiert und löscht. Nur vom Render-Thread berührt.
+    private var kitImportSession: OpaquePointer?
+    private var kitImportFailed = false       // Sitzung liess sich nicht anlegen: Gerüst löscht selbst
+    private var statSdlFail = 0               // Frames im Fenster, in denen SDL scheiterte
+    private var sdlFailTotal = 0
+    private var footprintStartMB = 0.0        // phys_footprint beim Start der Schleife, in jedem Modus
+    // K1b-Diagnose (C64_KIT_VERIFY): SDLs Rücklesewert dieses Frames und die Drawable-Textur,
+    // aus der das Gerüst unmittelbar vor encodePresent dieselbe Stelle nochmals liest.
+    private var pendingVerify: (afterSDL: [UInt8], color: MTLTexture)?
+    private var cancelledTotal = 0
+    private static let importClearColor: (Float, Float, Float, Float) = (0.0, 0.1, 0.3, 1.0)
+    // K1b: Tiefenwert des SDL-Clears. Der Compositor zeigt nur Pixel mit Alpha > 0 und Tiefe > 0
+    // (WWDC24, Session 10092 «Render Metal with passthrough in visionOS»; Messung K1b am
+    // 2026-10-17: Tiefe 0 schwarz, Tiefe 0.001 blau, bei identischem Texturinhalt). Reverse-Z mit
+    // unendlicher Far-Ebene: Abstand = near / Tiefe; 0.001 bei near 0,1 m sind 100 m, also ein
+    // «vorhandener» leerer Hintergrund. C64_KIT_DEPTH=0 bleibt als Gegenprobe möglich.
+    private static let importClearDepthDefault: Float = 0.001
+    private let importClearDepth: Float = Float(ProcessInfo.processInfo.environment["C64_KIT_DEPTH"] ?? "") ?? Renderer.importClearDepthDefault
+    private var importDepthLogged = false
 
     private init(layerRenderer: LayerRenderer, appModel: AppModel) {
         self.layerRenderer = layerRenderer
@@ -171,6 +193,7 @@ nonisolated final class Renderer: @unchecked Sendable {
             + " C64_LAYOUT=\(ProbeContext.environment("C64_LAYOUT"))"
             + " C64_TESTSCENE=\(ProbeContext.environment(TestScene.environmentKey))"
             + " C64_KIT=\(ProbeContext.environment(KitProbe.environmentKey))"
+            + " C64_KIT_DEPTH=\(ProbeContext.environment("C64_KIT_DEPTH"))"
             + " views=\(layerRenderer.properties.viewCount)"
             + " stallSeq=\(stallPlan.isEmpty ? "-" : stallPlan.map { String(Int($0 * 1000)) }.joined(separator: ","))"
         c64Record(line)
@@ -189,11 +212,21 @@ nonisolated final class Renderer: @unchecked Sendable {
         if KitProbe.mode == .inject {
             runKitInjectProbe()
         }
+        // Speicher am Anfang der Schleife, in jedem Modus (Vergleichswert für die Zusammenfassung).
+        footprintStartMB = ProbeContext.physFootprintMB
+        c64Record("[c64-loop] footprintStartMB=\(String(format: "%.1f", footprintStartMB)) C64_KIT=\(ProbeContext.environment(KitProbe.environmentKey))")
+        // Kit-Stufe K1b (C64_KIT=import): Sitzung für die ganze Schleife.
+        if KitProbe.mode == .import {
+            kitImportSession = KitProbe.beginImport(device: device, queue: commandQueue)
+            kitImportFailed = (kitImportSession == nil)
+            c64Record("[c64-kit] import session=\(kitImportSession == nil ? "FEHLT, Gerüst löscht selbst" : "ok")")
+        }
 
         while true {
             switch layerRenderer.state {
             case .invalidated:
                 c64Record("[c64-loop] Layer invalidiert, Schleife endet nach \(totalFrames) Frames")
+                logLoopSummary()
                 Task { @MainActor [appModel] in
                     appModel.immersiveState = .closed
                     appModel.statusLine = "ImmersiveSpace geschlossen."
@@ -227,6 +260,93 @@ nonisolated final class Renderer: @unchecked Sendable {
             appModel.statusLine = result == 0
                 ? "Inject-Test (P1, geteiltes Device und Queue) bestanden. Renderschleife läuft, siehe [c64-kit] und [c64-frame]."
                 : "Inject-Test fehlgeschlagen in Schritt \(result). Siehe Log [c64-kit]."
+        }
+    }
+
+    /// K1b: SDL importiert Farb- und Tiefentextur des Drawables und löscht alle Schichten
+    /// (dunkelblau, Tiefe 0). SDL committet seinen Command Buffer dabei synchron auf der geteilten
+    /// Queue; der Gerüst-Buffer mit encodePresent wird danach committet und läuft deshalb danach
+    /// (MTLCommandQueue ist seriell, Ausführung in Commit-Reihenfolge). false: das Gerüst löscht
+    /// selbst und präsentiert trotzdem.
+    private func kitImportClear(drawable: LayerRenderer.Drawable) -> Bool {
+        guard let session = kitImportSession else { return false }
+        // Bei .layered nutzen alle Views dieselbe Array-Textur; bei .dedicated eine pro View.
+        var textureIndices: [Int] = []
+        for view in drawable.views where !textureIndices.contains(view.textureMap.textureIndex) {
+            textureIndices.append(view.textureMap.textureIndex)
+        }
+        if !importDepthLogged {
+            importDepthLogged = true
+            // depthRange: x = far, y = near, in Metern (drawable.h:317-320).
+            let range = drawable.depthRange
+            let distance = importClearDepth > 0 ? String(format: "%.1f m", range.y / importClearDepth) : "unendlich (kein Inhalt für den Compositor)"
+            c64Record(String(format: "[c64-kit] step=import-depth clear=%.4f depthRange far=%.3f near=%.3f entspricht Abstand %@",
+                             importClearDepth, range.x, range.y, distance))
+        }
+        for index in textureIndices {
+            let ok = KitProbe.importClear(session: session,
+                                          color: drawable.colorTextures[index],
+                                          depth: drawable.depthTextures[index],
+                                          rgba: Self.importClearColor,
+                                          depthValue: importClearDepth)
+            if !ok { return false }
+        }
+        return true
+    }
+
+    /// Zusammenfassung am Ende der Schleife, in jedem Modus: Frames, cmdErr, Speicher am Anfang und
+    /// Ende. Im Modus import zusätzlich sdlFail, Wrapper und Rotation; die Sitzung wird geschlossen.
+    private func logLoopSummary() {
+        var kitPart = ""
+        if let session = kitImportSession {
+            let stats = KitProbe.takeImportStats(session: session)
+            kitPart = String(format: " sdlFail=%d wrappers created=%lu released=%lu distinctColor=%u distinctDepth=%u",
+                             sdlFailTotal, stats.wrappers_created, stats.wrappers_released,
+                             stats.distinct_color, stats.distinct_depth)
+            KitProbe.endImport(session: session)
+            kitImportSession = nil
+        } else if kitImportFailed {
+            kitPart = " sdlFail=\(sdlFailTotal) session=none"
+        }
+        let footprintEnd = ProbeContext.physFootprintMB
+        cmdErrLock.lock()
+        let cmdErr = cmdErrTotal
+        cmdErrLock.unlock()
+        let mode = KitProbe.mode?.rawValue ?? "-"
+        c64Record(String(format: "[c64-loop] summary C64_KIT=%@ frames=%llu cancelled=%d cmdErr=%d footprintMB start=%.1f end=%.1f delta=%+.1f%@",
+                         mode, totalFrames, cancelledTotal, cmdErr,
+                         footprintStartMB, footprintEnd, footprintEnd - footprintStartMB, kitPart))
+    }
+
+    /// K1b-Diagnose: dieselbe Stelle, die SDL nach seinem Clear zurückgelesen hat, im Gerüst-Buffer
+    /// unmittelbar vor encodePresent nochmals lesen (Blit des Mittelpixels von Schicht 0 und 1 in
+    /// einen geteilten Puffer); geloggt im Completed-Handler mit beiden Werten.
+    private func encodeVerifyBeforePresent(commandBuffer: MTLCommandBuffer, frameIndex: UInt64) {
+        guard let pending = pendingVerify else { return }
+        pendingVerify = nil
+        let texture = pending.color
+        guard let buffer = device.makeBuffer(length: 64, options: .storageModeShared),
+              let blit = commandBuffer.makeBlitCommandEncoder() else {
+            c64Record("[c64-kit] step=present-verify frame=\(frameIndex) blit nicht möglich")
+            return
+        }
+        blit.label = "c64-verify-before-present"
+        let origin = MTLOrigin(x: texture.width / 2, y: texture.height / 2, z: 0)
+        let size = MTLSize(width: 1, height: 1, depth: 1)
+        let slices = min(texture.arrayLength, 2)
+        for slice in 0..<slices {
+            blit.copy(from: texture, sourceSlice: slice, sourceLevel: 0, sourceOrigin: origin, sourceSize: size,
+                      to: buffer, destinationOffset: slice * 16, destinationBytesPerRow: 4, destinationBytesPerImage: 4)
+        }
+        blit.endEncoding()
+        let afterSDL = pending.afterSDL
+        let textureID = ObjectIdentifier(texture)
+        commandBuffer.addCompletedHandler { buffer_ in
+            let p = buffer.contents().assumingMemoryBound(to: UInt8.self)
+            let layer0 = "\(p[0]),\(p[1]),\(p[2]),\(p[3])"
+            let layer1 = slices > 1 ? "\(p[16]),\(p[17]),\(p[18]),\(p[19])" : "-"
+            let sdl = "\(afterSDL[0]),\(afterSDL[1]),\(afterSDL[2]),\(afterSDL[3])"
+            c64Record("[c64-kit] step=present-verify frame=\(frameIndex) afterSDL(layer0)=\(sdl) beforePresent layer0=\(layer0) layer1=\(layer1) (b,g,r,a) status=\(Self.name(buffer_.status)) texture=\(textureID)")
         }
     }
 
@@ -293,6 +413,7 @@ nonisolated final class Renderer: @unchecked Sendable {
             // "If array count is 0, the frame has been cancelled as there are no drawables to
             // draw to and the frame should be discarded and is invalid to access."
             statCancelled += 1
+            cancelledTotal += 1
             return
         }
         // Ab dem ersten erhaltenen Drawable ist der Frame in Arbeit und wird in jedem Fall
@@ -335,12 +456,32 @@ nonisolated final class Renderer: @unchecked Sendable {
             if let anchor = deviceAnchor {
                 drawable.deviceAnchor = anchor
             }
+            // K1b: zuerst SDL (importiert und löscht, committet auf der geteilten Queue), dann
+            // der Gerüst-Buffer mit nur encodePresent. Scheitert SDL, zählt das Gerüst sdlFail und
+            // löscht selbst: Schwarz mit Tiefe 0, also bewusst «leer» für den Compositor (Alpha > 0
+            // und Tiefe > 0 wären Inhalt); der Frame wird trotzdem präsentiert.
+            if kitImportSession != nil || kitImportFailed {
+                if kitImportClear(drawable: drawable) {
+                    // Diagnose: hat SDL in diesem Frame zurückgelesen, liest das Gerüst vor dem
+                    // Present dieselbe Stelle (erste Textur des Drawables).
+                    if let session = kitImportSession, let afterSDL = KitProbe.lastVerify(session: session),
+                       let firstView = drawable.views.first {
+                        pendingVerify = (afterSDL, drawable.colorTextures[firstView.textureMap.textureIndex])
+                    }
+                    continue
+                }
+                statSdlFail += 1
+                sdlFailTotal += 1
+            }
             encodeClearPasses(drawable: drawable, commandBuffer: commandBuffer, deviceAnchor: deviceAnchor)
         }
 
         // Verspätung unmittelbar vor encodePresent: Präsentationszeit minus jetzt, gleiche
         // Zeitbasis. Negativ heisst, der Frame wird nach seiner Präsentationszeit abgeschickt.
         let lateness = presentationTime - LayerRenderer.Clock().now.timeInterval
+
+        // K1b-Diagnose: Rücklesen im Gerüst-Buffer, als letzter Inhalt vor encodePresent.
+        encodeVerifyBeforePresent(commandBuffer: commandBuffer, frameIndex: frame.frameIndex)
 
         // encodePresent zuletzt, nach allen Inhalts-Pässen.
         for drawable in drawables {
@@ -379,8 +520,10 @@ nonisolated final class Renderer: @unchecked Sendable {
         c64Record("[c64-targets] drawables=\(drawables.count) \(names) frames=\(totalFrames)")
     }
 
-    /// Clear-Pässe: Farbe Schwarz, Alpha 1, Tiefe 0 (Reverse-Z, 0 = fern). Keine Draws; der
-    /// Clear ist der Inhalt.
+    /// Clear-Pässe: Farbe Schwarz, Alpha 1, Tiefe 0 (Reverse-Z, 0 = fern). Keine Draws. Für den
+    /// Compositor ist das bewusst «leer»: Er zeigt nur Pixel mit Alpha > 0 und Tiefe > 0 (WWDC24,
+    /// Session 10092; Messung K1b), Tiefe 0 heisst unendlich fern. Das Gerüst präsentiert damit
+    /// einen gültigen Frame ohne Inhalt; das ist auch der Rückfall, wenn SDL im Modus import scheitert.
     ///
     /// Layout .layered (Standard): **ein** Pass über alle Schichten mit
     /// `renderTargetArrayLength = Anzahl Views` (MTLRenderPass.h:321-324, „number of active
@@ -578,6 +721,7 @@ nonisolated final class Renderer: @unchecked Sendable {
 
         cmdErrLock.lock()
         cmdErrCount += 1
+        cmdErrTotal += 1
         let now = CFAbsoluteTimeGetCurrent()
         let shouldLog = now - lastCmdErrLog >= 1.0
         if shouldLog { lastCmdErrLog = now }
@@ -663,12 +807,21 @@ nonisolated final class Renderer: @unchecked Sendable {
             let lateMin = statFrames > 0 ? statLateMin : 0
             let lateMax = statFrames > 0 ? statLateMax : 0
             let cmdErr = takeCommandBufferErrors()
-            let line = String(format: "[c64-frame] frames=%d interval(ms) min=%.2f mean=%.2f max=%.2f rate=%.1f Hz wall(ms) min=%.2f mean=%.2f max=%.1f late(ms) min=%+.1f max=%+.1f lateFrames=%d gaps=%llu drawables min=%d/max=%d cancelled=%d noCmdBuf=%d cmdErr=%d noAnchor=%d thermal=%@ total=%llu",
+            var line = String(format: "[c64-frame] frames=%d interval(ms) min=%.2f mean=%.2f max=%.2f rate=%.1f Hz wall(ms) min=%.2f mean=%.2f max=%.1f late(ms) min=%+.1f max=%+.1f lateFrames=%d gaps=%llu drawables min=%d/max=%d cancelled=%d noCmdBuf=%d cmdErr=%d noAnchor=%d thermal=%@ total=%llu",
                               statFrames, minMs, mean * 1000, statIntervalMax * 1000, hz,
                               wallMin * 1000, wallMean * 1000, statWallMax * 1000,
                               lateMin * 1000, lateMax * 1000, statLateFrames,
                               statGaps, drawablesMin, statDrawablesMax, statCancelled, statNoCmdBuf, cmdErr,
                               statFramesWithoutAnchor, ProbeContext.thermalState, totalFrames)
+            // K1b: CPU-Zeit des SDL-Teils (Wrapper, Pässe, Submit, Release) im Fenster.
+            if let session = kitImportSession {
+                let stats = KitProbe.takeImportStats(session: session)
+                let meanMs = stats.frames > 0 ? stats.sum_ms / Double(stats.frames) : 0
+                line += String(format: " sdl(ms) mean=%.3f max=%.3f sdlFrames=%u sdlFail=%d", meanMs, stats.max_ms, stats.frames, statSdlFail)
+            } else if kitImportFailed {
+                line += " sdl=none sdlFail=\(statSdlFail)"
+            }
+            statSdlFail = 0
             c64Log.notice("\(line, privacy: .public)")
             Task { @MainActor [appModel] in
                 appModel.frameLine = line

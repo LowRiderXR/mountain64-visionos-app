@@ -80,7 +80,22 @@
          </EnvironmentVariable>
          <EnvironmentVariable
             key = "C64_KIT"
+            value = "import"
+            isEnabled = "NO">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "C64_KIT_VERIFY"
             value = "1"
+            isEnabled = "NO">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "C64_KIT_WAIT"
+            value = "1"
+            isEnabled = "NO">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "C64_KIT_DEPTH"
+            value = "0"
             isEnabled = "NO">
          </EnvironmentVariable>
       </EnvironmentVariables>
