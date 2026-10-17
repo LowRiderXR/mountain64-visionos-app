@@ -184,6 +184,12 @@ nonisolated final class Renderer: @unchecked Sendable {
         nextStallAt = start + Self.stallSpacing
         c64Record("[c64-loop] Renderschleife gestartet, thread=\(Thread.current.name ?? "?")")
 
+        // Kit-Stufe K1a (C64_KIT=inject): einmal vor dem ersten Frame, mit dem Device des
+        // Layer-Renderers und der Queue dieses Gerüsts. SDL_Init lief im Hauptthread (ContentView).
+        if KitProbe.mode == .inject {
+            runKitInjectProbe()
+        }
+
         while true {
             switch layerRenderer.state {
             case .invalidated:
@@ -209,6 +215,18 @@ nonisolated final class Renderer: @unchecked Sendable {
             autoreleasepool {
                 renderFrame()
             }
+        }
+    }
+
+    /// K1a: SDL_GPU-Device auf dem geteilten Device und der geteilten Queue, dann Clear-Pass mit
+    /// Rücklesen, SDL_DestroyGPUDevice und ein leerer Command Buffer auf der Host-Queue. Danach
+    /// läuft die Schleife normal weiter; die ersten [c64-frame]-Zeilen zeigen, ob cmdErr=0 bleibt.
+    private func runKitInjectProbe() {
+        let result = KitProbe.runInject(device: device, queue: commandQueue)
+        Task { @MainActor [appModel] in
+            appModel.statusLine = result == 0
+                ? "Inject-Test (P1, geteiltes Device und Queue) bestanden. Renderschleife läuft, siehe [c64-kit] und [c64-frame]."
+                : "Inject-Test fehlgeschlagen in Schritt \(result). Siehe Log [c64-kit]."
         }
     }
 

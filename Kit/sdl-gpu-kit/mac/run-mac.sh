@@ -3,7 +3,8 @@
 #
 # Voraussetzung: scripts/build-sdl3.sh macos (legt Frameworks/macos/libSDL3.0.dylib an).
 # Header kommen aus dem Fork (SDL_SRC/include), derselbe Stand wie die dylib.
-# Aufruf: Kit/sdl-gpu-kit/mac/run-mac.sh [--debug] [--size N]
+# Aufruf: Kit/sdl-gpu-kit/mac/run-mac.sh [--debug] [--size N] [--inject | --inject-device | --inject-queue]
+#   --inject*: K1a, Baustein P1 (geteiltes MTLDevice/MTLCommandQueue), siehe kit_main.c.
 
 set -euo pipefail
 
@@ -17,12 +18,15 @@ BIN="$BUILD_DIR/kit-testscene"
 mkdir -p "$BUILD_DIR"
 
 echo "== Kompilieren"
-clang -std=gnu17 -Wall -Wextra -O1 \
+# C-Dateien als C, die Metal-Hilfen als Objective-C mit ARC (wie das SDL-Backend selbst).
+clang -std=gnu17 -Wall -Wextra -O1 -fobjc-arc \
     -I "$SDL_SRC/include" \
     -o "$BIN" \
     "$ROOT/Kit/sdl-gpu-kit/kit_testscene.c" \
+    "$ROOT/Kit/sdl-gpu-kit/kit_testscene_metal.m" \
     "$ROOT/Kit/sdl-gpu-kit/mac/kit_main.c" \
     -L "$MAC_DIR" -lSDL3 \
+    -framework Metal -framework Foundation \
     -Wl,-rpath,"$MAC_DIR"
 echo "-- gelinkte SDL:"; otool -L "$BIN" | grep SDL3
 

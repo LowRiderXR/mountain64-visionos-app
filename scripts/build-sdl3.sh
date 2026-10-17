@@ -1,19 +1,24 @@
 #!/bin/zsh
 # build-sdl3.sh — SDL3 aus dem Fork sdl-visionos auf dem gepinnten Commit bauen.
 #
-# Kit-Stufe K0 (Docs/celeste64/sdl-gpu-kit-analyse.md, Abschnitte 2 und 6):
-# Quelle ist SDL main, gepinnt auf 4cfdb71ee (Zweig visionos-kit im Fork), nicht die
-# NuGet-dylib 3.4.12 des Mac-Referenzbuilds. Zwei Ziele:
+# Kit-Stufen K0/K1 (Docs/celeste64/sdl-gpu-kit-analyse.md, Abschnitte 2 und 6, «Ergebnis K0»):
+# Quelle ist der Arbeitsstand des Zweigs visionos-kit im Fork, der auf SDL main 4cfdb71ee
+# (Pin) aufsetzt; nicht die NuGet-dylib 3.4.12 des Mac-Referenzbuilds. Zwei Ziele:
 #   visionOS  Xcode-Projekt des Repos → Frameworks/SDL3.framework (Gerät, arm64)
 #   macOS     CMake                   → Frameworks/macos/libSDL3.0.dylib (+ Symlink libSDL3.dylib)
-# Beide mit SDL_VENDOR_INFO, damit SDL_GetRevision() den Pin nennt ([c64-kit]-Zeile).
+# Beide mit SDL_VENDOR_INFO, damit SDL_GetRevision() Pin, eigenen Commit und uncommittete
+# Änderungen nennt ([c64-kit]-Zeile), Form: visionos-kit-<pin>+<head>[-dirty].
+#
+# Pin-Prüfung: der Pin muss Vorfahr von HEAD sein (git merge-base --is-ancestor); ein Rebase
+# auf einen anderen SDL-Stand verlangt einen neuen Pin hier und einen Referenzlauf (Entscheidung
+# 1 in der Kit-Analyse). Der Zweig muss visionos-kit sein (SDL_ALLOW_BRANCH=1 hebt das auf).
 #
 # Abgeleitet aus dotnet-visionos-test/build-sdl3.sh (ProbeApp). Unterschiede: Quelle ist der
-# Fork auf dem Pin (kein Klon), Headers bleiben im Framework (die C-Testszene braucht sie),
-# zweites Ziel macOS, Kontrolle der XR-Symbole, die nur in main existieren.
+# Fork (kein Klon), Headers bleiben im Framework (die C-Testszene braucht sie), zweites Ziel
+# macOS, Kontrolle der XR-Symbole, die nur in main existieren.
 #
 # Aufruf: scripts/build-sdl3.sh [xros|macos|all]   (Standard: all)
-# Umgebung: SDL_SRC (Fork-Pfad), SDL_PIN (Commit), SDL_ALLOW_DIRTY=1 (Patches im Baum erlauben).
+# Umgebung: SDL_SRC (Fork-Pfad), SDL_PIN (Basis-Commit), SDL_ALLOW_BRANCH=1.
 
 set -euo pipefail
 
@@ -33,17 +38,29 @@ step "Quelle"
 [[ -d "$SDL_SRC/.git" ]] || fail "Fork nicht gefunden: $SDL_SRC"
 HEAD_FULL="$(git -C "$SDL_SRC" rev-parse HEAD)"
 HEAD_SHORT="$(git -C "$SDL_SRC" rev-parse --short=9 HEAD)"
+PIN_SHORT="$(git -C "$SDL_SRC" rev-parse --short=9 "$SDL_PIN" 2>/dev/null)" || fail "Pin $SDL_PIN ist im Fork nicht bekannt"
 BRANCH="$(git -C "$SDL_SRC" branch --show-current)"
-[[ "$HEAD_FULL" == "$SDL_PIN" ]] || fail "Fork steht auf $HEAD_FULL, Pin ist $SDL_PIN (Zweig $BRANCH). Kein automatischer Checkout."
-DIRTY="$(git -C "$SDL_SRC" status --short | wc -l | tr -d ' ')"
-if [[ "$DIRTY" != "0" && "${SDL_ALLOW_DIRTY:-0}" != "1" ]]; then
-    fail "$DIRTY uncommittete Änderungen im Fork; SDL_ALLOW_DIRTY=1 setzt das ausser Kraft."
+if [[ "$BRANCH" != "visionos-kit" && "${SDL_ALLOW_BRANCH:-0}" != "1" ]]; then
+    fail "Fork steht auf Zweig '$BRANCH', erwartet visionos-kit (SDL_ALLOW_BRANCH=1 hebt das auf)."
 fi
+# Pin-Prüfung: die SDL-Basis unter dem Arbeitsstand muss der Pin sein.
+if ! git -C "$SDL_SRC" merge-base --is-ancestor "$SDL_PIN" HEAD; then
+    fail "Pin $PIN_SHORT ist kein Vorfahr von HEAD $HEAD_SHORT: der Zweig wurde auf einen anderen SDL-Stand gesetzt. Neuer Pin nur mit Referenzlauf."
+fi
+OWN_COMMITS="$(git -C "$SDL_SRC" rev-list --count "$SDL_PIN..HEAD")"
+DIRTY_COUNT="$(git -C "$SDL_SRC" status --short | wc -l | tr -d ' ')"
+DIRTY_SUFFIX=""
+[[ "$DIRTY_COUNT" == "0" ]] || DIRTY_SUFFIX="-dirty"
 echo "SDL: $SDL_SRC"
 echo "Zweig: $BRANCH  HEAD: $HEAD_FULL  ($(git -C "$SDL_SRC" describe --tags --always))"
+echo "Pin: $SDL_PIN  eigene Commits über dem Pin: $OWN_COMMITS  uncommittete Dateien: $DIRTY_COUNT"
+if [[ "$DIRTY_COUNT" != "0" ]]; then
+    git -C "$SDL_SRC" status --short | sed 's/^/   /'
+fi
 grep -E "define SDL_(MAJOR|MINOR|MICRO)_VERSION" "$SDL_SRC/include/SDL3/SDL_version.h"
 # Kein Leerzeichen: der Wert geht als C-String-Literal durch xcodebuild und CMake.
-VENDOR_INFO="visionos-kit-${HEAD_SHORT}"
+# Form: visionos-kit-<pin>+<head>[-dirty]; bei HEAD == Pin ohne eigene Commits steht der Pin zweimal.
+VENDOR_INFO="visionos-kit-${PIN_SHORT}+${HEAD_SHORT}${DIRTY_SUFFIX}"
 echo "SDL_VENDOR_INFO=$VENDOR_INFO"
 
 check_symbols() {

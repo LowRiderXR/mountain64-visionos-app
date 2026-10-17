@@ -41,14 +41,25 @@ struct ContentView: View {
         .padding(40)
         .frame(minWidth: 520)
         .task {
-            // Kit-Stufe K0: SDL_GPU-Testszene einmal beim Start, hinter C64_KIT=1 (Standard aus).
-            // Läuft auf dem Hauptthread, sobald das Fenster steht; der ImmersiveSpace ist noch zu.
-            guard KitProbe.isRequested, !kitProbeRan else { return }
+            // Kit-Testszene hinter C64_KIT (Standard aus), auf dem Hauptthread, sobald das Fenster
+            // steht; der ImmersiveSpace ist noch zu.
+            //   =1       K0: ganze Szene hier, SDL erzeugt Device und Queue selbst, SDL_Quit am Ende.
+            //   =inject  K1a: hier nur SDL_Init; die Szene läuft im Render-Thread vor dem ersten
+            //            Frame mit Device und Queue des Gerüsts (Renderer.runKitInjectProbe).
+            guard let mode = KitProbe.mode, !kitProbeRan else { return }
             kitProbeRan = true
-            let result = KitProbe.runOnce()
-            appModel.statusLine = result == 0
-                ? "Kit-Testszene (SDL_GPU, SDL main) bestanden. Siehe Log [c64-kit]."
-                : "Kit-Testszene fehlgeschlagen in Schritt \(result). Siehe Log [c64-kit]."
+            switch mode {
+            case .basic:
+                let result = KitProbe.runBasic()
+                appModel.statusLine = result == 0
+                    ? "Kit-Testszene (SDL_GPU, SDL main) bestanden. Siehe Log [c64-kit]."
+                    : "Kit-Testszene fehlgeschlagen in Schritt \(result). Siehe Log [c64-kit]."
+            case .inject:
+                let ok = KitProbe.initSDLForInject()
+                appModel.statusLine = ok
+                    ? "SDL initialisiert (Hauptthread). Inject-Test läuft beim Öffnen des ImmersiveSpace vor dem ersten Frame."
+                    : "SDL_Init fehlgeschlagen, siehe Log [c64-kit]."
+            }
         }
     }
 
