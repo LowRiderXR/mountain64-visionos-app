@@ -56,8 +56,12 @@ typedef struct kit_multiview_stats {
     unsigned msaa_width;
     unsigned msaa_height;
     unsigned msaa_layers;
-    unsigned long long msaa_bytes;
+    unsigned long long msaa_bytes;     /* allocatedSize der Host-Texturen, bei memoryless nominal */
     unsigned depth_filter;         /* 0 sample0, 1 min, 2 max */
+    /* K4b */
+    unsigned memoryless;           /* 1: MSAA-Ziele und Mess-MSAA-Textur memoryless (SDL-Property) */
+    unsigned long long msaa_nominal_bytes;      /* Breite × Höhe × Schichten × Samples × Bytes, beide Ziele */
+    unsigned long long measure_msaa_nominal_bytes; /* RG32F-MSAA-Textur des Messbilds, nominal */
 } kit_multiview_stats;
 
 /* K4a: Optionen der Sitzung. msaa_samples 0 oder 1 = ohne Kantenglättung (Stand K3). Mit MSAA legt
@@ -66,13 +70,23 @@ typedef struct kit_multiview_stats {
  * SDL_PROP_GPU_RENDERPASS_CREATE_METAL_DEPTH_RESOLVE_TEXTURE_POINTER) in die Drawable-Schichten
  * auf. depth_filter: 0 sample0, 1 min, 2 max (Reverse-Z: max = nächste Fläche, Standard).
  * pattern/view_colors: Inhalt des Quads (Standard Schachbrett weiss; der Mac-Test nutzt flache
- * Farben pro View). */
+ * Farben pro View). with_bar (K4b, Standard an): neben dem Brett ein schmaler, schräg gestellter
+ * Balken aus Geometrie, an dem MSAA sichtbar wird. memoryless (K4b): MSAA-Ziele und die
+ * MSAA-Textur des Messbilds mit SDL_PROP_GPU_TEXTURE_CREATE_METAL_MEMORYLESS_BOOLEAN anlegen
+ * (nur Tile-Speicher, Auflösung am Pass-Ende); ohne memoryless legt der Host die MSAA-Ziele an
+ * und importiert sie (allocatedSize messbar). */
 typedef struct kit_multiview_options {
     unsigned msaa_samples;
     unsigned depth_filter;
     float pattern;
     float view_colors[2][4];
+    bool with_bar;
+    bool memoryless;
 } kit_multiview_options;
+
+/* K4b: Diagnose der SDL-Textur-Container (textureCount, canBeCycled) der MSAA-Ziele; loggt
+ * step=msaa-containers. Liest das interne Layout des Metal-Backends am Pin (nur Testzwecke). */
+void kit_multiview_log_containers(kit_multiview_session *session);
 
 void kit_multiview_options_default(kit_multiview_options *out);
 

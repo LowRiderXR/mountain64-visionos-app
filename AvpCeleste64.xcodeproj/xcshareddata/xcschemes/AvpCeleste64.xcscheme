@@ -103,6 +103,11 @@
             value = "4"
             isEnabled = "NO">
          </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "C64_KIT_MEMORYLESS"
+            value = "1"
+            isEnabled = "NO">
+         </EnvironmentVariable>
       </EnvironmentVariables>
       <MetalAPIValidationSettings
          isEnabled = "No">

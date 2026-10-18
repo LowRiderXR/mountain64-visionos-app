@@ -66,6 +66,9 @@ bool kit_metal_create_array_texture_ex(void *device, bool depth, unsigned width,
 /* allocatedSize einer MTLTexture in Bytes (0 bei NULL). */
 unsigned long long kit_metal_texture_allocated_bytes(void *texture);
 
+/* K4b: phys_footprint des Prozesses in Bytes (task_info TASK_VM_INFO), Mac und visionOS. */
+unsigned long long kit_metal_process_footprint_bytes(void);
+
 /* supportsTextureSampleCount: des Devices. */
 bool kit_metal_supports_sample_count(void *device, unsigned samples);
 

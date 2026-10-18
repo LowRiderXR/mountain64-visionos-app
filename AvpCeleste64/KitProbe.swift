@@ -164,11 +164,14 @@ nonisolated enum KitProbe {
     /// K4a: `msaaSamples` > 1 schaltet Kantenglättung ein (C64_KIT_MSAA); die Sitzung rendert dann
     /// in eigene MSAA-Texturen in Drawable-Grösse und löst Farbe und Tiefe (Filter max, Reverse-Z:
     /// nächste Fläche) in die Drawable-Schichten auf. 0 = Stand K3.
-    static func beginMultiview(device: MTLDevice, queue: MTLCommandQueue, msaaSamples: Int = 0) -> OpaquePointer? {
-        c64Record("[c64-kit] start mode=multiview thread=\(Thread.current.name ?? "?") device=\"\(device.name)\" queue=\"\(queue.label ?? "-")\" msaa=\(msaaSamples)")
+    /// K4b: `memoryless` legt die MSAA-Ziele (und die MSAA-Textur des Messbilds) ohne Speicher an
+    /// (C64_KIT_MEMORYLESS=1); Farbe und Tiefe werden nur aufgelöst, nie geladen oder gespeichert.
+    static func beginMultiview(device: MTLDevice, queue: MTLCommandQueue, msaaSamples: Int = 0, memoryless: Bool = false) -> OpaquePointer? {
+        c64Record("[c64-kit] start mode=multiview thread=\(Thread.current.name ?? "?") device=\"\(device.name)\" queue=\"\(queue.label ?? "-")\" msaa=\(msaaSamples) memoryless=\(memoryless)")
         var options = kit_multiview_options()
         kit_multiview_options_default(&options)
         options.msaa_samples = UInt32(max(0, msaaSamples))
+        options.memoryless = memoryless
         return kit_multiview_begin_ex(pointer(device as AnyObject), pointer(queue as AnyObject), &options, logLine, nil)
     }
 

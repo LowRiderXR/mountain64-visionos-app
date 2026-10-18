@@ -21,6 +21,9 @@ cbuffer MultiviewUniforms : register(b0, space1)
                                     //    aus dem Vertex-Shader; y,z = logische Grösse (screenSize).
                                     //    SV_Position ist unter einer Rate Map physisch (Messung
                                     //    2026-10-17), deshalb nicht als Mass brauchbar.
+    float4   u_barCenter;           // K4b: zweites Quad aus Geometrie (Vertices 6..11), ein
+    float4   u_barRight;            //      schmaler, schräg gestellter Balken in flacher Farbe,
+    float4   u_barUp;               //      damit MSAA an Dreieckskanten sichtbar wird.
 };
 
 struct VertexOutput
@@ -32,23 +35,29 @@ struct VertexOutput
     float4 position : SV_Position;
 };
 
-// Sechs Vertices, zwei Dreiecke, Ecken aus der Vertex-ID; kein Vertex-Puffer nötig.
+// Sechs Vertices pro Quad, zwei Dreiecke, Ecken aus der Vertex-ID; kein Vertex-Puffer nötig.
+// Quad 0 (Vertices 0..5): Brett aus u_center/u_right/u_up mit Muster; Quad 1 (6..11): Balken
+// aus u_barCenter/u_barRight/u_barUp in flacher Farbe (nur wenn 12 Vertices gezeichnet werden).
 VertexOutput vertex_main(uint vertexID : SV_VertexID, uint viewID : SV_ViewID)
 {
     const float2 corners[6] = {
         float2(0, 0), float2(1, 0), float2(1, 1),
         float2(0, 0), float2(1, 1), float2(0, 1)
     };
-    float2 uv = corners[vertexID];
-    float3 world = u_center.xyz
-                 + (uv.x * 2.0 - 1.0) * u_right.xyz
-                 + (uv.y * 2.0 - 1.0) * u_up.xyz;
+    const bool bar = vertexID >= 6;
+    float2 uv = corners[vertexID % 6];
+    float3 qCenter = bar ? u_barCenter.xyz : u_center.xyz;
+    float3 qRight = bar ? u_barRight.xyz : u_right.xyz;
+    float3 qUp = bar ? u_barUp.xyz : u_up.xyz;
+    float3 world = qCenter
+                 + (uv.x * 2.0 - 1.0) * qRight
+                 + (uv.y * 2.0 - 1.0) * qUp;
 
     VertexOutput output;
     output.position = mul(u_viewProjection[viewID], float4(world, 1.0));
     output.uv = uv;
-    output.color = u_viewColor[viewID];
-    output.pattern = u_params.x;
+    output.color = bar ? float4(1.0, 0.55, 0.1, 1.0) : u_viewColor[viewID];
+    output.pattern = bar ? 0.0 : u_params.x;
     // Vollbild-Quad: uv (0,0) unten links in NDC → logisch x = uv.x·W, y = (1 − uv.y)·H.
     output.logical = float2(uv.x * u_params.y, (1.0 - uv.y) * u_params.z);
     return output;

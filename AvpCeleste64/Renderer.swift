@@ -149,6 +149,8 @@ nonisolated final class Renderer: @unchecked Sendable {
     // K4a (C64_KIT_MSAA=<Samples>, Standard aus): Kantenglättung im Kit-Pass; die Sitzung rendert in
     // MSAA-Texturen in Drawable-Grösse und löst Farbe und Tiefe in die Drawable-Schichten auf.
     private let kitMsaaSamples: Int = Int(ProcessInfo.processInfo.environment["C64_KIT_MSAA"] ?? "") ?? 0
+    // K4b (C64_KIT_MEMORYLESS=1, Standard aus): MSAA-Ziele memoryless (nur Tile-Speicher).
+    private let kitMemoryless: Bool = ProcessInfo.processInfo.environment["C64_KIT_MEMORYLESS"] == "1"
 
     private init(layerRenderer: LayerRenderer, appModel: AppModel) {
         self.layerRenderer = layerRenderer
@@ -217,6 +219,7 @@ nonisolated final class Renderer: @unchecked Sendable {
             + " C64_KIT=\(ProbeContext.environment(KitProbe.environmentKey))"
             + " C64_KIT_DEPTH=\(ProbeContext.environment("C64_KIT_DEPTH"))"
             + " C64_KIT_MSAA=\(ProbeContext.environment("C64_KIT_MSAA"))"
+            + " C64_KIT_MEMORYLESS=\(ProbeContext.environment("C64_KIT_MEMORYLESS"))"
             + " views=\(layerRenderer.properties.viewCount)"
             + " stallSeq=\(stallPlan.isEmpty ? "-" : stallPlan.map { String(Int($0 * 1000)) }.joined(separator: ","))"
         c64Record(line)
@@ -247,7 +250,7 @@ nonisolated final class Renderer: @unchecked Sendable {
         }
         // Kit-Stufe K2 (C64_KIT=multiview): Sitzung mit Pipeline view_count 2 für die ganze Schleife.
         if KitProbe.mode == .multiview {
-            kitMultiviewSession = KitProbe.beginMultiview(device: device, queue: commandQueue, msaaSamples: kitMsaaSamples)
+            kitMultiviewSession = KitProbe.beginMultiview(device: device, queue: commandQueue, msaaSamples: kitMsaaSamples, memoryless: kitMemoryless)
             kitImportFailed = (kitMultiviewSession == nil)
             c64Record("[c64-kit] multiview session=\(kitMultiviewSession == nil ? "FEHLT, Gerüst löscht selbst" : "ok")")
         }
@@ -405,10 +408,16 @@ nonisolated final class Renderer: @unchecked Sendable {
             kit_multiview_gpu_percentiles(session, &gpuCount, &gpuMean, &gpuP95, &gpuMax)
             let filterNames = ["sample0", "min", "max"]
             let filter = Int(stats.depth_filter) < filterNames.count ? filterNames[Int(stats.depth_filter)] : "?"
-            kitPart += String(format: " gpu(ms, ab Frame 91) n=%u mean=%.3f p95=%.3f max=%.3f untagged=%lu gpuErr=%lu msaa=%u msaaTextures=%ux%ux%u msaaMB=%.1f depthResolveFilter=%@",
+            kitPart += String(format: " gpu(ms, ab Frame 91) n=%u mean=%.3f p95=%.3f max=%.3f untagged=%lu gpuErr=%lu msaa=%u memoryless=%u msaaTextures=%ux%ux%u msaaNominalMB=%.1f msaaAllocatedMB=%@ measureMsaaNominalMB=%.1f depthResolveFilter=%@",
                               gpuCount, gpuMean, gpuP95, gpuMax,
-                              stats.gpu_untagged, stats.gpu_errors, stats.msaa_samples, stats.msaa_width, stats.msaa_height, stats.msaa_layers,
-                              Double(stats.msaa_bytes) / (1024 * 1024), stats.msaa_samples > 1 ? filter : "-")
+                              stats.gpu_untagged, stats.gpu_errors, stats.msaa_samples, stats.memoryless, stats.msaa_width, stats.msaa_height, stats.msaa_layers,
+                              Double(stats.msaa_nominal_bytes) / (1024 * 1024),
+                              stats.memoryless == 1 ? "-" : String(format: "%.1f", Double(stats.msaa_bytes) / (1024 * 1024)),
+                              Double(stats.measure_msaa_nominal_bytes) / (1024 * 1024),
+                              stats.msaa_samples > 1 ? filter : "-")
+            if stats.msaa_samples > 1 {
+                kit_multiview_log_containers(session)
+            }
             KitProbe.endMultiview(session: session)
             kitMultiviewSession = nil
         } else if kitImportFailed {

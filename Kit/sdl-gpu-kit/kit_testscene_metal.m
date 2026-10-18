@@ -8,6 +8,7 @@
 
 #include "kit_testscene_metal.h"
 
+#include <mach/mach.h>
 #include <stdio.h>
 
 bool kit_metal_create_host_objects(void **device_out, void **queue_out)
@@ -168,6 +169,16 @@ unsigned long long kit_metal_texture_allocated_bytes(void *texture)
     }
     id<MTLTexture> t = (__bridge id<MTLTexture>)texture;
     return (unsigned long long)t.allocatedSize;
+}
+
+unsigned long long kit_metal_process_footprint_bytes(void)
+{
+    task_vm_info_data_t info;
+    mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
+    if (task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&info, &count) != KERN_SUCCESS) {
+        return 0;
+    }
+    return (unsigned long long)info.phys_footprint;
 }
 
 bool kit_metal_supports_sample_count(void *device, unsigned samples)
