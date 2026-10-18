@@ -1,5 +1,5 @@
 /*
- * kit_multiview.c — SDL_GPU-Kit für visionOS, Stufe K2: Baustein P6. Siehe kit_multiview.h.
+ * kit_multiview.c — SDL_GPU-Kit für visionOS, Stufen K2 (P6), K3 (P4), K4a (MSAA). Siehe kit_multiview.h.
  */
 
 #include "kit_multiview.h"
@@ -13,6 +13,11 @@
 
 #define KIT_LINE_MAX 1024
 #define KIT_VIEW_COUNT 2
+#define KIT_TAG_CAPACITY 256
+#define KIT_GPU_SAMPLES 4096
+#define KIT_GPU_SKIP_DEFAULT 90
+
+static const char *const kit_depth_filter_names[3] = { "sample0", "min", "max" };
 
 /* Muss dem cbuffer MultiviewUniforms in shaders/multiview.hlsl entsprechen (224 Bytes). */
 typedef struct kit_mv_uniforms {
@@ -43,8 +48,104 @@ struct kit_multiview_session {
     unsigned measure_width;
     unsigned measure_height;
     unsigned measure_layers;
+    /* K4a: MSAA */
+    kit_multiview_options opt;
+    SDL_GPUSampleCount msaa_sc;                 /* SDL-Enum zu opt.msaa_samples */
+    void *metal_device;                         /* id<MTLDevice> (unretained), für die MSAA-Texturen */
+    void *msaa_color_mtl;                       /* Host-Texturen 2DMultisampleArray in Drawable-Grösse */
+    void *msaa_depth_mtl;
+    SDL_GPUTexture *msaa_color;                 /* Wrapper, leben für die Sitzung */
+    SDL_GPUTexture *msaa_depth;
+    SDL_GPUTexture *measure_msaa;               /* RG32F MSAA (SDL-eigen) für das Messbild unter MSAA */
+    bool msaa_logged;
+    /* K4a: GPU-Zeit über den Completed-Rückruf des Metal-Backends. Der Rückruf läuft auf einem
+     * Metal-Thread; die Herkunft eines Command Buffers ('F' Frame, 'M' Messbild, 'R' Rücklesen)
+     * steht in einer FIFO, die der Submit-Thread vor dem Submit füllt (die Queue arbeitet in
+     * Commit-Reihenfolge, die Abschlüsse kommen in derselben Reihenfolge). */
+    SDL_Mutex *gpu_lock;
+    bool closed;
+    char tags[KIT_TAG_CAPACITY];
+    unsigned tag_head;
+    unsigned tag_tail;
+    unsigned gpu_skip;                          /* Aufwärmphase: so viele Frame-Abschlüsse nicht werten */
+    unsigned gpu_completed_frames;              /* alle Frame-Abschlüsse, auch die übersprungenen */
+    double gpu_samples[KIT_GPU_SAMPLES];        /* Ring der letzten gewerteten GPU-Zeiten */
+    unsigned gpu_sample_count;                  /* gesamt, Ring = count % KIT_GPU_SAMPLES */
     char line[KIT_LINE_MAX];
 };
+
+static void kit_push_tag(kit_multiview_session *s, char tag)
+{
+    SDL_LockMutex(s->gpu_lock);
+    if (s->tag_head - s->tag_tail < KIT_TAG_CAPACITY) {
+        s->tags[s->tag_head % KIT_TAG_CAPACITY] = tag;
+        s->tag_head += 1;
+    }
+    SDL_UnlockMutex(s->gpu_lock);
+}
+
+/* Completed-Rückruf (Metal-Thread): GPU-Zeit des SDL-Command-Buffers nach Herkunft verbuchen. */
+static void SDLCALL kit_gpu_completed(void *userdata, void *mtl_command_buffer)
+{
+    kit_multiview_session *s = (kit_multiview_session *)userdata;
+    double start = 0, end = 0;
+    int status = 0;
+    const bool ok = kit_metal_command_buffer_gpu_time(mtl_command_buffer, &start, &end, &status, NULL, 0);
+    const double ms = (end - start) * 1000.0;
+    SDL_LockMutex(s->gpu_lock);
+    if (s->closed) {
+        SDL_UnlockMutex(s->gpu_lock);
+        return;
+    }
+    char tag = 0;
+    if (s->tag_tail != s->tag_head) {
+        tag = s->tags[s->tag_tail % KIT_TAG_CAPACITY];
+        s->tag_tail += 1;
+    }
+    if (!ok) {
+        s->stats.gpu_errors += 1;
+    }
+    if (tag == 'F') {
+        /* Fensterwerte: alle Frames; Gesamtwerte und Stichprobe: erst nach der Aufwärmphase. */
+        s->stats.gpu_frames += 1;
+        s->stats.gpu_sum_ms += ms;
+        if (ms > s->stats.gpu_max_ms) s->stats.gpu_max_ms = ms;
+        s->gpu_completed_frames += 1;
+        if (s->gpu_completed_frames > s->gpu_skip) {
+            s->stats.gpu_frames_total += 1;
+            s->stats.gpu_total_sum_ms += ms;
+            if (ms > s->stats.gpu_total_max_ms) s->stats.gpu_total_max_ms = ms;
+            s->gpu_samples[s->gpu_sample_count % KIT_GPU_SAMPLES] = ms;
+            s->gpu_sample_count += 1;
+        }
+    } else if (tag == 0) {
+        s->stats.gpu_untagged += 1;
+    }
+    SDL_UnlockMutex(s->gpu_lock);
+}
+
+static SDL_GPUSampleCount kit_sample_count(unsigned samples)
+{
+    switch (samples) {
+    case 2: return SDL_GPU_SAMPLECOUNT_2;
+    case 4: return SDL_GPU_SAMPLECOUNT_4;
+    case 8: return SDL_GPU_SAMPLECOUNT_8;
+    default: return SDL_GPU_SAMPLECOUNT_1;
+    }
+}
+
+void kit_multiview_options_default(kit_multiview_options *out)
+{
+    SDL_zerop(out);
+    out->msaa_samples = 0;
+    out->depth_filter = 2; /* max: Reverse-Z, nächste Fläche */
+    out->pattern = 1.0f;
+    for (int v = 0; v < 2; v++) {
+        for (int c = 0; c < 4; c++) {
+            out->view_colors[v][c] = 1.0f;
+        }
+    }
+}
 
 static void kit_logf(kit_multiview_session *s, const char *fmt, ...)
 {
@@ -77,6 +178,10 @@ static SDL_GPUTexture *kit_wrap(SDL_GPUDevice *device, void *mtl_texture, bool d
         SDL_SetError("MTLTexture ohne SDL-Gegenstück (Typ %d, Format %d)", desc.mtl_type, desc.mtl_pixel_format);
         return NULL;
     }
+    if (desc.samples != 1 && desc.samples != 2 && desc.samples != 4 && desc.samples != 8) {
+        SDL_SetError("MTLTexture mit %u Samples hat kein SDL-Gegenstück", desc.samples);
+        return NULL;
+    }
 #ifndef SDL_PROP_GPU_TEXTURE_CREATE_METAL_TEXTURE_POINTER
     SDL_SetError("SDL-Header ohne P3");
     return NULL;
@@ -90,7 +195,7 @@ static SDL_GPUTexture *kit_wrap(SDL_GPUDevice *device, void *mtl_texture, bool d
     info.height = desc.height;
     info.layer_count_or_depth = desc.layers;
     info.num_levels = desc.levels;
-    info.sample_count = SDL_GPU_SAMPLECOUNT_1;
+    info.sample_count = kit_sample_count(desc.samples);
     info.props = SDL_CreateProperties();
     SDL_SetPointerProperty(info.props, SDL_PROP_GPU_TEXTURE_CREATE_METAL_TEXTURE_POINTER, mtl_texture);
     SDL_GPUTexture *texture = SDL_CreateGPUTexture(device, &info);
@@ -114,10 +219,10 @@ static SDL_GPUShader *kit_create_shader(SDL_GPUDevice *device, const char *msl, 
 }
 
 /* Pipeline: Dreiecke aus der Vertex-ID (kein Vertex-Puffer), Reverse-Z (greater, Schreiben an),
- * kein Culling, kein Blending. view_count über die P6-Property. */
+ * kein Culling, kein Blending. view_count über die P6-Property; sample_count für MSAA (K4a). */
 static SDL_GPUGraphicsPipeline *kit_create_pipeline_ex(SDL_GPUDevice *device, SDL_GPUShader *vs, SDL_GPUShader *fs,
                                                        SDL_GPUTextureFormat color, SDL_GPUTextureFormat depth,
-                                                       bool with_depth, Uint32 view_count)
+                                                       bool with_depth, Uint32 view_count, SDL_GPUSampleCount sample_count)
 {
     SDL_GPUColorTargetDescription target;
     SDL_zero(target);
@@ -133,7 +238,7 @@ static SDL_GPUGraphicsPipeline *kit_create_pipeline_ex(SDL_GPUDevice *device, SD
     info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
     info.rasterizer_state.front_face = SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE;
     info.rasterizer_state.enable_depth_clip = true;
-    info.multisample_state.sample_count = SDL_GPU_SAMPLECOUNT_1;
+    info.multisample_state.sample_count = sample_count;
     info.depth_stencil_state.enable_depth_test = with_depth;
     info.depth_stencil_state.enable_depth_write = with_depth;
     info.depth_stencil_state.compare_op = SDL_GPU_COMPAREOP_GREATER;
@@ -154,55 +259,107 @@ static SDL_GPUGraphicsPipeline *kit_create_pipeline_ex(SDL_GPUDevice *device, SD
 
 static SDL_GPUGraphicsPipeline *kit_create_pipeline(SDL_GPUDevice *device, SDL_GPUShader *vs, SDL_GPUShader *fs,
                                                     SDL_GPUTextureFormat color, SDL_GPUTextureFormat depth,
-                                                    Uint32 view_count)
+                                                    Uint32 view_count, SDL_GPUSampleCount sample_count)
 {
-    return kit_create_pipeline_ex(device, vs, fs, color, depth, true, view_count);
+    return kit_create_pipeline_ex(device, vs, fs, color, depth, true, view_count, sample_count);
 }
 
-/* Pass mit optionaler Rate Map (K3, P4) und optionalem Tiefenziel. */
-static SDL_GPURenderPass *kit_begin_pass_map(SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *color, SDL_GPUTexture *depth,
-                                             const float rgba[4], float depth_clear, Uint32 view_count, Uint32 base_layer,
-                                             void *rate_map)
+/* Beschreibung eines Passes: Ziele, optional Auflösungsziele (K4a), Clear, Views, Startschicht,
+ * Rate Map (K3). Mit color_resolve wird die Farbe mit store_op RESOLVE in dieselbe Schicht
+ * (base_layer) der Auflösungstextur geschrieben; mit depth_resolve die Tiefe über die
+ * Pass-Property (store_op des MSAA-Ziels DONT_CARE: nur auflösen, Inhalt verwerfen). */
+typedef struct kit_pass_desc {
+    SDL_GPUTexture *color;
+    SDL_GPUTexture *depth;            /* optional */
+    SDL_GPUTexture *color_resolve;    /* optional, nur mit MSAA-Farbziel */
+    SDL_GPUTexture *depth_resolve;    /* optional, nur mit MSAA-Tiefenziel */
+    unsigned depth_filter;            /* 0 sample0, 1 min, 2 max */
+    const char *depth_filter_override; /* Testzwecke: Filtername direkt (NULL = aus depth_filter) */
+    float rgba[4];
+    float depth_clear;
+    Uint32 view_count;
+    Uint32 base_layer;
+    void *rate_map;
+} kit_pass_desc;
+
+static SDL_GPURenderPass *kit_begin_pass_ex(SDL_GPUCommandBuffer *cmd, const kit_pass_desc *d)
 {
     SDL_GPUColorTargetInfo ct;
     SDL_zero(ct);
-    ct.texture = color;
-    ct.layer_or_depth_plane = base_layer;
-    ct.clear_color.r = rgba[0];
-    ct.clear_color.g = rgba[1];
-    ct.clear_color.b = rgba[2];
-    ct.clear_color.a = rgba[3];
+    ct.texture = d->color;
+    ct.layer_or_depth_plane = d->base_layer;
+    ct.clear_color.r = d->rgba[0];
+    ct.clear_color.g = d->rgba[1];
+    ct.clear_color.b = d->rgba[2];
+    ct.clear_color.a = d->rgba[3];
     ct.load_op = SDL_GPU_LOADOP_CLEAR;
     ct.store_op = SDL_GPU_STOREOP_STORE;
+    if (d->color_resolve) {
+        ct.store_op = SDL_GPU_STOREOP_RESOLVE;
+        ct.resolve_texture = d->color_resolve;
+        ct.resolve_layer = d->base_layer;
+        ct.resolve_mip_level = 0;
+        ct.cycle_resolve_texture = false;
+    }
 
     SDL_GPUDepthStencilTargetInfo dt;
     SDL_zero(dt);
-    dt.texture = depth;
-    dt.layer = (Uint8)base_layer;
-    dt.clear_depth = depth_clear;
+    dt.texture = d->depth;
+    dt.layer = (Uint8)d->base_layer;
+    dt.clear_depth = d->depth_clear;
     dt.load_op = SDL_GPU_LOADOP_CLEAR;
-    dt.store_op = SDL_GPU_STOREOP_STORE;
+    dt.store_op = d->depth_resolve ? SDL_GPU_STOREOP_DONT_CARE : SDL_GPU_STOREOP_STORE;
     dt.stencil_load_op = SDL_GPU_LOADOP_DONT_CARE;
     dt.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
 
-    if (view_count == 1 && rate_map == NULL) {
-        return SDL_BeginGPURenderPass(cmd, &ct, 1, depth ? &dt : NULL);
+    if (d->view_count == 1 && d->rate_map == NULL && d->depth_resolve == NULL) {
+        return SDL_BeginGPURenderPass(cmd, &ct, 1, d->depth ? &dt : NULL);
     }
 #ifdef SDL_PROP_GPU_RENDERPASS_CREATE_VIEW_COUNT_NUMBER
     SDL_PropertiesID props = SDL_CreateProperties();
-    SDL_SetNumberProperty(props, SDL_PROP_GPU_RENDERPASS_CREATE_VIEW_COUNT_NUMBER, view_count);
+    SDL_SetNumberProperty(props, SDL_PROP_GPU_RENDERPASS_CREATE_VIEW_COUNT_NUMBER, d->view_count);
 #ifdef SDL_PROP_GPU_RENDERPASS_CREATE_METAL_RASTERIZATION_RATE_MAP_POINTER
-    if (rate_map) {
-        SDL_SetPointerProperty(props, SDL_PROP_GPU_RENDERPASS_CREATE_METAL_RASTERIZATION_RATE_MAP_POINTER, rate_map);
+    if (d->rate_map) {
+        SDL_SetPointerProperty(props, SDL_PROP_GPU_RENDERPASS_CREATE_METAL_RASTERIZATION_RATE_MAP_POINTER, d->rate_map);
     }
 #endif
-    SDL_GPURenderPass *pass = SDL_BeginGPURenderPassWithProperties(cmd, &ct, 1, depth ? &dt : NULL, props);
+    if (d->depth_resolve) {
+#ifdef SDL_PROP_GPU_RENDERPASS_CREATE_METAL_DEPTH_RESOLVE_TEXTURE_POINTER
+        SDL_SetPointerProperty(props, SDL_PROP_GPU_RENDERPASS_CREATE_METAL_DEPTH_RESOLVE_TEXTURE_POINTER, d->depth_resolve);
+        SDL_SetNumberProperty(props, SDL_PROP_GPU_RENDERPASS_CREATE_METAL_DEPTH_RESOLVE_LAYER_NUMBER, d->base_layer);
+        SDL_SetStringProperty(props, SDL_PROP_GPU_RENDERPASS_CREATE_METAL_DEPTH_RESOLVE_FILTER_STRING,
+                              d->depth_filter_override ? d->depth_filter_override
+                                                       : kit_depth_filter_names[d->depth_filter < 3 ? d->depth_filter : 0]);
+#else
+        SDL_DestroyProperties(props);
+        SDL_SetError("SDL-Header ohne Tiefen-Aufloesung (K4a)");
+        return NULL;
+#endif
+    }
+    SDL_GPURenderPass *pass = SDL_BeginGPURenderPassWithProperties(cmd, &ct, 1, d->depth ? &dt : NULL, props);
     SDL_DestroyProperties(props);
     return pass;
 #else
     SDL_SetError("SDL-Header ohne P6");
     return NULL;
 #endif
+}
+
+/* Pass mit optionaler Rate Map (K3, P4) und optionalem Tiefenziel, ohne Auflösung. */
+static SDL_GPURenderPass *kit_begin_pass_map(SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *color, SDL_GPUTexture *depth,
+                                             const float rgba[4], float depth_clear, Uint32 view_count, Uint32 base_layer,
+                                             void *rate_map)
+{
+    kit_pass_desc d;
+    SDL_zero(d);
+    d.color = color;
+    d.depth = depth;
+    SDL_memcpy(d.rgba, rgba, sizeof(d.rgba));
+    d.depth_clear = depth_clear;
+    d.view_count = view_count;
+    d.base_layer = base_layer;
+    d.rate_map = rate_map;
+    return kit_begin_pass_ex(cmd, &d);
 }
 
 static SDL_GPURenderPass *kit_begin_pass_at(SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *color, SDL_GPUTexture *depth,
@@ -244,11 +401,92 @@ static void kit_fill_uniforms(kit_mv_uniforms *u, const float view_projection[32
 
 kit_multiview_session *kit_multiview_begin(void *metal_device, void *metal_queue, kit_log_fn log, void *user)
 {
+    return kit_multiview_begin_ex(metal_device, metal_queue, NULL, log, user);
+}
+
+void kit_multiview_set_depth_filter(kit_multiview_session *s, unsigned depth_filter)
+{
+    if (s && depth_filter < 3) {
+        s->opt.depth_filter = depth_filter;
+        s->stats.depth_filter = depth_filter;
+    }
+}
+
+void kit_multiview_set_gpu_skip(kit_multiview_session *s, unsigned skip)
+{
+    if (!s) {
+        return;
+    }
+    SDL_LockMutex(s->gpu_lock);
+    s->gpu_skip = skip;
+    SDL_UnlockMutex(s->gpu_lock);
+}
+
+static int kit_cmp_double(const void *a, const void *b)
+{
+    const double x = *(const double *)a, y = *(const double *)b;
+    return (x > y) - (x < y);
+}
+
+void kit_multiview_gpu_percentiles(kit_multiview_session *s, unsigned *count, double *mean_ms, double *p95_ms, double *max_ms)
+{
+    double *copy = NULL;
+    unsigned n = 0;
+    double sum = 0, mx = 0;
+    if (count) *count = 0;
+    if (mean_ms) *mean_ms = 0;
+    if (p95_ms) *p95_ms = 0;
+    if (max_ms) *max_ms = 0;
+    if (!s) {
+        return;
+    }
+    SDL_LockMutex(s->gpu_lock);
+    n = s->gpu_sample_count < KIT_GPU_SAMPLES ? s->gpu_sample_count : KIT_GPU_SAMPLES;
+    if (n > 0) {
+        copy = (double *)SDL_malloc(sizeof(double) * n);
+        SDL_memcpy(copy, s->gpu_samples, sizeof(double) * n);
+    }
+    SDL_UnlockMutex(s->gpu_lock);
+    if (n == 0) {
+        return;
+    }
+    SDL_qsort(copy, n, sizeof(double), kit_cmp_double);
+    for (unsigned i = 0; i < n; i++) {
+        sum += copy[i];
+    }
+    mx = copy[n - 1];
+    const unsigned p95_index = (unsigned)((double)(n - 1) * 0.95 + 0.5);
+    if (count) *count = n;
+    if (mean_ms) *mean_ms = sum / n;
+    if (p95_ms) *p95_ms = copy[p95_index < n ? p95_index : n - 1];
+    if (max_ms) *max_ms = mx;
+    SDL_free(copy);
+}
+
+kit_multiview_session *kit_multiview_begin_ex(void *metal_device, void *metal_queue, const kit_multiview_options *options,
+                                              kit_log_fn log, void *user)
+{
     kit_multiview_session *s = (kit_multiview_session *)SDL_calloc(1, sizeof(kit_multiview_session));
     s->log = log;
     s->user = user;
     s->color_format = SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM_SRGB;
     s->depth_format = SDL_GPU_TEXTUREFORMAT_D32_FLOAT;
+    if (options) {
+        s->opt = *options;
+    } else {
+        kit_multiview_options_default(&s->opt);
+    }
+    if (s->opt.msaa_samples <= 1) {
+        s->opt.msaa_samples = 0;
+    }
+    if (s->opt.depth_filter > 2) {
+        s->opt.depth_filter = 2;
+    }
+    s->msaa_sc = kit_sample_count(s->opt.msaa_samples);
+    s->stats.msaa_samples = s->opt.msaa_samples;
+    s->stats.depth_filter = s->opt.depth_filter;
+    s->gpu_skip = KIT_GPU_SKIP_DEFAULT;
+    s->gpu_lock = SDL_CreateMutex();
 
     SDL_PropertiesID props = SDL_CreateProperties();
     SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_SHADERS_MSL_BOOLEAN, true);
@@ -262,12 +500,37 @@ kit_multiview_session *kit_multiview_begin(void *metal_device, void *metal_queue
         SDL_SetPointerProperty(props, SDL_PROP_GPU_DEVICE_CREATE_METAL_COMMAND_QUEUE_POINTER, metal_queue);
     }
 #endif
+#ifdef SDL_PROP_GPU_DEVICE_CREATE_METAL_COMMAND_BUFFER_COMPLETED_CALLBACK_POINTER
+    /* K4a: GPU-Zeit jedes SDL-Command-Buffers aus dem Completed-Rückruf des Backends. */
+    SDL_SetPointerProperty(props, SDL_PROP_GPU_DEVICE_CREATE_METAL_COMMAND_BUFFER_COMPLETED_CALLBACK_POINTER, (void *)kit_gpu_completed);
+    SDL_SetPointerProperty(props, SDL_PROP_GPU_DEVICE_CREATE_METAL_COMMAND_BUFFER_COMPLETED_USERDATA_POINTER, s);
+#endif
     s->device = SDL_CreateGPUDeviceWithProperties(props);
     SDL_DestroyProperties(props);
     if (!s->device) {
         kit_logf(s, "[c64-kit] FAIL step=multiview-device error=\"%s\"", SDL_GetError());
+        SDL_DestroyMutex(s->gpu_lock);
         SDL_free(s);
         return NULL;
+    }
+    /* Metal-Device für die MSAA-Texturen: das übergebene oder das von SDL gewählte. */
+    s->metal_device = metal_device;
+    if (!s->metal_device) {
+        s->metal_device = SDL_GetPointerProperty(SDL_GetGPUDeviceProperties(s->device), SDL_PROP_GPU_DEVICE_METAL_DEVICE_POINTER, NULL);
+    }
+    if (s->opt.msaa_samples > 1) {
+        const bool supported = kit_metal_supports_sample_count(s->metal_device, s->opt.msaa_samples);
+        kit_logf(s, "[c64-kit] step=multiview-msaa-support samples1=%d samples2=%d samples4=%d samples8=%d requested=%u supported=%d sdlSupports(color)=%d sdlSupports(depth)=%d",
+                 kit_metal_supports_sample_count(s->metal_device, 1) ? 1 : 0, kit_metal_supports_sample_count(s->metal_device, 2) ? 1 : 0,
+                 kit_metal_supports_sample_count(s->metal_device, 4) ? 1 : 0, kit_metal_supports_sample_count(s->metal_device, 8) ? 1 : 0,
+                 s->opt.msaa_samples, supported ? 1 : 0,
+                 SDL_GPUTextureSupportsSampleCount(s->device, s->color_format, s->msaa_sc) ? 1 : 0,
+                 SDL_GPUTextureSupportsSampleCount(s->device, s->depth_format, s->msaa_sc) ? 1 : 0);
+        if (!supported) {
+            kit_logf(s, "[c64-kit] FAIL step=multiview-msaa-support error=\"MSAA %ux nicht unterstützt\"", s->opt.msaa_samples);
+            kit_multiview_end(s);
+            return NULL;
+        }
     }
 
     const bool supports2 = SDL_GPUSupportsViewCount(s->device, KIT_VIEW_COUNT);
@@ -291,16 +554,53 @@ kit_multiview_session *kit_multiview_begin(void *metal_device, void *metal_queue
         kit_multiview_end(s);
         return NULL;
     }
-    s->pipeline = kit_create_pipeline(s->device, s->vertex, s->fragment, s->color_format, s->depth_format, KIT_VIEW_COUNT);
+    s->pipeline = kit_create_pipeline(s->device, s->vertex, s->fragment, s->color_format, s->depth_format, KIT_VIEW_COUNT, s->msaa_sc);
     if (!s->pipeline) {
         kit_logf(s, "[c64-kit] FAIL step=multiview-pipeline error=\"%s\"", SDL_GetError());
         kit_multiview_end(s);
         return NULL;
     }
-    kit_logf(s, "[c64-kit] step=multiview view_count=%d pipeline=%p color=B8G8R8A8_UNORM_SRGB depth=D32_FLOAT depthTest=greater depthWrite=1 cull=none vertexMSL=%zu fragmentMSL=%zu uniformBytes=%zu shaders=HLSL/SV_ViewID→DXC→SPIRV-Cross→amplification_id",
-             KIT_VIEW_COUNT, (void *)s->pipeline, sizeof(kit_multiview_vertex_msl) - 1,
-             sizeof(kit_multiview_fragment_msl) - 1, sizeof(kit_mv_uniforms));
+    kit_logf(s, "[c64-kit] step=multiview view_count=%d pipeline=%p color=B8G8R8A8_UNORM_SRGB depth=D32_FLOAT depthTest=greater depthWrite=1 cull=none msaa=%u depthResolveFilter=%s vertexMSL=%zu fragmentMSL=%zu uniformBytes=%zu shaders=HLSL/SV_ViewID→DXC→SPIRV-Cross→amplification_id",
+             KIT_VIEW_COUNT, (void *)s->pipeline, s->opt.msaa_samples, kit_depth_filter_names[s->opt.depth_filter],
+             sizeof(kit_multiview_vertex_msl) - 1, sizeof(kit_multiview_fragment_msl) - 1, sizeof(kit_mv_uniforms));
     return s;
+}
+
+/* K4a: MSAA-Texturen in Drawable-Grösse anlegen oder bei neuer Grösse ersetzen (Host-Texturen,
+ * importiert mit sample_count; leben für die Sitzung). */
+static bool kit_ensure_msaa(kit_multiview_session *s, unsigned width, unsigned height, unsigned layers)
+{
+    if (s->msaa_color && s->stats.msaa_width == width && s->stats.msaa_height == height && s->stats.msaa_layers == layers) {
+        return true;
+    }
+    if (s->msaa_color || s->msaa_depth) {
+        SDL_WaitForGPUIdle(s->device);
+        if (s->msaa_color) SDL_ReleaseGPUTexture(s->device, s->msaa_color);
+        if (s->msaa_depth) SDL_ReleaseGPUTexture(s->device, s->msaa_depth);
+        s->msaa_color = s->msaa_depth = NULL;
+        kit_metal_release_texture(s->msaa_color_mtl);
+        kit_metal_release_texture(s->msaa_depth_mtl);
+        s->msaa_color_mtl = s->msaa_depth_mtl = NULL;
+    }
+    if (!kit_metal_create_array_texture_ex(s->metal_device, false, width, height, layers, s->opt.msaa_samples, &s->msaa_color_mtl) ||
+        !kit_metal_create_array_texture_ex(s->metal_device, true, width, height, layers, s->opt.msaa_samples, &s->msaa_depth_mtl)) {
+        SDL_SetError("MSAA-Texturen %ux%ux%u mit %u Samples nicht erzeugt", width, height, layers, s->opt.msaa_samples);
+        return false;
+    }
+    s->msaa_color = kit_wrap(s->device, s->msaa_color_mtl, false, NULL);
+    s->msaa_depth = kit_wrap(s->device, s->msaa_depth_mtl, true, NULL);
+    if (!s->msaa_color || !s->msaa_depth) {
+        return false;
+    }
+    s->stats.msaa_width = width;
+    s->stats.msaa_height = height;
+    s->stats.msaa_layers = layers;
+    s->stats.msaa_bytes = kit_metal_texture_allocated_bytes(s->msaa_color_mtl) + kit_metal_texture_allocated_bytes(s->msaa_depth_mtl);
+    kit_logf(s, "[c64-kit] step=multiview-msaa samples=%u color{%ux%ux%u bytes=%llu} depth{%ux%ux%u bytes=%llu} totalMB=%.1f depthResolveFilter=%s resolve=color:storeOp=RESOLVE depth:passProperty storeOp=DONT_CARE",
+             s->opt.msaa_samples, width, height, layers, kit_metal_texture_allocated_bytes(s->msaa_color_mtl),
+             width, height, layers, kit_metal_texture_allocated_bytes(s->msaa_depth_mtl),
+             (double)s->stats.msaa_bytes / (1024.0 * 1024.0), kit_depth_filter_names[s->opt.depth_filter]);
+    return true;
 }
 
 static void kit_frame_fail(kit_multiview_session *s, const char *step, SDL_GPUCommandBuffer *cmd,
@@ -375,12 +675,34 @@ bool kit_multiview_frame(kit_multiview_session *s, void *color_texture, void *de
         }
     }
 
+    /* K4a: mit MSAA sind die Pass-Ziele die MSAA-Texturen, die Drawable-Wrapper die Auflösungsziele. */
+    kit_pass_desc pd;
+    SDL_zero(pd);
+    pd.color = color;
+    pd.depth = depth;
+    SDL_memcpy(pd.rgba, rgba, sizeof(pd.rgba));
+    pd.depth_clear = depth_clear;
+    pd.view_count = KIT_VIEW_COUNT;
+    pd.base_layer = 0;
+    pd.rate_map = rate_map;
+    if (s->opt.msaa_samples > 1) {
+        if (!kit_ensure_msaa(s, cdesc.width, cdesc.height, cdesc.layers)) {
+            kit_frame_fail(s, "multiview-msaa-textures", NULL, color, depth);
+            return false;
+        }
+        pd.color = s->msaa_color;
+        pd.depth = s->msaa_depth;
+        pd.color_resolve = color;
+        pd.depth_resolve = depth;
+        pd.depth_filter = s->opt.depth_filter;
+    }
+
     SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(s->device);
     if (!cmd) {
         kit_frame_fail(s, "multiview-cmdbuf", NULL, color, depth);
         return false;
     }
-    SDL_GPURenderPass *pass = kit_begin_pass_map(cmd, color, depth, rgba, depth_clear, KIT_VIEW_COUNT, 0, rate_map);
+    SDL_GPURenderPass *pass = kit_begin_pass_ex(cmd, &pd);
     if (!pass) {
         kit_frame_fail(s, "multiview-renderpass", cmd, color, depth);
         return false;
@@ -392,14 +714,14 @@ bool kit_multiview_frame(kit_multiview_session *s, void *color_texture, void *de
             kit_frame_fail(s, "multiview-bind", cmd, color, depth);
             return false;
         }
-        const float white[2][4] = { { 1, 1, 1, 1 }, { 1, 1, 1, 1 } };
         kit_mv_uniforms u;
-        kit_fill_uniforms(&u, view_projection, center, right, up, white, 1.0f);
+        kit_fill_uniforms(&u, view_projection, center, right, up, s->opt.view_colors, s->opt.pattern);
         SDL_PushGPUVertexUniformData(cmd, 0, &u, sizeof(u));
         SDL_DrawGPUPrimitives(pass, 6, 1, 0, 0);
         s->stats.draws_total += 1;
     }
     SDL_EndGPURenderPass(pass);
+    kit_push_tag(s, 'F');
     if (!SDL_SubmitGPUCommandBuffer(cmd)) {
         kit_frame_fail(s, "multiview-submit", NULL, color, depth);
         return false;
@@ -421,11 +743,16 @@ void kit_multiview_take_stats(kit_multiview_session *s, kit_multiview_stats *out
     if (!s || !out) {
         return;
     }
+    SDL_LockMutex(s->gpu_lock);
     *out = s->stats;
     s->stats.frames = 0;
     s->stats.fails = 0;
     s->stats.sum_ms = 0;
     s->stats.max_ms = 0;
+    s->stats.gpu_frames = 0;
+    s->stats.gpu_sum_ms = 0;
+    s->stats.gpu_max_ms = 0;
+    SDL_UnlockMutex(s->gpu_lock);
 }
 
 void kit_multiview_end(kit_multiview_session *s)
@@ -437,16 +764,35 @@ void kit_multiview_end(kit_multiview_session *s)
         SDL_WaitForGPUIdle(s->device);
         if (s->measure_pipeline) SDL_ReleaseGPUGraphicsPipeline(s->device, s->measure_pipeline);
         if (s->measure_texture) SDL_ReleaseGPUTexture(s->device, s->measure_texture);
+        if (s->measure_msaa) SDL_ReleaseGPUTexture(s->device, s->measure_msaa);
         if (s->measure_transfer) SDL_ReleaseGPUTransferBuffer(s->device, s->measure_transfer);
+        if (s->msaa_color) SDL_ReleaseGPUTexture(s->device, s->msaa_color);
+        if (s->msaa_depth) SDL_ReleaseGPUTexture(s->device, s->msaa_depth);
         if (s->pipeline) SDL_ReleaseGPUGraphicsPipeline(s->device, s->pipeline);
         if (s->vertex) SDL_ReleaseGPUShader(s->device, s->vertex);
         if (s->fragment) SDL_ReleaseGPUShader(s->device, s->fragment);
         SDL_DestroyGPUDevice(s->device);
     }
+    kit_metal_release_texture(s->msaa_color_mtl);
+    kit_metal_release_texture(s->msaa_depth_mtl);
     const double mean = s->stats.frames_total ? s->stats.total_sum_ms / (double)s->stats.frames_total : 0;
-    kit_logf(s, "[c64-kit] step=multiview-end frames=%lu fails=%lu passes=%lu draws=%lu sdl(ms) mean=%.3f max=%.3f wrappers created=%lu released=%lu",
+    unsigned gpu_n = 0;
+    double gpu_mean = 0, gpu_p95 = 0, gpu_max = 0;
+    kit_multiview_gpu_percentiles(s, &gpu_n, &gpu_mean, &gpu_p95, &gpu_max);
+    kit_logf(s, "[c64-kit] step=multiview-end frames=%lu fails=%lu passes=%lu draws=%lu sdl(ms) mean=%.3f max=%.3f gpu(ms, ab Frame %u) n=%u mean=%.3f p95=%.3f max=%.3f untagged=%lu gpuErr=%lu msaa=%u wrappers created=%lu released=%lu",
              s->stats.frames_total, s->stats.fails_total, s->stats.passes_total, s->stats.draws_total,
-             mean, s->stats.total_max_ms, s->stats.wrappers_created, s->stats.wrappers_released);
+             mean, s->stats.total_max_ms, s->gpu_skip + 1, gpu_n, gpu_mean, gpu_p95, gpu_max,
+             s->stats.gpu_untagged, s->stats.gpu_errors, s->opt.msaa_samples,
+             s->stats.wrappers_created, s->stats.wrappers_released);
+    /* Der Completed-Rückruf kann nach dem Warten noch kurz laufen: Sitzung als geschlossen
+     * markieren, ihm eine kurze Frist lassen, dann freigeben. */
+    if (s->gpu_lock) {
+        SDL_LockMutex(s->gpu_lock);
+        s->closed = true;
+        SDL_UnlockMutex(s->gpu_lock);
+        SDL_Delay(10);
+        SDL_DestroyMutex(s->gpu_lock);
+    }
     SDL_free(s);
 }
 
@@ -490,18 +836,22 @@ static bool kit_measure_impl(kit_multiview_session *s, void *rate_map, bool verb
     out->physical_height = H;
     out->layers = md.layers;
 
-    /* Mess-Pipeline und -Textur beim ersten Aufruf oder bei neuer Grösse anlegen. */
+    /* Mess-Pipeline und -Textur beim ersten Aufruf oder bei neuer Grösse anlegen; unter MSAA (K4a)
+     * rendert der Pass in eine SDL-eigene RG32F-Multisample-Array-Textur und löst in die
+     * Mess-Textur auf. */
     if (!s->measure_pipeline) {
         s->measure_pipeline = kit_create_pipeline_ex(s->device, s->vertex, s->fragment, SDL_GPU_TEXTUREFORMAT_R32G32_FLOAT,
-                                                     SDL_GPU_TEXTUREFORMAT_D32_FLOAT, false, KIT_VIEW_COUNT);
+                                                     SDL_GPU_TEXTUREFORMAT_D32_FLOAT, false, KIT_VIEW_COUNT, s->msaa_sc);
         if (!s->measure_pipeline) {
             return false;
         }
     }
     if (!s->measure_texture || s->measure_width != tex_w || s->measure_height != tex_h) {
-        if (s->measure_texture) {
-            SDL_ReleaseGPUTexture(s->device, s->measure_texture);
-            s->measure_texture = NULL;
+        if (s->measure_texture || s->measure_msaa) {
+            SDL_WaitForGPUIdle(s->device);
+            if (s->measure_texture) SDL_ReleaseGPUTexture(s->device, s->measure_texture);
+            if (s->measure_msaa) SDL_ReleaseGPUTexture(s->device, s->measure_msaa);
+            s->measure_texture = s->measure_msaa = NULL;
         }
         SDL_GPUTextureCreateInfo info;
         SDL_zero(info);
@@ -516,6 +866,13 @@ static bool kit_measure_impl(kit_multiview_session *s, void *rate_map, bool verb
         s->measure_texture = SDL_CreateGPUTexture(s->device, &info);
         if (!s->measure_texture) {
             return false;
+        }
+        if (s->opt.msaa_samples > 1) {
+            info.sample_count = s->msaa_sc;
+            s->measure_msaa = SDL_CreateGPUTexture(s->device, &info);
+            if (!s->measure_msaa) {
+                return false;
+            }
         }
         s->measure_width = tex_w;
         s->measure_height = tex_h;
@@ -537,8 +894,14 @@ static bool kit_measure_impl(kit_multiview_session *s, void *rate_map, bool verb
     if (!cmd) {
         return false;
     }
-    const float clear[4] = { -1, -1, 0, 1 };
-    SDL_GPURenderPass *pass = kit_begin_pass_map(cmd, s->measure_texture, NULL, clear, 0.0f, KIT_VIEW_COUNT, 0, rate_map);
+    kit_pass_desc pd;
+    SDL_zero(pd);
+    pd.color = s->measure_msaa ? s->measure_msaa : s->measure_texture;
+    pd.color_resolve = s->measure_msaa ? s->measure_texture : NULL;
+    pd.rgba[0] = -1; pd.rgba[1] = -1; pd.rgba[2] = 0; pd.rgba[3] = 1;
+    pd.view_count = KIT_VIEW_COUNT;
+    pd.rate_map = rate_map;
+    SDL_GPURenderPass *pass = kit_begin_pass_ex(cmd, &pd);
     if (!pass) {
         SDL_CancelGPUCommandBuffer(cmd);
         return false;
@@ -595,6 +958,7 @@ static bool kit_measure_impl(kit_multiview_session *s, void *rate_map, bool verb
         }
     }
     SDL_EndGPUCopyPass(copy);
+    kit_push_tag(s, 'M');
     SDL_GPUFence *fence = SDL_SubmitGPUCommandBufferAndAcquireFence(cmd);
     if (!fence || !SDL_WaitForGPUFences(s->device, true, &fence, 1)) {
         if (fence) SDL_ReleaseGPUFence(s->device, fence);
@@ -633,7 +997,8 @@ static bool kit_measure_impl(kit_multiview_session *s, void *rate_map, bool verb
     }
     SDL_UnmapGPUTransferBuffer(s->device, s->measure_transfer);
     if (verbose) {
-        kit_logf(s, "[c64-kit] step=fov-sample-space samplesIn=mapPhysical %ux%u measureTexture=%ux%u", W, H, tex_w, tex_h);
+        kit_logf(s, "[c64-kit] step=fov-sample-space samplesIn=mapPhysical %ux%u measureTexture=%ux%u msaa=%u%s", W, H, tex_w, tex_h,
+                 s->opt.msaa_samples, s->measure_msaa ? " (RG32F multisample, aufgeloest in die Mess-Textur)" : "");
     }
     out->samples = count;
     out->max_dev_px = maxdev;
@@ -789,6 +1154,7 @@ int kit_multiview_selftest(kit_log_fn log, void *user)
         SDL_DownloadFromGPUTexture(copy, &src, &dst);
     }
     SDL_EndGPUCopyPass(copy);
+    kit_push_tag(s, 'R');
     fence = SDL_SubmitGPUCommandBufferAndAcquireFence(cmd);
     if (!fence || !SDL_WaitForGPUFences(s->device, true, &fence, 1)) {
         self_logf(&ctx, "[c64-kit] FAIL step=selftest-submit error=\"%s\"", SDL_GetError());
@@ -920,6 +1286,7 @@ int kit_multiview_selftest(kit_log_fn log, void *user)
             SDL_DownloadFromGPUTexture(copy4, &src, &dst);
         }
         SDL_EndGPUCopyPass(copy4);
+        kit_push_tag(s, 'R');
         fence4 = SDL_SubmitGPUCommandBufferAndAcquireFence(cmd4);
         if (!fence4 || !SDL_WaitForGPUFences(s->device, true, &fence4, 1)) {
             self_logf(&ctx, "[c64-kit] FAIL step=offset-submit error=\"%s\"", SDL_GetError());
@@ -973,7 +1340,7 @@ int kit_multiview_selftest(kit_log_fn log, void *user)
 
     /* Negativtest 1: Pipeline mit view_count 1 in einem Pass mit view_count 2. */
     {
-        single_view = kit_create_pipeline(s->device, s->vertex, s->fragment, s->color_format, s->depth_format, 1);
+        single_view = kit_create_pipeline(s->device, s->vertex, s->fragment, s->color_format, s->depth_format, 1, SDL_GPU_SAMPLECOUNT_1);
         SDL_GPUCommandBuffer *cmd2 = SDL_AcquireGPUCommandBuffer(s->device);
         SDL_GPURenderPass *pass2 = cmd2 ? kit_begin_pass(cmd2, color, depth, clear, depth_clear, KIT_VIEW_COUNT) : NULL;
         bool failed = false;
@@ -1156,5 +1523,408 @@ done:
     }
     kit_metal_release_host_objects(host_device, host_queue);
     self_logf(&ctx, "[c64-kit] result=%s failedStep=%d mode=foveation", result == 0 ? "ok" : "fail", result);
+    return result;
+}
+
+/* ------------------------------------------------------------------ Mac-Selbsttest K4a (MSAA) */
+
+/* Beide Schichten von Farbe (BGRA8) und Tiefe (D32F) zweier Host-Texturen vollständig lesen;
+ * die Puffer gehören dem Aufrufer (SDL_free). */
+static bool kit_read_layers(kit_multiview_session *s, void *mtl_color, void *mtl_depth, unsigned W, unsigned H,
+                            unsigned layers, Uint8 **color_out, float **depth_out)
+{
+    bool ok = false;
+    SDL_GPUTexture *color = kit_wrap(s->device, mtl_color, false, NULL);
+    SDL_GPUTexture *depth = kit_wrap(s->device, mtl_depth, true, NULL);
+    SDL_GPUTransferBuffer *tc = NULL, *td = NULL;
+    SDL_GPUFence *fence = NULL;
+    const Uint32 layer_bytes = W * H * 4;
+    *color_out = NULL;
+    *depth_out = NULL;
+    if (!color || !depth) {
+        goto done;
+    }
+    {
+        SDL_GPUTransferBufferCreateInfo tinfo;
+        SDL_zero(tinfo);
+        tinfo.usage = SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD;
+        tinfo.size = layer_bytes * layers;
+        tc = SDL_CreateGPUTransferBuffer(s->device, &tinfo);
+        td = SDL_CreateGPUTransferBuffer(s->device, &tinfo);
+        if (!tc || !td) {
+            goto done;
+        }
+        SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(s->device);
+        if (!cmd) {
+            goto done;
+        }
+        SDL_GPUCopyPass *copy = SDL_BeginGPUCopyPass(cmd);
+        if (!copy) {
+            SDL_CancelGPUCommandBuffer(cmd);
+            goto done;
+        }
+        for (unsigned layer = 0; layer < layers; layer++) {
+            SDL_GPUTextureRegion src;
+            SDL_zero(src);
+            src.layer = layer;
+            src.w = W;
+            src.h = H;
+            src.d = 1;
+            SDL_GPUTextureTransferInfo dst;
+            SDL_zero(dst);
+            dst.offset = layer * layer_bytes;
+            dst.pixels_per_row = W;
+            dst.rows_per_layer = H;
+            src.texture = color;
+            dst.transfer_buffer = tc;
+            SDL_DownloadFromGPUTexture(copy, &src, &dst);
+            src.texture = depth;
+            dst.transfer_buffer = td;
+            SDL_DownloadFromGPUTexture(copy, &src, &dst);
+        }
+        SDL_EndGPUCopyPass(copy);
+        kit_push_tag(s, 'R');
+        fence = SDL_SubmitGPUCommandBufferAndAcquireFence(cmd);
+        if (!fence || !SDL_WaitForGPUFences(s->device, true, &fence, 1)) {
+            goto done;
+        }
+        const Uint8 *cp = (const Uint8 *)SDL_MapGPUTransferBuffer(s->device, tc, false);
+        const float *dp = (const float *)SDL_MapGPUTransferBuffer(s->device, td, false);
+        if (!cp || !dp) {
+            goto done;
+        }
+        *color_out = (Uint8 *)SDL_malloc(layer_bytes * layers);
+        *depth_out = (float *)SDL_malloc(layer_bytes * layers);
+        SDL_memcpy(*color_out, cp, layer_bytes * layers);
+        SDL_memcpy(*depth_out, dp, layer_bytes * layers);
+        SDL_UnmapGPUTransferBuffer(s->device, tc);
+        SDL_UnmapGPUTransferBuffer(s->device, td);
+        ok = true;
+    }
+done:
+    if (fence) SDL_ReleaseGPUFence(s->device, fence);
+    if (tc) SDL_ReleaseGPUTransferBuffer(s->device, tc);
+    if (td) SDL_ReleaseGPUTransferBuffer(s->device, td);
+    if (color) SDL_ReleaseGPUTexture(s->device, color);
+    if (depth) SDL_ReleaseGPUTexture(s->device, depth);
+    return ok;
+}
+
+typedef struct kit_edge_result {
+    unsigned full;            /* Kanal exakt 255 (Quad) */
+    unsigned clear;           /* Kanal exakt 0 (Clear) */
+    unsigned intermediate;    /* Zwischenwert: geglättete Kante */
+    unsigned depth_match;     /* Kantenpixel, deren aufgelöste Tiefe zum Filter passt */
+    unsigned depth_mismatch;
+    float min_depth;
+    bool center_ok;
+    bool corner_ok;
+    bool alpha_ok;
+} kit_edge_result;
+
+/* Eine Schicht auswerten: channel = BGRA-Index des Quad-Kanals (2 rot, 0 blau), filter 0/1/2. */
+static void kit_edge_analyze(const Uint8 *c, const float *d, unsigned W, unsigned H, int channel,
+                             float quad_depth, float clear_depth, unsigned filter, kit_edge_result *r)
+{
+    SDL_zerop(r);
+    r->min_depth = 1e9f;
+    r->alpha_ok = true;
+    for (unsigned y = 0; y < H; y++) {
+        for (unsigned x = 0; x < W; x++) {
+            const unsigned idx = y * W + x;
+            const Uint8 v = c[idx * 4 + channel];
+            const float depth = d[idx];
+            if (c[idx * 4 + 3] != 255) r->alpha_ok = false;
+            if (depth < r->min_depth) r->min_depth = depth;
+            if (v == 255) {
+                r->full += 1;
+            } else if (v == 0) {
+                r->clear += 1;
+            } else {
+                r->intermediate += 1;
+                bool match;
+                if (filter == 2) {
+                    match = SDL_fabsf(depth - quad_depth) < 1e-6f;
+                } else if (filter == 1) {
+                    match = SDL_fabsf(depth - clear_depth) < 1e-6f;
+                } else {
+                    match = SDL_fabsf(depth - quad_depth) < 1e-6f || SDL_fabsf(depth - clear_depth) < 1e-6f;
+                }
+                if (match) r->depth_match += 1; else r->depth_mismatch += 1;
+            }
+        }
+    }
+    const unsigned ci = (H / 2) * W + (W / 2);
+    r->center_ok = (c[ci * 4 + channel] == 255) && SDL_fabsf(d[ci] - quad_depth) < 1e-6f;
+    const unsigned ki = 4 * W + 4;
+    r->corner_ok = (c[ki * 4 + channel] == 0) && SDL_fabsf(d[ki] - clear_depth) < 1e-6f;
+}
+
+/* Gedrehtes Quad mit schrägen Kanten rendern (View 0 rot/0,25, View 1 blau/0,75 über Clear
+ * schwarz/0,001), beide Schichten lesen und auswerten. Loggt step=msaa-edge pro Schicht. */
+static int kit_edge_round(kit_self_ctx *ctx, kit_multiview_session *s, void *mtl_color, void *mtl_depth,
+                          unsigned W, unsigned H, void *map, const char *label, bool expect_smooth, int fail_code)
+{
+    float vp[32] = { 0 };
+    for (int v = 0; v < 2; v++) {
+        vp[v * 16 + 0] = 1; vp[v * 16 + 5] = 1; vp[v * 16 + 10] = 1; vp[v * 16 + 15] = 1;
+    }
+    vp[14] = 0.25f;
+    vp[16 + 14] = 0.75f;
+    const float center[3] = { 0, 0, 0 }, right[3] = { 0.6f, 0.15f, 0 }, up[3] = { -0.15f, 0.6f, 0 };
+    const float clear[4] = { 0, 0, 0, 1 };
+    const float clear_depth = 0.001f;
+    const float quad_depth[2] = { 0.25f, 0.75f };
+    const int channel[2] = { 2, 0 }; /* rot, blau in BGRA */
+    kit_multiview_stats before, after;
+    kit_multiview_take_stats(s, &before);
+    if (!kit_multiview_frame(s, mtl_color, mtl_depth, clear, clear_depth, true, vp, center, right, up, map)) {
+        self_logf(ctx, "[c64-kit] FAIL step=msaa-edge case=%s error=\"%s\"", label, SDL_GetError());
+        return fail_code;
+    }
+    Uint8 *c = NULL;
+    float *d = NULL;
+    if (!kit_read_layers(s, mtl_color, mtl_depth, W, H, KIT_VIEW_COUNT, &c, &d)) {
+        self_logf(ctx, "[c64-kit] FAIL step=msaa-edge-read case=%s error=\"%s\"", label, SDL_GetError());
+        return fail_code;
+    }
+    int result = 0;
+    for (unsigned layer = 0; layer < KIT_VIEW_COUNT; layer++) {
+        kit_edge_result r;
+        kit_edge_analyze(c + layer * W * H * 4, d + layer * W * H, W, H, channel[layer], quad_depth[layer], clear_depth,
+                         s->opt.depth_filter, &r);
+        const bool smooth_ok = expect_smooth ? (r.intermediate > 0) : (r.intermediate == 0);
+        const bool depth_ok = (r.depth_mismatch == 0);
+        const bool ok = smooth_ok && depth_ok && r.full > 0 && r.clear > 0 && r.center_ok && r.corner_ok && r.alpha_ok && r.min_depth > 0;
+        self_logf(ctx, "[c64-kit] step=msaa-edge case=%s samples=%u filter=%s layer=%u color=%s full=%u clear=%u intermediate=%u depthAtEdges{match=%u mismatch=%u} minDepth=%.4f center=%d corner=%d alpha255=%d ok=%d",
+                  label, s->opt.msaa_samples, kit_depth_filter_names[s->opt.depth_filter], layer, layer == 0 ? "rot" : "blau",
+                  r.full, r.clear, r.intermediate, r.depth_match, r.depth_mismatch, r.min_depth,
+                  r.center_ok ? 1 : 0, r.corner_ok ? 1 : 0, r.alpha_ok ? 1 : 0, ok ? 1 : 0);
+        if (!ok) result = fail_code + 1;
+    }
+    SDL_free(c);
+    SDL_free(d);
+    /* GPU-Zeit dieses einen Frames aus dem Rückruf (nach dem Rücklesen ist der Frame sicher fertig);
+     * erster Frame einer Sitzung, also mit Aufwärmen. Der Vergleich steht in step=msaa-gpu-bench. */
+    kit_multiview_take_stats(s, &after);
+    self_logf(ctx, "[c64-kit] step=msaa-gpu case=%s gpuFrames=%u gpu(ms) mean=%.3f max=%.3f untagged=%lu gpuErr=%lu (einzelner Frame, mit Aufwaermen)",
+              label, after.gpu_frames, after.gpu_frames ? after.gpu_sum_ms / after.gpu_frames : 0.0, after.gpu_max_ms,
+              after.gpu_untagged, after.gpu_errors);
+    (void)before;
+    return result;
+}
+
+/* GPU-Zeit über viele gleiche Frames ohne Aufwärmphase: `frames` Frames rendern, die ersten `skip`
+ * Abschlüsse nicht werten, dann Mittel, p95 und Maximum aus dem Rückruf. */
+static bool kit_gpu_bench(kit_self_ctx *ctx, kit_multiview_session *s, void *mtl_color, void *mtl_depth, void *map,
+                          const char *label, unsigned frames, unsigned skip)
+{
+    float vp[32] = { 0 };
+    for (int v = 0; v < 2; v++) {
+        vp[v * 16 + 0] = 1; vp[v * 16 + 5] = 1; vp[v * 16 + 10] = 1; vp[v * 16 + 15] = 1;
+    }
+    vp[14] = 0.25f;
+    vp[16 + 14] = 0.75f;
+    const float center[3] = { 0, 0, 0 }, right[3] = { 0.6f, 0.15f, 0 }, up[3] = { -0.15f, 0.6f, 0 };
+    const float clear[4] = { 0, 0, 0, 1 };
+    kit_multiview_stats drop;
+    /* Zähler auf Null: Aufwärmphase neu ab hier. */
+    SDL_LockMutex(s->gpu_lock);
+    s->gpu_completed_frames = 0;
+    s->gpu_sample_count = 0;
+    s->gpu_skip = skip;
+    s->stats.gpu_frames_total = 0;
+    s->stats.gpu_total_sum_ms = 0;
+    s->stats.gpu_total_max_ms = 0;
+    SDL_UnlockMutex(s->gpu_lock);
+    kit_multiview_take_stats(s, &drop);
+    for (unsigned i = 0; i < frames; i++) {
+        if (!kit_multiview_frame(s, mtl_color, mtl_depth, clear, 0.001f, true, vp, center, right, up, map)) {
+            self_logf(ctx, "[c64-kit] FAIL step=msaa-gpu-bench case=%s frame=%u error=\"%s\"", label, i, SDL_GetError());
+            return false;
+        }
+    }
+    SDL_WaitForGPUIdle(s->device);
+    SDL_Delay(5); /* Rückrufe der letzten Buffer */
+    unsigned n = 0;
+    double mean = 0, p95 = 0, mx = 0;
+    kit_multiview_gpu_percentiles(s, &n, &mean, &p95, &mx);
+    kit_multiview_stats st;
+    kit_multiview_take_stats(s, &st);
+    self_logf(ctx, "[c64-kit] step=msaa-gpu-bench case=%s samples=%u frames=%u skipped=%u counted=%u gpu(ms) mean=%.3f p95=%.3f max=%.3f untagged=%lu gpuErr=%lu",
+              label, s->opt.msaa_samples, frames, skip, n, mean, p95, mx, st.gpu_untagged, st.gpu_errors);
+    return n > 0;
+}
+
+int kit_multiview_msaa_selftest(kit_log_fn log, void *user)
+{
+    kit_self_ctx ctx;
+    SDL_zero(ctx);
+    ctx.log = log;
+    ctx.user = user;
+
+    int result = 0;
+    void *host_device = NULL, *host_queue = NULL;
+    void *map = NULL;
+    void *mtl_color = NULL, *mtl_depth = NULL;
+    kit_multiview_session *s = NULL;
+    kit_multiview_options opt;
+    unsigned W = 0, H = 0;
+
+    if (!kit_metal_create_host_objects(&host_device, &host_queue)) {
+        self_logf(&ctx, "[c64-kit] FAIL step=selftest-host error=\"Device/Queue nicht erzeugt\"");
+        return 90;
+    }
+    kit_multiview_options_default(&opt);
+    opt.msaa_samples = 4;
+    opt.depth_filter = 2;
+    opt.pattern = 0.0f;
+    const float colors[2][4] = { { 1, 0, 0, 1 }, { 0, 0, 1, 1 } };
+    SDL_memcpy(opt.view_colors, colors, sizeof(colors));
+    s = kit_multiview_begin_ex(host_device, host_queue, &opt, log, user);
+    if (!s) {
+        result = 91;
+        goto done;
+    }
+
+    /* Map wie K3: 1024×1024 logisch, physisch 688×688; «Drawable» in dieser Grösse. */
+    if (!kit_metal_create_rate_map(host_device, 1024, 1024, KIT_VIEW_COUNT, 16, 0.5f, &map)) {
+        self_logf(&ctx, "[c64-kit] FAIL step=msaa-map error=\"Rate Map nicht erzeugt\"");
+        result = 92;
+        goto done;
+    }
+    {
+        kit_metal_map_desc md;
+        kit_metal_map_info(map, &md);
+        W = md.physical_width[0];
+        H = md.physical_height[0];
+    }
+    if (!kit_metal_create_array_texture(host_device, false, W, H, KIT_VIEW_COUNT, &mtl_color) ||
+        !kit_metal_create_array_texture(host_device, true, W, H, KIT_VIEW_COUNT, &mtl_depth)) {
+        self_logf(&ctx, "[c64-kit] FAIL step=msaa-textures error=\"Aufloesungstexturen nicht erzeugt\"");
+        result = 93;
+        goto done;
+    }
+    self_logf(&ctx, "[c64-kit] step=msaa-setup resolve{%ux%ux%u bgra8_srgb+d32f samples=1} msaa=%u map{screen=1024x1024 physical=%ux%u} quad=gedreht(right=0.6,0.15 up=-0.15,0.6) view0=rot/0.25 view1=blau/0.75 clear=schwarz/0.001",
+              W, H, KIT_VIEW_COUNT, opt.msaa_samples, W, H);
+
+    /* Kante mit MSAA 4x, Filter max: Zwischenwerte, Tiefe an Kanten = Quad. */
+    result = kit_edge_round(&ctx, s, mtl_color, mtl_depth, W, H, map, "msaa4-max", true, 94);
+    if (result) goto done;
+
+    /* Filter min: Tiefe an Kanten = Clear. */
+    kit_multiview_set_depth_filter(s, 1);
+    result = kit_edge_round(&ctx, s, mtl_color, mtl_depth, W, H, map, "msaa4-min", true, 96);
+    if (result) goto done;
+    kit_multiview_set_depth_filter(s, 2);
+
+    /* Messbild der Map unter MSAA (Mess-Textur = Map-Grösse und 32 px grösser). */
+    {
+        kit_multiview_measure m;
+        if (!kit_multiview_measure_map(s, map, false, &m)) {
+            self_logf(&ctx, "[c64-kit] FAIL step=msaa-measure error=\"%s\"", SDL_GetError());
+            result = 99;
+            goto done;
+        }
+        const bool within = m.max_dev_px <= 1.0f;
+        self_logf(&ctx, "[c64-kit] step=msaa-measure case=textureEqualsMap samples=%u maxDevPx=%.3f meanDevPx=%.3f physical=%ux%u ms=%.2f ok=%d",
+                  opt.msaa_samples, m.max_dev_px, m.mean_dev_px, m.physical_width, m.physical_height, m.ms, within ? 1 : 0);
+        if (!within) { result = 100; goto done; }
+        kit_multiview_measure m2;
+        if (!kit_measure_impl(s, map, false, W + 32, H + 32, &m2)) {
+            self_logf(&ctx, "[c64-kit] FAIL step=msaa-measure case=textureLargerThanMap error=\"%s\"", SDL_GetError());
+            result = 101;
+            goto done;
+        }
+        const bool within2 = m2.max_dev_px <= 1.0f;
+        self_logf(&ctx, "[c64-kit] step=msaa-measure case=textureLargerThanMap texture=%ux%u mapPhysical=%ux%u samples=%u maxDevPx=%.3f meanDevPx=%.3f ok=%d",
+                  W + 32, H + 32, m2.physical_width, m2.physical_height, opt.msaa_samples, m2.max_dev_px, m2.mean_dev_px, within2 ? 1 : 0);
+        if (!within2) { result = 102; goto done; }
+    }
+
+    /* Negativtests am Pass. */
+    {
+        SDL_GPUTexture *color_res = kit_wrap(s->device, mtl_color, false, NULL);
+        SDL_GPUTexture *depth_res = kit_wrap(s->device, mtl_depth, true, NULL);
+        const float clear[4] = { 0, 0, 0, 1 };
+        kit_pass_desc d;
+        SDL_zero(d);
+        d.color = s->msaa_color;
+        d.depth = s->msaa_depth;
+        d.color_resolve = color_res;
+        SDL_memcpy(d.rgba, clear, sizeof(clear));
+        d.depth_clear = 0.001f;
+        d.view_count = KIT_VIEW_COUNT;
+        d.rate_map = map;
+        /* A: Auflösungstextur der Tiefe ist selbst multisample. */
+        d.depth_resolve = s->msaa_depth;
+        d.depth_filter = 2;
+        {
+            SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(s->device);
+            SDL_GPURenderPass *pass = cmd ? kit_begin_pass_ex(cmd, &d) : NULL;
+            const bool failed = (pass == NULL);
+            self_logf(&ctx, "[c64-kit] step=msaa-negative case=depthResolveTextureMultisample failed=%d error=\"%s\"",
+                      failed ? 1 : 0, failed ? SDL_GetError() : "(kein Fehler, Pass begann)");
+            if (pass) SDL_EndGPURenderPass(pass);
+            if (cmd) SDL_CancelGPUCommandBuffer(cmd);
+            if (!failed) result = 103;
+        }
+        /* B: unbekannter Filter. */
+        d.depth_resolve = depth_res;
+        d.depth_filter_override = "median";
+        {
+            SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(s->device);
+            SDL_GPURenderPass *pass = cmd ? kit_begin_pass_ex(cmd, &d) : NULL;
+            const bool failed = (pass == NULL);
+            self_logf(&ctx, "[c64-kit] step=msaa-negative case=unknownDepthFilter failed=%d error=\"%s\"",
+                      failed ? 1 : 0, failed ? SDL_GetError() : "(kein Fehler, Pass begann)");
+            if (pass) SDL_EndGPURenderPass(pass);
+            if (cmd) SDL_CancelGPUCommandBuffer(cmd);
+            if (!failed && result == 0) result = 104;
+        }
+        if (color_res) SDL_ReleaseGPUTexture(s->device, color_res);
+        if (depth_res) SDL_ReleaseGPUTexture(s->device, depth_res);
+        if (result) goto done;
+    }
+
+    /* GPU-Zeit im Wechsel: vier frische Sitzungen (4x, ohne, 4x, ohne), je 240 gleiche Frames,
+     * die ersten 120 nicht gewertet. Der Wechsel zeigt, ob die Reihenfolge (GPU-Takt des Mac
+     * ohne Vsync-Taktung) die Zahlen bestimmt; in der ersten Sitzung ohne MSAA zusätzlich
+     * dieselbe Kante hart (keine Zwischenwerte). */
+    kit_multiview_end(s);
+    s = NULL;
+    for (unsigned round = 0; round < 4 && result == 0; round++) {
+        const unsigned samples = (round % 2 == 0) ? 4 : 0;
+        char label[32];
+        SDL_snprintf(label, sizeof(label), "%s-r%u", samples ? "msaa4" : "noMsaa", round + 1);
+        opt.msaa_samples = samples;
+        s = kit_multiview_begin_ex(host_device, host_queue, &opt, log, user);
+        if (!s) {
+            result = 105;
+            break;
+        }
+        if (round == 1) {
+            result = kit_edge_round(&ctx, s, mtl_color, mtl_depth, W, H, map, "noMsaa", false, 106);
+            if (result) break;
+        }
+        if (!kit_gpu_bench(&ctx, s, mtl_color, mtl_depth, map, label, 240, 120)) {
+            result = 108 + round;
+            break;
+        }
+        kit_multiview_end(s);
+        s = NULL;
+    }
+
+done:
+    if (s) {
+        kit_multiview_end(s);
+    }
+    kit_metal_release_texture(mtl_color);
+    kit_metal_release_texture(mtl_depth);
+    if (map) {
+        kit_metal_release_map(map);
+    }
+    kit_metal_release_host_objects(host_device, host_queue);
+    self_logf(&ctx, "[c64-kit] result=%s failedStep=%d mode=msaa", result == 0 ? "ok" : "fail", result);
     return result;
 }

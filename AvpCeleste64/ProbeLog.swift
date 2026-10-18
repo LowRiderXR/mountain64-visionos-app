@@ -108,6 +108,13 @@ nonisolated enum ProbeContext {
         }
     }
 
+    /// Noch verfügbarer Speicher des Prozesses in MB (os_proc_available_memory: Abstand zur
+    /// Jetsam-Grenze der App). Referenz: Vice City stürzte auf der M5 bei 5,4 GB phys_footprint ab,
+    /// das Entwicklerforum nennt 5 GB pro App.
+    static var availableMemoryMB: Double {
+        Double(os_proc_available_memory()) / (1024 * 1024)
+    }
+
     /// Physischer Speicherbedarf des Prozesses in MB (task_info TASK_VM_INFO, phys_footprint),
     /// dieselbe Grösse wie in Xcodes Speicheranzeige. 0 bei Fehler.
     static var physFootprintMB: Double {

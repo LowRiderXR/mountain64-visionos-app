@@ -107,7 +107,9 @@ bool kit_metal_texture_info(void *texture, kit_metal_texture_desc *out)
     out->mtl_type = (int)t.textureType;
     switch (t.textureType) {
     case MTLTextureType2D: out->sdl_type = SDL_GPU_TEXTURETYPE_2D; break;
+    case MTLTextureType2DMultisample: out->sdl_type = SDL_GPU_TEXTURETYPE_2D; break;
     case MTLTextureType2DArray: out->sdl_type = SDL_GPU_TEXTURETYPE_2D_ARRAY; break;
+    case MTLTextureType2DMultisampleArray: out->sdl_type = SDL_GPU_TEXTURETYPE_2D_ARRAY; break; /* K4a: Samples aus sampleCount */
     default: out->sdl_type = -1; break;
     }
     out->mtl_pixel_format = (int)t.pixelFormat;
@@ -121,32 +123,76 @@ bool kit_metal_texture_info(void *texture, kit_metal_texture_desc *out)
     return true;
 }
 
-bool kit_metal_create_array_texture(void *device, bool depth, unsigned width, unsigned height,
-                                    unsigned layers, void **texture_out)
+bool kit_metal_create_array_texture_ex(void *device, bool depth, unsigned width, unsigned height,
+                                       unsigned layers, unsigned samples, void **texture_out)
 {
     @autoreleasepool {
-        if (!device || !texture_out) {
+        if (!device || !texture_out || samples == 0) {
             return false;
         }
         id<MTLDevice> d = (__bridge id<MTLDevice>)device;
         MTLTextureDescriptor *desc = [MTLTextureDescriptor new];
-        desc.textureType = MTLTextureType2DArray;
+        desc.textureType = (samples > 1) ? MTLTextureType2DMultisampleArray : MTLTextureType2DArray;
         desc.pixelFormat = depth ? MTLPixelFormatDepth32Float : MTLPixelFormatBGRA8Unorm_sRGB;
         desc.width = width;
         desc.height = height;
         desc.arrayLength = layers;
         desc.mipmapLevelCount = 1;
-        desc.sampleCount = 1;
+        desc.sampleCount = samples;
         desc.storageMode = MTLStorageModePrivate;
         desc.usage = MTLTextureUsageRenderTarget;
         id<MTLTexture> t = [d newTextureWithDescriptor:desc];
         if (t == nil) {
             return false;
         }
-        t.label = depth ? @"kit-host-depth-array" : @"kit-host-color-array";
+        if (samples > 1) {
+            t.label = depth ? @"kit-host-depth-msaa-array" : @"kit-host-color-msaa-array";
+        } else {
+            t.label = depth ? @"kit-host-depth-array" : @"kit-host-color-array";
+        }
         *texture_out = (void *)CFBridgingRetain(t);
         return true;
     }
+}
+
+bool kit_metal_create_array_texture(void *device, bool depth, unsigned width, unsigned height,
+                                    unsigned layers, void **texture_out)
+{
+    return kit_metal_create_array_texture_ex(device, depth, width, height, layers, 1, texture_out);
+}
+
+unsigned long long kit_metal_texture_allocated_bytes(void *texture)
+{
+    if (!texture) {
+        return 0;
+    }
+    id<MTLTexture> t = (__bridge id<MTLTexture>)texture;
+    return (unsigned long long)t.allocatedSize;
+}
+
+bool kit_metal_supports_sample_count(void *device, unsigned samples)
+{
+    if (!device) {
+        return false;
+    }
+    id<MTLDevice> d = (__bridge id<MTLDevice>)device;
+    return [d supportsTextureSampleCount:samples];
+}
+
+bool kit_metal_command_buffer_gpu_time(void *command_buffer, double *start_s, double *end_s,
+                                       int *status_out, char *error_out, size_t cap)
+{
+    if (!command_buffer) {
+        return false;
+    }
+    id<MTLCommandBuffer> cb = (__bridge id<MTLCommandBuffer>)command_buffer;
+    if (start_s) *start_s = cb.GPUStartTime;
+    if (end_s) *end_s = cb.GPUEndTime;
+    if (status_out) *status_out = (int)cb.status;
+    if (error_out && cap > 0) {
+        snprintf(error_out, cap, "%s", cb.error ? (cb.error.localizedDescription.UTF8String ?: "?") : "-");
+    }
+    return cb.status == MTLCommandBufferStatusCompleted && cb.error == nil;
 }
 
 void kit_metal_release_texture(void *texture)

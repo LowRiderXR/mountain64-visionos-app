@@ -1,5 +1,6 @@
 /*
- * kit_multiview.h — SDL_GPU-Kit für visionOS, Stufe K2: Baustein P6 (Multiview).
+ * kit_multiview.h — SDL_GPU-Kit für visionOS, Stufen K2 (P6 Multiview), K3 (P4 Rate Map) und
+ * K4a (MSAA mit Auflösung von Farbe und Tiefe in die Drawable-Schichten).
  *
  * Beide Augen in einem Render-Pass und einem Draw: Pipeline mit
  * SDL_PROP_GPU_GRAPHICSPIPELINE_CREATE_VIEW_COUNT_NUMBER = 2, Pass über
@@ -39,11 +40,60 @@ typedef struct kit_multiview_stats {
     double total_max_ms;
     unsigned long wrappers_created;
     unsigned long wrappers_released;
+    /* K4a: GPU-Zeit der SDL-Command-Buffer der Frames (GPUEndTime − GPUStartTime, aus dem
+     * Completed-Rückruf des Metal-Backends), Fenster und gesamt. Messbild- und Rücklese-Puffer
+     * zählen nicht mit; untagged = Abschlüsse ohne bekannte Herkunft, errors = Status ≠ completed. */
+    unsigned gpu_frames;
+    double gpu_sum_ms;
+    double gpu_max_ms;
+    unsigned long gpu_frames_total;
+    double gpu_total_sum_ms;
+    double gpu_total_max_ms;
+    unsigned long gpu_untagged;
+    unsigned long gpu_errors;
+    /* K4a: MSAA-Stand der Sitzung (0 = aus); Grösse der MSAA-Texturen und ihr allocatedSize. */
+    unsigned msaa_samples;
+    unsigned msaa_width;
+    unsigned msaa_height;
+    unsigned msaa_layers;
+    unsigned long long msaa_bytes;
+    unsigned depth_filter;         /* 0 sample0, 1 min, 2 max */
 } kit_multiview_stats;
+
+/* K4a: Optionen der Sitzung. msaa_samples 0 oder 1 = ohne Kantenglättung (Stand K3). Mit MSAA legt
+ * die Sitzung beim ersten Frame zwei 2D-Multisample-Array-Texturen in Drawable-Grösse an (Farbe,
+ * Tiefe), rendert hinein und löst Farbe (store_op RESOLVE) und Tiefe (Pass-Property
+ * SDL_PROP_GPU_RENDERPASS_CREATE_METAL_DEPTH_RESOLVE_TEXTURE_POINTER) in die Drawable-Schichten
+ * auf. depth_filter: 0 sample0, 1 min, 2 max (Reverse-Z: max = nächste Fläche, Standard).
+ * pattern/view_colors: Inhalt des Quads (Standard Schachbrett weiss; der Mac-Test nutzt flache
+ * Farben pro View). */
+typedef struct kit_multiview_options {
+    unsigned msaa_samples;
+    unsigned depth_filter;
+    float pattern;
+    float view_colors[2][4];
+} kit_multiview_options;
+
+void kit_multiview_options_default(kit_multiview_options *out);
 
 /* SDL_GPU-Device auf Device und Queue des Hosts, Shader und Pipeline mit view_count 2.
  * Loggt step=multiview (SDL_GPUSupportsViewCount, Pipeline, Formate). NULL bei Fehler. */
 kit_multiview_session *kit_multiview_begin(void *metal_device, void *metal_queue, kit_log_fn log, void *user);
+
+/* Wie kit_multiview_begin mit Optionen (NULL = Standard). */
+kit_multiview_session *kit_multiview_begin_ex(void *metal_device, void *metal_queue, const kit_multiview_options *options,
+                                              kit_log_fn log, void *user);
+
+/* K4a: Tiefen-Auflösungsfilter wechseln (0 sample0, 1 min, 2 max); wirkt ab dem nächsten Pass. */
+void kit_multiview_set_depth_filter(kit_multiview_session *session, unsigned depth_filter);
+
+/* K4a: GPU-Zeit der Frames ohne Aufwärmphase. Die ersten `skip` abgeschlossenen Frame-Command-
+ * Buffer (Standard 90) zählen weder in die Gesamtwerte noch in die Perzentile; die Fensterwerte
+ * (gpu_frames, gpu_sum_ms, gpu_max_ms) zählen alle. Die letzten 4096 Zeiten liegen als
+ * Stichprobe vor; kit_multiview_gpu_percentiles liefert Anzahl, Mittel, p95 und Maximum darüber. */
+void kit_multiview_set_gpu_skip(kit_multiview_session *session, unsigned skip);
+void kit_multiview_gpu_percentiles(kit_multiview_session *session, unsigned *count, double *mean_ms,
+                                   double *p95_ms, double *max_ms);
 
 /* Ein Frame: Farb- und Tiefentextur importieren, ein Pass mit view_count 2, Clear (rgba,
  * depth_clear), bei draw_quad ein Draw des Quads mit den beiden Matrizen (je 16 float,
@@ -96,6 +146,16 @@ int kit_multiview_selftest(kit_log_fn log, void *user);
  * als die Map (Compositor-Fall), Abnahme je höchstens 1 physisches Pixel; Negativtests: Textur
  * kleiner als die Map, Map mit Startschicht 1. 0 = bestanden, sonst Schrittnummer ab 70. */
 int kit_multiview_foveation_selftest(kit_log_fn log, void *user);
+
+/* Mac-Selbsttest K4a (MSAA): Zweischicht-Map wie K3, Auflösungstexturen 688×688×2 (Farbe, Tiefe)
+ * als «Drawable», Sitzung mit MSAA 4x, ein Pass mit view_count 2 und Map, ein gedrehtes Quad mit
+ * schrägen Kanten (View 0 rot/0,25, View 1 blau/0,75 über Clear schwarz/0,001), Farbe und Tiefe
+ * in die Auflösungstexturen aufgelöst, beide Schichten vollständig zurückgelesen: Kantenpixel mit
+ * Zwischenwerten, Flächen exakt, aufgelöste Tiefe an Kantenpixeln nach Filter (max → Quad, min →
+ * Clear), kleinste Tiefe > 0; dieselbe Kante ohne MSAA hart; Messbild der Map unter MSAA ≤ 1 px
+ * (auch mit Textur grösser als die Map); Negativtests (Auflösungstextur multisample, unbekannter
+ * Filter). 0 = bestanden, sonst Schrittnummer ab 90. */
+int kit_multiview_msaa_selftest(kit_log_fn log, void *user);
 
 #ifdef __cplusplus
 }

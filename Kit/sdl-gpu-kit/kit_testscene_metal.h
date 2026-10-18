@@ -59,6 +59,21 @@ bool kit_metal_create_array_texture(void *device, bool depth, unsigned width, un
 
 void kit_metal_release_texture(void *texture);
 
+/* K4a: wie kit_metal_create_array_texture, mit samples > 1 als MTLTextureType2DMultisampleArray. */
+bool kit_metal_create_array_texture_ex(void *device, bool depth, unsigned width, unsigned height,
+                                       unsigned layers, unsigned samples, void **texture_out);
+
+/* allocatedSize einer MTLTexture in Bytes (0 bei NULL). */
+unsigned long long kit_metal_texture_allocated_bytes(void *texture);
+
+/* supportsTextureSampleCount: des Devices. */
+bool kit_metal_supports_sample_count(void *device, unsigned samples);
+
+/* GPU-Zeiten eines abgeschlossenen MTLCommandBuffer (Sekunden, Mach-Zeitbasis von Metal);
+ * status_out erhält MTLCommandBufferStatus, error_out (optional) den Fehlertext. */
+bool kit_metal_command_buffer_gpu_time(void *command_buffer, double *start_s, double *end_s,
+                                       int *status_out, char *error_out, size_t cap);
+
 /* Rasterization Rate Map (K3, Baustein P4). Zeiger ist id<MTLRasterizationRateMap> als void*. */
 typedef struct kit_metal_map_desc {
     unsigned screen_width;

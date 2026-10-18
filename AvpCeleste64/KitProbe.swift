@@ -16,6 +16,9 @@
 //    C64_KIT=multiview  Stufe K2 (Baustein P6): wie import, aber ein Pass mit view_count 2 und
 //                       ein Draw des Schachbretts (1 m, 1,5 m vor der Startpose, weltfest) für
 //                       beide Augen per Vertex Amplification; Shader aus der Kit-Werkzeugkette.
+//                       K3: mit C64_FOVEATION=1 geht die Map des Compositors an den Pass (P4).
+//                       K4a: C64_KIT_MSAA=<Samples> (Standard aus) rendert in MSAA-Texturen und
+//                       löst Farbe und Tiefe in die Drawable-Schichten auf.
 //
 //  Prüft Risiko R1 (K0), die Besitzregeln von P1 (K1a), den Texturimport P3 (K1b) und Multiview
 //  P6 (K2) aus Docs/celeste64/sdl-gpu-kit-analyse.md. Jede Zeile der Szene geht ins Unified Log
@@ -158,9 +161,15 @@ nonisolated enum KitProbe {
     // MARK: K2 Multiview
 
     /// K2: Sitzung mit Shadern und Pipeline (view_count 2) auf Device und Queue des Hosts.
-    static func beginMultiview(device: MTLDevice, queue: MTLCommandQueue) -> OpaquePointer? {
-        c64Record("[c64-kit] start mode=multiview thread=\(Thread.current.name ?? "?") device=\"\(device.name)\" queue=\"\(queue.label ?? "-")\"")
-        return kit_multiview_begin(pointer(device as AnyObject), pointer(queue as AnyObject), logLine, nil)
+    /// K4a: `msaaSamples` > 1 schaltet Kantenglättung ein (C64_KIT_MSAA); die Sitzung rendert dann
+    /// in eigene MSAA-Texturen in Drawable-Grösse und löst Farbe und Tiefe (Filter max, Reverse-Z:
+    /// nächste Fläche) in die Drawable-Schichten auf. 0 = Stand K3.
+    static func beginMultiview(device: MTLDevice, queue: MTLCommandQueue, msaaSamples: Int = 0) -> OpaquePointer? {
+        c64Record("[c64-kit] start mode=multiview thread=\(Thread.current.name ?? "?") device=\"\(device.name)\" queue=\"\(queue.label ?? "-")\" msaa=\(msaaSamples)")
+        var options = kit_multiview_options()
+        kit_multiview_options_default(&options)
+        options.msaa_samples = UInt32(max(0, msaaSamples))
+        return kit_multiview_begin_ex(pointer(device as AnyObject), pointer(queue as AnyObject), &options, logLine, nil)
     }
 
     /// K2: ein Frame; `viewProjection` pro View (Projektion · inverse(deviceAnchor · view.transform)),

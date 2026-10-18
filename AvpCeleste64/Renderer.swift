@@ -128,6 +128,11 @@ nonisolated final class Renderer: @unchecked Sendable {
     private var statSdlFail = 0               // Frames im Fenster, in denen SDL scheiterte
     private var sdlFailTotal = 0
     private var footprintStartMB = 0.0        // phys_footprint beim Start der Schleife, in jedem Modus
+    private var availableStartMB = 0.0        // os_proc_available_memory beim Start der Schleife
+    // Letzter Stand von Drawable und Map für die Zusammenfassung (Render Quality 1,0: Texturen für
+    // maxRenderQuality, Map wächst während des Übergangs).
+    private var lastDrawableSize: (width: Int, height: Int) = (0, 0)
+    private var lastMapSizes: (screenW: Int, screenH: Int, physW: Int, physH: Int) = (0, 0, 0, 0)
     // K1b-Diagnose (C64_KIT_VERIFY): SDLs Rücklesewert dieses Frames und die Drawable-Textur,
     // aus der das Gerüst unmittelbar vor encodePresent dieselbe Stelle nochmals liest.
     private var pendingVerify: (afterSDL: [UInt8], color: MTLTexture)?
@@ -141,6 +146,9 @@ nonisolated final class Renderer: @unchecked Sendable {
     private static let importClearDepthDefault: Float = 0.001
     private let importClearDepth: Float = Float(ProcessInfo.processInfo.environment["C64_KIT_DEPTH"] ?? "") ?? Renderer.importClearDepthDefault
     private var importDepthLogged = false
+    // K4a (C64_KIT_MSAA=<Samples>, Standard aus): Kantenglättung im Kit-Pass; die Sitzung rendert in
+    // MSAA-Texturen in Drawable-Grösse und löst Farbe und Tiefe in die Drawable-Schichten auf.
+    private let kitMsaaSamples: Int = Int(ProcessInfo.processInfo.environment["C64_KIT_MSAA"] ?? "") ?? 0
 
     private init(layerRenderer: LayerRenderer, appModel: AppModel) {
         self.layerRenderer = layerRenderer
@@ -208,6 +216,7 @@ nonisolated final class Renderer: @unchecked Sendable {
             + " C64_TESTSCENE=\(ProbeContext.environment(TestScene.environmentKey))"
             + " C64_KIT=\(ProbeContext.environment(KitProbe.environmentKey))"
             + " C64_KIT_DEPTH=\(ProbeContext.environment("C64_KIT_DEPTH"))"
+            + " C64_KIT_MSAA=\(ProbeContext.environment("C64_KIT_MSAA"))"
             + " views=\(layerRenderer.properties.viewCount)"
             + " stallSeq=\(stallPlan.isEmpty ? "-" : stallPlan.map { String(Int($0 * 1000)) }.joined(separator: ","))"
         c64Record(line)
@@ -228,7 +237,8 @@ nonisolated final class Renderer: @unchecked Sendable {
         }
         // Speicher am Anfang der Schleife, in jedem Modus (Vergleichswert für die Zusammenfassung).
         footprintStartMB = ProbeContext.physFootprintMB
-        c64Record("[c64-loop] footprintStartMB=\(String(format: "%.1f", footprintStartMB)) C64_KIT=\(ProbeContext.environment(KitProbe.environmentKey))")
+        availableStartMB = ProbeContext.availableMemoryMB
+        c64Record("[c64-loop] footprintStartMB=\(String(format: "%.1f", footprintStartMB)) availableMB=\(String(format: "%.1f", availableStartMB)) C64_KIT=\(ProbeContext.environment(KitProbe.environmentKey))")
         // Kit-Stufe K1b (C64_KIT=import): Sitzung für die ganze Schleife.
         if KitProbe.mode == .import {
             kitImportSession = KitProbe.beginImport(device: device, queue: commandQueue)
@@ -237,7 +247,7 @@ nonisolated final class Renderer: @unchecked Sendable {
         }
         // Kit-Stufe K2 (C64_KIT=multiview): Sitzung mit Pipeline view_count 2 für die ganze Schleife.
         if KitProbe.mode == .multiview {
-            kitMultiviewSession = KitProbe.beginMultiview(device: device, queue: commandQueue)
+            kitMultiviewSession = KitProbe.beginMultiview(device: device, queue: commandQueue, msaaSamples: kitMsaaSamples)
             kitImportFailed = (kitMultiviewSession == nil)
             c64Record("[c64-kit] multiview session=\(kitMultiviewSession == nil ? "FEHLT, Gerüst löscht selbst" : "ok")")
         }
@@ -388,6 +398,17 @@ nonisolated final class Renderer: @unchecked Sendable {
             kitPart = String(format: " sdlFail=%d passesPerFrame=%.2f drawsPerFrame=%.2f sdl(ms) mean=%.3f max=%.3f wrappers created=%lu released=%lu",
                              sdlFailTotal, Double(stats.passes_total) / Double(frames), Double(stats.draws_total) / Double(frames),
                              meanMs, stats.total_max_ms, stats.wrappers_created, stats.wrappers_released)
+            // K4a: GPU-Zeit der SDL-Command-Buffer (Completed-Rückruf, ohne die ersten 90 Frames:
+            // Mittel, p95, Maximum) und MSAA-Stand.
+            var gpuCount: UInt32 = 0
+            var gpuMean = 0.0, gpuP95 = 0.0, gpuMax = 0.0
+            kit_multiview_gpu_percentiles(session, &gpuCount, &gpuMean, &gpuP95, &gpuMax)
+            let filterNames = ["sample0", "min", "max"]
+            let filter = Int(stats.depth_filter) < filterNames.count ? filterNames[Int(stats.depth_filter)] : "?"
+            kitPart += String(format: " gpu(ms, ab Frame 91) n=%u mean=%.3f p95=%.3f max=%.3f untagged=%lu gpuErr=%lu msaa=%u msaaTextures=%ux%ux%u msaaMB=%.1f depthResolveFilter=%@",
+                              gpuCount, gpuMean, gpuP95, gpuMax,
+                              stats.gpu_untagged, stats.gpu_errors, stats.msaa_samples, stats.msaa_width, stats.msaa_height, stats.msaa_layers,
+                              Double(stats.msaa_bytes) / (1024 * 1024), stats.msaa_samples > 1 ? filter : "-")
             KitProbe.endMultiview(session: session)
             kitMultiviewSession = nil
         } else if kitImportFailed {
@@ -406,9 +427,18 @@ nonisolated final class Renderer: @unchecked Sendable {
             fovPart = String(format: " fov{measurements=%d maxDevPx=%.3f meanDevPx=%.3f measureMs=%.2f}",
                              fovMeasureCount, fovMaxDevPx, fovMeanDevSum / Double(fovMeasureCount), fovMeasureMsSum / Double(fovMeasureCount))
         }
-        c64Record(String(format: "[c64-loop] summary C64_KIT=%@ foveation=%d frames=%llu interval(ms) mean=%.3f rate=%.1f Hz cancelled=%d cmdErr=%d footprintMB start=%.1f end=%.1f delta=%+.1f%@%@",
-                         mode, layerRenderer.configuration.isFoveationEnabled ? 1 : 0, totalFrames, meanInterval * 1000, hz,
-                         cancelledTotal, cmdErr, footprintStartMB, footprintEnd, footprintEnd - footprintStartMB, kitPart, fovPart))
+        // Render Quality: angefordert (Schalter), Obergrenze der Konfiguration, tatsächlich am Ende;
+        // dazu Drawable- und Map-Grösse des letzten Frames und der verfügbare Speicher.
+        let requestedQuality = ProcessInfo.processInfo.environment["C64_RENDERQUALITY"] ?? "-"
+        let qualityPart = String(format: " renderQuality{requested=%@ max=%.3f end=%.3f} drawable=%dx%d map{screen=%dx%d physical=%dx%d}",
+                                 requestedQuality, layerRenderer.configuration.maxRenderQuality.rawValue, layerRenderer.renderQuality.rawValue,
+                                 lastDrawableSize.width, lastDrawableSize.height,
+                                 lastMapSizes.screenW, lastMapSizes.screenH, lastMapSizes.physW, lastMapSizes.physH)
+        let availableEnd = ProbeContext.availableMemoryMB
+        c64Record(String(format: "[c64-loop] summary C64_KIT=%@ foveation=%d%@ frames=%llu interval(ms) mean=%.3f rate=%.1f Hz cancelled=%d cmdErr=%d footprintMB start=%.1f end=%.1f delta=%+.1f availableMB start=%.1f end=%.1f%@%@",
+                         mode, layerRenderer.configuration.isFoveationEnabled ? 1 : 0, qualityPart, totalFrames, meanInterval * 1000, hz,
+                         cancelledTotal, cmdErr, footprintStartMB, footprintEnd, footprintEnd - footprintStartMB,
+                         availableStartMB, availableEnd, kitPart, fovPart))
     }
 
     /// K1b-Diagnose: dieselbe Stelle, die SDL nach seinem Clear zurückgelesen hat, im Gerüst-Buffer
@@ -516,6 +546,7 @@ nonisolated final class Renderer: @unchecked Sendable {
         applyRenderQualityIfRequested()
         logFoveationIfChanged(drawables)
         logFoveationFingerprint(drawables)
+        rememberSizes(drawables)
 
         guard let commandBuffer = commandQueue.makeCommandBuffer() else {
             // Ohne Command Buffer lässt sich nichts präsentieren; Submission trotzdem beenden,
@@ -739,6 +770,20 @@ nonisolated final class Renderer: @unchecked Sendable {
                          before, layerRenderer.renderQuality.rawValue, wanted, config.maxRenderQuality.rawValue))
     }
 
+    /// Drawable- und Map-Grösse des Frames merken (für die Zusammenfassung; mit Render Quality
+    /// ändert sich die Map in den ersten Frames, die Texturen bleiben bei maxRenderQuality).
+    private func rememberSizes(_ drawables: [LayerRenderer.Drawable]) {
+        guard let drawable = drawables.first(where: { $0.target == .builtIn }) ?? drawables.first,
+              let texture = drawable.colorTextures.first else { return }
+        lastDrawableSize = (texture.width, texture.height)
+        if let map = drawable.rasterizationRateMaps.first {
+            let p = map.physicalSize(layer: 0)
+            lastMapSizes = (map.screenSize.width, map.screenSize.height, p.width, p.height)
+        } else {
+            lastMapSizes = (0, 0, 0, 0)
+        }
+    }
+
     /// [c64-fov]: Rate Maps (Anzahl, layerCount, screenSize, physicalSize pro Layer,
     /// Granularität) und pro View die Farb- und Tiefentextur (Typ, Grösse, arrayLength,
     /// Format), Viewport, Slice- und Texturindex. Beim ersten Frame und bei jeder Änderung,
@@ -923,6 +968,9 @@ nonisolated final class Renderer: @unchecked Sendable {
                 let stats = KitProbe.takeMultiviewStats(session: session)
                 let meanMs = stats.frames > 0 ? stats.sum_ms / Double(stats.frames) : 0
                 line += String(format: " sdl(ms) mean=%.3f max=%.3f sdlFrames=%u sdlFail=%d passes=%lu draws=%lu", meanMs, stats.max_ms, stats.frames, statSdlFail, stats.passes_total, stats.draws_total)
+                // K4a: GPU-Zeit der SDL-Command-Buffer im Fenster (Completed-Rückruf).
+                let gpuMean = stats.gpu_frames > 0 ? stats.gpu_sum_ms / Double(stats.gpu_frames) : 0
+                line += String(format: " gpu(ms) mean=%.3f max=%.3f gpuFrames=%u msaa=%u", gpuMean, stats.gpu_max_ms, stats.gpu_frames, stats.msaa_samples)
             } else if kitImportFailed {
                 line += " sdl=none sdlFail=\(statSdlFail)"
             }

@@ -98,6 +98,11 @@
             value = "0"
             isEnabled = "NO">
          </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "C64_KIT_MSAA"
+            value = "4"
+            isEnabled = "NO">
+         </EnvironmentVariable>
       </EnvironmentVariables>
       <MetalAPIValidationSettings
          isEnabled = "No">

@@ -8,6 +8,9 @@
 #   --import:  K1b, Baustein P3 (externe 2D-Array-Texturen, Clear pro Schicht, Rücklesen, Negativtests).
 #   --multiview: K2, Baustein P6 (ein Pass mit view_count 2, ein Draw, Rücklesen pro Schicht, Negativtests).
 #   --foveation: K3, Baustein P4 (eigene Rate Map am Pass, Messbild gegen die Map, Negativtest).
+#   --msaa:      K4a (MSAA 4x, Auflösung von Farbe und Tiefe unter Multiview und Map, Kantenwerte,
+#                Tiefenfilter, Messbild, Negativtests); läuft mit Metal-Validierung (MTL_DEBUG_LAYER=1),
+#                ein Validierungsfehler bricht den Lauf ab.
 
 set -euo pipefail
 
@@ -37,7 +40,11 @@ echo "-- gelinkte SDL:"; otool -L "$BIN" | grep SDL3
 
 echo "== Lauf"
 set +e
-"$BIN" "$@"
+if [[ " $* " == *" --msaa "* ]]; then
+    MTL_DEBUG_LAYER=1 "$BIN" "$@"
+else
+    "$BIN" "$@"
+fi
 rc=$?
 set -e
 echo "== Exit-Code $rc (0 = bestanden, sonst Schritt aus kit_testscene.h)"
