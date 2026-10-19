@@ -1,15 +1,16 @@
 diff --git a/Celeste64.csproj b/Celeste64.csproj
-index d210edd..dedf917 100644
+index d210edd..bc09646 100644
 --- a/Celeste64.csproj
 +++ b/Celeste64.csproj
-@@ -12,12 +12,37 @@
+@@ -12,12 +12,42 @@
      <SelfContained>true</SelfContained>
    </PropertyGroup>
  
 +  <!-- visionOS kit (K6b): UseLocalFoster=true references the fork foster-visionos as a project
 +       instead of the NuGet package; UseKitSDL=true additionally ships the SDL built by
 +       scripts/build-sdl3.sh instead of the SDL inside Foster. Both default to off, so the
-+       reference build is unchanged. Paths come from properties or environment variables. -->
++       reference build is unchanged. Paths come from properties or environment variables.
++       With UseLocalFoster the symbol VISIONOS_KIT enables the port's switches (VisionOSKit.cs). -->
 +  <PropertyGroup>
 +    <UseLocalFoster Condition="'$(UseLocalFoster)' == ''">false</UseLocalFoster>
 +    <UseKitSDL Condition="'$(UseKitSDL)' == ''">false</UseKitSDL>
@@ -17,6 +18,10 @@ index d210edd..dedf917 100644
 +    <FosterVisionOSDir Condition="'$(FosterVisionOSDir)' == ''">$(HOME)/Developer/visionOS/Kits/foster-visionos</FosterVisionOSDir>
 +    <KitSDLDylib Condition="'$(KitSDLDylib)' == '' and '$(KIT_SDL_DYLIB)' != ''">$(KIT_SDL_DYLIB)</KitSDLDylib>
 +    <KitSDLDylib Condition="'$(KitSDLDylib)' == ''">$(MSBuildProjectDirectory)/../../Frameworks/macos/libSDL3.0.dylib</KitSDLDylib>
++  </PropertyGroup>
++
++  <PropertyGroup Condition="'$(UseLocalFoster)' == 'true'">
++    <DefineConstants>$(DefineConstants);VISIONOS_KIT</DefineConstants>
 +  </PropertyGroup>
 +
    <ItemGroup>
@@ -41,3 +46,129 @@ index d210edd..dedf917 100644
    <PropertyGroup Condition="($(RuntimeIdentifier) == '' and $([MSBuild]::IsOSPlatform('Linux'))) or $(RuntimeIdentifier.StartsWith('linux'))">
      <IsLinux>true</IsLinux>
    </PropertyGroup>
+diff --git a/Source/Game.cs b/Source/Game.cs
+index 312df59..af17c93 100644
+--- a/Source/Game.cs
++++ b/Source/Game.cs
+@@ -116,6 +116,9 @@ public class Game : App
+ 
+ 	protected override void Update()
+ 	{
++#if VISIONOS_KIT
++		VisionOSKit.Tick();
++#endif
+ 		Audio.Update();
+ 
+ 		// toggle mouse camera mode
+diff --git a/Source/Program.cs b/Source/Program.cs
+index b06f359..73ff61f 100644
+--- a/Source/Program.cs
++++ b/Source/Program.cs
+@@ -24,6 +24,23 @@ class Program
+ 
+ 		// try
+ 		{
++#if VISIONOS_KIT
++			// visionOS-Port (K6b): Schalter C64_DEPTH_CLIP und C64_GPU_TIMING, siehe VisionOSKit.cs
++			var kitProperties = VisionOSKit.CreateDeviceProperties();
++			using var game = new Game(new(
++				ApplicationName: Game.GamePath,
++				WindowTitle: Game.GameTitle,
++				Width: 1280,
++				Height: 720,
++				Fullscreen: false,
++				Resizable: true,
++				UpdateMode: UpdateMode.FixedStep(60),
++				Flags: VisionOSKit.Flags,
++				GraphicsDeviceProperties: kitProperties
++			));
++			if (kitProperties != 0)
++				SDL3.SDL.SDL_DestroyProperties(kitProperties);
++#else
+ 			using var game = new Game(new(
+ 				ApplicationName: Game.GamePath,
+ 				WindowTitle: Game.GameTitle,
+@@ -33,6 +50,7 @@ class Program
+ 				Resizable: true,
+ 				UpdateMode: UpdateMode.FixedStep(60)
+ 			));
++#endif
+ 			errorLogPath = game.UserPath;
+ 			game.Run();
+ 		}
+diff --git a/Source/VisionOSKit.cs b/Source/VisionOSKit.cs
+new file mode 100644
+index 0000000..38d7001
+--- /dev/null
++++ b/Source/VisionOSKit.cs
+@@ -0,0 +1,70 @@
++#if VISIONOS_KIT
++// VisionOSKit.cs — Schalter des visionOS-Ports für Mac-Läufe (K6b, nur mit UseLocalFoster gebaut).
++//
++//   C64_GPU_TIMING=1  Celeste gibt Foster den Completion-Rückruf des SDL_GPU-Kits mit (K4a) und
++//                     loggt einmal pro Sekunde die Zahl der fertigen Command Buffer. Nur, wenn das
++//                     Kit-SDL geladen ist (statische Prüfung); sonst eine Logzeile «Kit fehlt».
++//   C64_DEPTH_CLIP=1  schaltet Fosters Depth-Clip-Schalter ein (F7).
++
++using System.Diagnostics;
++using System.Runtime.CompilerServices;
++using System.Runtime.InteropServices;
++using Foster.Framework;
++using static SDL3.SDL;
++
++namespace Celeste64;
++
++public static unsafe class VisionOSKit
++{
++	private static long completedTotal;
++	private static long completedLast;
++	private static readonly Stopwatch timer = Stopwatch.StartNew();
++	private static bool timing;
++
++	/// <summary>Zusatz-Flags für die AppConfig aus den Umgebungsvariablen.</summary>
++	public static AppFlags Flags
++		=> Environment.GetEnvironmentVariable("C64_DEPTH_CLIP") == "1" ? AppFlags.DepthClip : AppFlags.None;
++
++	/// <summary>
++	/// Properties für die Device-Erzeugung (0 = keine). Der Rückruf ist ein unmanaged
++	/// Funktionszeiger ohne Delegate, deshalb AOT-fähig und ohne Lebensdauerfrage.
++	/// </summary>
++	public static uint CreateDeviceProperties()
++	{
++		if (Environment.GetEnvironmentVariable("C64_GPU_TIMING") != "1")
++			return 0;
++
++		if (!GraphicsDevice.IsKitSDLLoaded())
++		{
++			Log.Info("[c64-gpu] Kit fehlt, Callback nicht gesetzt (SDL ohne visionOS-Kit-Exporte)");
++			return 0;
++		}
++
++		var props = SDL_CreateProperties();
++		delegate* unmanaged[Cdecl]<nint, nint, void> callback = &OnCommandBufferCompleted;
++		SDL_SetPointerProperty(props, SDL_PROP_GPU_DEVICE_CREATE_METAL_COMMAND_BUFFER_COMPLETED_CALLBACK_POINTER, (nint)callback);
++		SDL_SetPointerProperty(props, SDL_PROP_GPU_DEVICE_CREATE_METAL_COMMAND_BUFFER_COMPLETED_USERDATA_POINTER, nint.Zero);
++		timing = true;
++		Log.Info("[c64-gpu] Callback gesetzt, Zählung der fertigen Command Buffer einmal pro Sekunde");
++		return props;
++	}
++
++	[UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
++	private static void OnCommandBufferCompleted(nint userdata, nint mtlCommandBuffer)
++	{
++		Interlocked.Increment(ref completedTotal);
++	}
++
++	/// <summary>Einmal pro Sekunde aus Game.Update aufrufen.</summary>
++	public static void Tick()
++	{
++		if (!timing || timer.Elapsed.TotalSeconds < 1.0)
++			return;
++		var total = Interlocked.Read(ref completedTotal);
++		var perSecond = (total - completedLast) / timer.Elapsed.TotalSeconds;
++		completedLast = total;
++		timer.Restart();
++		Log.Info($"[c64-gpu] completed command buffers: {perSecond:F1}/s total={total}");
++	}
++}
++#endif
