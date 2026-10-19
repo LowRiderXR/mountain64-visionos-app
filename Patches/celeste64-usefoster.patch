@@ -1,0 +1,43 @@
+diff --git a/Celeste64.csproj b/Celeste64.csproj
+index d210edd..dedf917 100644
+--- a/Celeste64.csproj
++++ b/Celeste64.csproj
+@@ -12,12 +12,37 @@
+     <SelfContained>true</SelfContained>
+   </PropertyGroup>
+ 
++  <!-- visionOS kit (K6b): UseLocalFoster=true references the fork foster-visionos as a project
++       instead of the NuGet package; UseKitSDL=true additionally ships the SDL built by
++       scripts/build-sdl3.sh instead of the SDL inside Foster. Both default to off, so the
++       reference build is unchanged. Paths come from properties or environment variables. -->
++  <PropertyGroup>
++    <UseLocalFoster Condition="'$(UseLocalFoster)' == ''">false</UseLocalFoster>
++    <UseKitSDL Condition="'$(UseKitSDL)' == ''">false</UseKitSDL>
++    <FosterVisionOSDir Condition="'$(FosterVisionOSDir)' == '' and '$(FOSTER_VISIONOS_DIR)' != ''">$(FOSTER_VISIONOS_DIR)</FosterVisionOSDir>
++    <FosterVisionOSDir Condition="'$(FosterVisionOSDir)' == ''">$(HOME)/Developer/visionOS/Kits/foster-visionos</FosterVisionOSDir>
++    <KitSDLDylib Condition="'$(KitSDLDylib)' == '' and '$(KIT_SDL_DYLIB)' != ''">$(KIT_SDL_DYLIB)</KitSDLDylib>
++    <KitSDLDylib Condition="'$(KitSDLDylib)' == ''">$(MSBuildProjectDirectory)/../../Frameworks/macos/libSDL3.0.dylib</KitSDLDylib>
++  </PropertyGroup>
++
+   <ItemGroup>
+-    <PackageReference Include="FosterFramework" Version="0.4.2" />
++    <PackageReference Include="FosterFramework" Version="0.4.2" Condition="'$(UseLocalFoster)' != 'true'" />
++    <ProjectReference Include="$(FosterVisionOSDir)/Framework/Foster.Framework.csproj" AdditionalProperties="FosterUseExternalSDL=$(UseKitSDL)" Condition="'$(UseLocalFoster)' == 'true'" />
+     <PackageReference Include="SharpGLTF.Runtime" Version="1.0.5" />
+     <PackageReference Include="Sledge.Formats.Map" Version="1.2.8" />
+   </ItemGroup>
+ 
++  <ItemGroup Condition="'$(UseKitSDL)' == 'true'">
++    <Content Include="$(KitSDLDylib)" Link="libSDL3.dylib" CopyToOutputDirectory="PreserveNewest" Visible="false" />
++  </ItemGroup>
++
++  <Target Name="KitSDLRequiresLocalFoster" BeforeTargets="Build" Condition="'$(UseKitSDL)' == 'true' and '$(UseLocalFoster)' != 'true'">
++    <Error Text="UseKitSDL=true requires UseLocalFoster=true (the NuGet package ships its own libSDL3.dylib)." />
++  </Target>
++  <Target Name="KitSDLMustExist" BeforeTargets="Build" Condition="'$(UseKitSDL)' == 'true' and !Exists('$(KitSDLDylib)')">
++    <Error Text="Kit SDL not found: $(KitSDLDylib). Run scripts/build-sdl3.sh macos or set KitSDLDylib." />
++  </Target>
++
+   <PropertyGroup Condition="($(RuntimeIdentifier) == '' and $([MSBuild]::IsOSPlatform('Linux'))) or $(RuntimeIdentifier.StartsWith('linux'))">
+     <IsLinux>true</IsLinux>
+   </PropertyGroup>
