@@ -17,18 +17,44 @@ CELESTE="$ROOT/Source/Celeste64"
 DOTNET="${DOTNET:-/usr/local/share/dotnet/dotnet}"
 MODE="${1:-}"; shift || true
 RUN=0
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --run) RUN="$2"; shift 2 ;;
-    *) echo "Unbekanntes Argument: $1" >&2; exit 64 ;;
-  esac
-done
+if [[ "$MODE" != "machost" ]]; then
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --run) RUN="$2"; shift 2 ;;
+      *) echo "Unbekanntes Argument: $1" >&2; exit 64 ;;
+    esac
+  done
+fi
 
 case "$MODE" in
   ref)  PROPS=() ;;
   fork) PROPS=(-p:UseLocalFoster=true) ;;
   kit)  PROPS=(-p:UseLocalFoster=true -p:UseKitSDL=true) ;;
-  *) echo "Aufruf: $0 ref|fork|kit [--run N]" >&2; exit 64 ;;
+  machost)
+    # K6c: Celeste64.MacHost bauen (Fork + Kit-dylib) und mit den Argumenten nach "--" starten;
+    # Log unter build/machost-<label>.log. Beispiel:
+    #   scripts/celeste-mac.sh machost --label C -- --hz 90 --seconds 12
+    LABEL=machost
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --label) LABEL="$2"; shift 2 ;;
+        --) shift; break ;;
+        *) break ;;
+      esac
+    done
+    OUT="$CELESTE/bin/k6c-machost"
+    echo "== Bau (machost) -> $OUT"
+    "$DOTNET" build "$ROOT/Tools/Celeste64.MacHost/Celeste64.MacHost.csproj" -c Release -p:UseLocalFoster=true -p:UseKitSDL=true -nologo -v q
+    REV="$(strings "$OUT/libSDL3.dylib" | grep "SDL-3\.[0-9.]*-release" | head -1 || true)"
+    echo "   ${REV:-(keine Revisionszeile gefunden)}"
+    mkdir -p "$ROOT/build"
+    LOG="$ROOT/build/machost-$LABEL.log"
+    echo "== Start: Celeste64.MacHost $* (Log: $LOG)"
+    ( cd "$OUT" && ./Celeste64.MacHost "$@" > "$LOG" 2>&1 ) || true
+    grep -E "machost|visionOS kit|c64-gpu|Exception|rror" "$LOG" | head -40
+    exit 0
+    ;;
+  *) echo "Aufruf: $0 ref|fork|kit [--run N] | machost [--label NAME] -- <MacHost-Argumente>" >&2; exit 64 ;;
 esac
 
 OUT="$CELESTE/bin/k6b-$MODE"

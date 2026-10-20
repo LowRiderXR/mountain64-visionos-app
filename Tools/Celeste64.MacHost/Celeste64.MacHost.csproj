@@ -1,0 +1,38 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Celeste64.MacHost (K6c): treibt Celeste 64 von aussen wie der spätere Swift-Host auf
+       visionOS: Game erzeugen, Begin, Tick mit festem Delta im Echtzeit-Takt, End. Baut immer gegen
+       den Foster-Fork (UseLocalFoster) und standardmässig mit der Kit-dylib (UseKitSDL=true;
+       -p:UseKitSDL=false nimmt die SDL 3.4.12 aus dem Fork). Die Ausgabe liegt unter
+       Source/Celeste64/bin/k6c-machost, damit Celeste seinen Content-Ordner findet (Suche bis
+       fünf Ebenen aufwärts von AppContext.BaseDirectory). Celeste bleibt unverändert; der
+       Patch Patches/celeste64-usefoster.patch muss angewendet sein. -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <SelfContained>true</SelfContained>
+    <UseKitSDL Condition="'$(UseKitSDL)' == ''">true</UseKitSDL>
+    <KitSDLDylib Condition="'$(KitSDLDylib)' == ''">$(MSBuildProjectDirectory)/../../Frameworks/macos/libSDL3.0.dylib</KitSDLDylib>
+    <DefineConstants>$(DefineConstants);VISIONOS_KIT</DefineConstants>
+    <OutDir>$(MSBuildProjectDirectory)/../../Source/Celeste64/bin/k6c-machost/</OutDir>
+  </PropertyGroup>
+
+  <!-- UseLocalFoster und UseKitSDL müssen auch beim Restore von Celeste gelten; deshalb beim Bau
+       als globale Properties übergeben (scripts/celeste-machost.sh macht das):
+       dotnet build Tools/Celeste64.MacHost -c Release -p:UseLocalFoster=true -p:UseKitSDL=true -->
+  <ItemGroup>
+    <ProjectReference Include="../../Source/Celeste64/Celeste64.csproj" AdditionalProperties="UseLocalFoster=true;UseKitSDL=$(UseKitSDL)" />
+  </ItemGroup>
+
+  <!-- Die Kit-dylib zuletzt und ausdrücklich kopieren: über die transitiven Content-Kopien von
+       Celeste und Foster landet sonst die SDL aus dem Fork als libSDL3.dylib in der Ausgabe. -->
+  <Target Name="CopyKitSDL" AfterTargets="Build" Condition="'$(UseKitSDL)' == 'true'">
+    <Error Condition="!Exists('$(KitSDLDylib)')" Text="Kit SDL not found: $(KitSDLDylib). Run scripts/build-sdl3.sh macos." />
+    <Copy SourceFiles="$(KitSDLDylib)" DestinationFiles="$(OutDir)libSDL3.dylib" SkipUnchangedFiles="false" />
+  </Target>
+
+</Project>

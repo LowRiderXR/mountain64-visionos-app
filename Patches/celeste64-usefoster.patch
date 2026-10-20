@@ -98,10 +98,10 @@ index b06f359..73ff61f 100644
  		}
 diff --git a/Source/VisionOSKit.cs b/Source/VisionOSKit.cs
 new file mode 100644
-index 0000000..38d7001
+index 0000000..04b3cef
 --- /dev/null
 +++ b/Source/VisionOSKit.cs
-@@ -0,0 +1,70 @@
+@@ -0,0 +1,73 @@
 +#if VISIONOS_KIT
 +// VisionOSKit.cs — Schalter des visionOS-Ports für Mac-Läufe (K6b, nur mit UseLocalFoster gebaut).
 +//
@@ -158,6 +158,9 @@ index 0000000..38d7001
 +	{
 +		Interlocked.Increment(ref completedTotal);
 +	}
++
++	/// <summary>Anzahl der bisher fertigen Command Buffer (für Hosts wie Celeste64.MacHost).</summary>
++	public static long CompletedTotal => Interlocked.Read(ref completedTotal);
 +
 +	/// <summary>Einmal pro Sekunde aus Game.Update aufrufen.</summary>
 +	public static void Tick()

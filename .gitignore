@@ -11,3 +11,7 @@ DerivedData/
 xcuserdata/
 *.xcuserstate
 .DS_Store
+
+# .NET build output of tools
+Tools/*/bin/
+Tools/*/obj/
