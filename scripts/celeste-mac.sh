@@ -17,7 +17,7 @@ CELESTE="$ROOT/Source/Celeste64"
 DOTNET="${DOTNET:-/usr/local/share/dotnet/dotnet}"
 MODE="${1:-}"; shift || true
 RUN=0
-if [[ "$MODE" != "machost" ]]; then
+if [[ "$MODE" != "machost" && "$MODE" != "aot-machost" ]]; then
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --run) RUN="$2"; shift 2 ;;
@@ -54,7 +54,77 @@ case "$MODE" in
     grep -E "machost|visionOS kit|c64-gpu|Exception|rror" "$LOG" | head -40
     exit 0
     ;;
-  *) echo "Aufruf: $0 ref|fork|kit [--run N] | machost [--label NAME] -- <MacHost-Argumente>" >&2; exit 64 ;;
+  aot-ref|aot-fork|aot-kit|aot-machost)
+    # M0c: Native AOT (dotnet publish -r osx-arm64 -p:PublishAot=true) in dieselben vier
+    # Konfigurationen. Ausgabe bin/m0c-<modus>, Publish-Log build/m0c-<modus>-publish.log mit
+    # Zählung der IL-Warnungen nach Herkunft, Grösse des Programms, Start mit Zeitstempeln
+    # (Sekunden seit Prozessstart) nach build/m0c-<modus>.log. Beispiele:
+    #   scripts/celeste-mac.sh aot-kit --run 25
+    #   scripts/celeste-mac.sh aot-machost -- --hz 90 --seconds 25
+    BASE="${MODE#aot-}"
+    case "$BASE" in
+      ref)     PROJ="$CELESTE/Celeste64.csproj"; PROPS=(); BIN=Celeste64 ;;
+      fork)    PROJ="$CELESTE/Celeste64.csproj"; PROPS=(-p:UseLocalFoster=true); BIN=Celeste64 ;;
+      kit)     PROJ="$CELESTE/Celeste64.csproj"; PROPS=(-p:UseLocalFoster=true -p:UseKitSDL=true); BIN=Celeste64 ;;
+      machost) PROJ="$ROOT/Tools/Celeste64.MacHost/Celeste64.MacHost.csproj"; PROPS=(-p:UseLocalFoster=true -p:UseKitSDL=true); BIN=Celeste64.MacHost ;;
+    esac
+    OUT="$CELESTE/bin/m0c-$BASE"
+    mkdir -p "$ROOT/build"
+    PUBLOG="$ROOT/build/m0c-$BASE-publish.log"
+    echo "== Publish AOT ($BASE) -> $OUT (Log: $PUBLOG)"
+    # Sauber bauen: ein inkrementeller Publish überspringt den C#-Compiler und damit dessen
+    # IL-Warnungen (FMOD-IL3050 fehlen dann), und die Dauer wäre nicht vergleichbar.
+    rm -rf "$CELESTE/obj" "$CELESTE/bin/Release" "$ROOT/Tools/Celeste64.MacHost/obj" "$ROOT/Tools/Celeste64.MacHost/bin" "$OUT"
+    START=$(date +%s)
+    "$DOTNET" publish "$PROJ" -c Release -r osx-arm64 -p:PublishAot=true -p:TrimmerSingleWarn=false "${PROPS[@]}" -o "$OUT" -nologo > "$PUBLOG" 2>&1 || { echo "!! Publish fehlgeschlagen"; grep -E "error" "$PUBLOG" | head -10; exit 1; }
+    echo "   Dauer $(( $(date +%s) - START )) s"
+    echo "-- IL-Warnungen (eindeutige Stellen) nach Herkunft:"
+    { grep -E "warning IL[0-9]+" "$PUBLOG" || true; } | sed -E 's/^ *//; s/ \[.*$//' | sort -u | awk '
+      { src="andere" }
+      /Celeste64\/Source\//    { src="Celeste" }
+      /\/Audio\/FMOD\//        { src="FMOD" }
+      /SharpGLTF/              { src="SharpGLTF" }
+      /foster-visionos|Foster\.Framework|FosterFramework/ { src="Foster" }
+      { match($0, /IL[0-9]+/); code=substr($0, RSTART, RLENGTH); n[src" "code]++; total++ }
+      END { for (k in n) printf "   %-18s %d\n", k, n[k]; printf "   gesamt %d\n", total }' | sort
+    echo "-- Programm:"
+    ls -la "$OUT/$BIN" | awk '{printf "   %s Bytes (%.1f MB) %s\n", $5, $5/1048576, $9}'
+    file -b "$OUT/$BIN" | cut -c1-80 | sed 's/^/   /'
+    if [[ "$BASE" == "kit" || "$BASE" == "machost" ]]; then
+      KIT_UUID="$(dwarfdump --uuid "$ROOT/Frameworks/macos/libSDL3.0.dylib" | awk '{print $2}')"
+      OUT_UUID="$(dwarfdump --uuid "$OUT/libSDL3.dylib" 2>/dev/null | awk '{print $2}')"
+      if [[ "$KIT_UUID" != "$OUT_UUID" ]]; then
+        echo "   libSDL3.dylib in der Ausgabe ist nicht die Kit-dylib (UUID $OUT_UUID), kopiere sie nach"
+        cp "$ROOT/Frameworks/macos/libSDL3.0.dylib" "$OUT/libSDL3.dylib"
+      fi
+    fi
+    echo "-- SDL im Ausgabeverzeichnis:"
+    REV="$(strings "$OUT/libSDL3.dylib" | grep "SDL-3\.[0-9.]*-release" | head -1 || true)"
+    echo "   ${REV:-(keine Revisionszeile gefunden)}"
+    LOG="$ROOT/build/m0c-$BASE.log"
+    # Zeitstempel: Sekunden seit dem Start des Programms vor jeder Zeile
+    STAMP='import sys,time
+t0=time.time()
+for line in sys.stdin:
+    sys.stdout.write(f"{time.time()-t0:7.3f} {line}"); sys.stdout.flush()'
+    if [[ "$BASE" == "machost" ]]; then
+      [[ "${1:-}" == "--" ]] && shift
+      echo "== Start: $BIN $* (Log: $LOG)"
+      ( cd "$OUT" && ./"$BIN" "$@" 2>&1 | python3 -u -c "$STAMP" > "$LOG" ) || true
+      grep -E "machost|visionOS kit|c64-gpu|Loaded|Exception|rror" "$LOG" | head -40
+    elif [[ "$RUN" -gt 0 ]]; then
+      echo "== Start für $RUN s, Log: $LOG"
+      ( cd "$OUT" && exec ./"$BIN" > >(python3 -u -c "$STAMP" > "$LOG") 2>&1 ) &
+      PID=$!
+      sleep "$RUN"
+      kill "$PID" 2>/dev/null || true
+      wait "$PID" 2>/dev/null || true
+      sleep 1
+      grep -E "^ *[0-9.]+ (Foster|SDL|Graphics Driver|Loaded|Strawb)|visionOS kit|c64-gpu|Exception|error|Error" "$LOG" | head -20
+    fi
+    exit 0
+    ;;
+  *) echo "Aufruf: $0 ref|fork|kit [--run N] | machost [--label NAME] -- <MacHost-Argumente> | aot-ref|aot-fork|aot-kit [--run N] | aot-machost -- <Argumente>" >&2; exit 64 ;;
 esac
 
 OUT="$CELESTE/bin/k6b-$MODE"
