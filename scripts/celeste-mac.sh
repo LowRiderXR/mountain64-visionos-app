@@ -26,6 +26,17 @@ if [[ "$MODE" != "machost" && "$MODE" != "aot-machost" ]]; then
   done
 fi
 
+# K6d.1: nativer Metal-Helfer für den MacHost (Device, Queue, 2D-Array-Textur), siehe
+# Tools/Celeste64.MacHost/native/k6d_metal.m; wird neben das Programm gelegt.
+build_k6d_helper() {
+  local out="$1" src="$ROOT/Tools/Celeste64.MacHost/native/k6d_metal.m" dylib="$1/libk6dmetal.dylib"
+  if [[ ! -f "$dylib" || "$src" -nt "$dylib" ]]; then
+    clang -std=gnu17 -Wall -Wextra -O1 -fobjc-arc -dynamiclib -framework Metal -framework Foundation \
+      -install_name @rpath/libk6dmetal.dylib "$src" -o "$dylib"
+    echo "   libk6dmetal.dylib gebaut"
+  fi
+}
+
 case "$MODE" in
   ref)  PROPS=() ;;
   fork) PROPS=(-p:UseLocalFoster=true) ;;
@@ -34,24 +45,37 @@ case "$MODE" in
     # K6c: Celeste64.MacHost bauen (Fork + Kit-dylib) und mit den Argumenten nach "--" starten;
     # Log unter build/machost-<label>.log. Beispiel:
     #   scripts/celeste-mac.sh machost --label C -- --hz 90 --seconds 12
+    #   --sdl stock baut mit der SDL 3.4.12 aus dem Fork statt der Kit-dylib (eigene Ausgabe
+    #   bin/k6c-machost-stock), zum Beispiel für den Importtest ohne Kit (K6d.1).
     LABEL=machost
+    SDL=kit
     while [[ $# -gt 0 ]]; do
       case "$1" in
         --label) LABEL="$2"; shift 2 ;;
+        --sdl) SDL="$2"; shift 2 ;;
         --) shift; break ;;
         *) break ;;
       esac
     done
-    OUT="$CELESTE/bin/k6c-machost"
-    echo "== Bau (machost) -> $OUT"
-    "$DOTNET" build "$ROOT/Tools/Celeste64.MacHost/Celeste64.MacHost.csproj" -c Release -p:UseLocalFoster=true -p:UseKitSDL=true -nologo -v q
+    if [[ "$SDL" == "stock" ]]; then
+      OUT="$CELESTE/bin/k6c-machost-stock"
+      BUILD_PROPS=(-p:UseLocalFoster=true -p:UseKitSDL=false "-p:OutDir=$OUT/")
+    else
+      OUT="$CELESTE/bin/k6c-machost"
+      # FosterUseExternalSDL global: über zwei ProjectReference-Stufen kommt die AdditionalProperty
+      # beim Kopieren in Ausgabe und Publish-Ordner nicht an, Foster legt sonst seine SDL 3.4.12 dazu
+      BUILD_PROPS=(-p:UseLocalFoster=true -p:UseKitSDL=true -p:FosterUseExternalSDL=true)
+    fi
+    echo "== Bau (machost, sdl=$SDL) -> $OUT"
+    "$DOTNET" build "$ROOT/Tools/Celeste64.MacHost/Celeste64.MacHost.csproj" -c Release "${BUILD_PROPS[@]}" -nologo -v q
+    build_k6d_helper "$OUT"
     REV="$(strings "$OUT/libSDL3.dylib" | grep "SDL-3\.[0-9.]*-release" | head -1 || true)"
     echo "   ${REV:-(keine Revisionszeile gefunden)}"
     mkdir -p "$ROOT/build"
     LOG="$ROOT/build/machost-$LABEL.log"
     echo "== Start: Celeste64.MacHost $* (Log: $LOG)"
     ( cd "$OUT" && ./Celeste64.MacHost "$@" > "$LOG" 2>&1 ) || true
-    grep -E "machost|visionOS kit|c64-gpu|Exception|rror" "$LOG" | head -40
+    grep -E "machost|visionOS kit|c64-gpu|Exception|rror|Metal API Validation|validate" "$LOG" | head -60
     exit 0
     ;;
   aot-ref|aot-fork|aot-kit|aot-machost)
@@ -66,7 +90,7 @@ case "$MODE" in
       ref)     PROJ="$CELESTE/Celeste64.csproj"; PROPS=(); BIN=Celeste64 ;;
       fork)    PROJ="$CELESTE/Celeste64.csproj"; PROPS=(-p:UseLocalFoster=true); BIN=Celeste64 ;;
       kit)     PROJ="$CELESTE/Celeste64.csproj"; PROPS=(-p:UseLocalFoster=true -p:UseKitSDL=true); BIN=Celeste64 ;;
-      machost) PROJ="$ROOT/Tools/Celeste64.MacHost/Celeste64.MacHost.csproj"; PROPS=(-p:UseLocalFoster=true -p:UseKitSDL=true); BIN=Celeste64.MacHost ;;
+      machost) PROJ="$ROOT/Tools/Celeste64.MacHost/Celeste64.MacHost.csproj"; PROPS=(-p:UseLocalFoster=true -p:UseKitSDL=true -p:FosterUseExternalSDL=true); BIN=Celeste64.MacHost ;;
     esac
     OUT="$CELESTE/bin/m0c-$BASE"
     mkdir -p "$ROOT/build"
@@ -98,6 +122,7 @@ case "$MODE" in
         cp "$ROOT/Frameworks/macos/libSDL3.0.dylib" "$OUT/libSDL3.dylib"
       fi
     fi
+    [[ "$BASE" == "machost" ]] && build_k6d_helper "$OUT"
     echo "-- SDL im Ausgabeverzeichnis:"
     REV="$(strings "$OUT/libSDL3.dylib" | grep "SDL-3\.[0-9.]*-release" | head -1 || true)"
     echo "   ${REV:-(keine Revisionszeile gefunden)}"

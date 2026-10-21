@@ -24,12 +24,21 @@
   <!-- UseLocalFoster und UseKitSDL müssen auch beim Restore von Celeste gelten; deshalb beim Bau
        als globale Properties übergeben (scripts/celeste-machost.sh macht das):
        dotnet build Tools/Celeste64.MacHost -c Release -p:UseLocalFoster=true -p:UseKitSDL=true -->
+  <!-- native/k6d_metal.m (K6d.1) baut scripts/celeste-mac.sh mit clang zu libk6dmetal.dylib
+       neben das Programm; MSBuild kennt die Datei nicht. -->
   <ItemGroup>
     <ProjectReference Include="../../Source/Celeste64/Celeste64.csproj" AdditionalProperties="UseLocalFoster=true;UseKitSDL=$(UseKitSDL)" />
   </ItemGroup>
 
-  <!-- Die Kit-dylib zuletzt und ausdrücklich kopieren: über die transitiven Content-Kopien von
-       Celeste und Foster landet sonst die SDL aus dem Fork als libSDL3.dylib in der Ausgabe. -->
+  <!-- Die Kit-dylib als Content mit Kopie in Ausgabe und Publish-Ordner (M0c: ein Build-Ziel
+       deckt den Publish nicht ab, dort landete Fosters SDL). Fosters eigene SDL-Kopie wird nur
+       unterdrückt, wenn FosterUseExternalSDL=true als globale Property gesetzt ist (die
+       AdditionalProperty der ProjectReference erreicht die Kopierziele über zwei Stufen nicht);
+       scripts/celeste-mac.sh übergibt sie. Die ausdrückliche Kopie nach dem Build bleibt als
+       Sicherheitsnetz. -->
+  <ItemGroup Condition="'$(UseKitSDL)' == 'true'">
+    <Content Include="$(KitSDLDylib)" Link="libSDL3.dylib" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" Visible="false" />
+  </ItemGroup>
   <Target Name="CopyKitSDL" AfterTargets="Build" Condition="'$(UseKitSDL)' == 'true'">
     <Error Condition="!Exists('$(KitSDLDylib)')" Text="Kit SDL not found: $(KitSDLDylib). Run scripts/build-sdl3.sh macos." />
     <Copy SourceFiles="$(KitSDLDylib)" DestinationFiles="$(OutDir)libSDL3.dylib" SkipUnchangedFiles="false" />

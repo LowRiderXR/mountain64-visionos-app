@@ -47,7 +47,7 @@ index d210edd..bc09646 100644
      <IsLinux>true</IsLinux>
    </PropertyGroup>
 diff --git a/Source/Game.cs b/Source/Game.cs
-index 312df59..af17c93 100644
+index 312df59..c49a6af 100644
 --- a/Source/Game.cs
 +++ b/Source/Game.cs
 @@ -116,6 +116,9 @@ public class Game : App
@@ -60,6 +60,49 @@ index 312df59..af17c93 100644
  		Audio.Update();
  
  		// toggle mouse camera mode
+@@ -316,7 +319,15 @@ public class Game : App
+ 
+ 	protected override void Render()
+ 	{
+-		Window.Clear(Color.Black);
++		// visionOS-Port (K6d): das Endbild geht in die Ausgabeziele des Hosts statt ins Fenster,
++		// ein Durchgang pro Ziel (eine Schicht pro Ziel); ohne Host bleibt es das Fenster
++#if VISIONOS_KIT
++		var outputs = VisionOSKit.Outputs ?? [Window];
++#else
++		IDrawableTarget[] outputs = [Window];
++#endif
++		foreach (var output in outputs)
++			output.Clear(Color.Black);
+ 
+ 		if (transitionStep != TransitionStep.Perform && transitionStep != TransitionStep.Hold)
+ 		{
+@@ -332,16 +343,21 @@ public class Game : App
+ 				batcher.Clear();
+ 			}
+ 
+-			// draw the target to the window
++			// draw the target to the window (or to each output of the host)
++			foreach (var output in outputs)
+ 			{
+-				var scale = Math.Min(Window.WidthInPixels / (float)target.Width, Window.HeightInPixels / (float)target.Height);
++				var scale = Math.Min(output.WidthInPixels / (float)target.Width, output.HeightInPixels / (float)target.Height);
+ 				batcher.PushSampler(new(TextureFilter.Nearest, TextureWrap.Clamp, TextureWrap.Clamp));
+-				batcher.Image(target, Window.SizeInPixels / 2, target.Bounds.Size / 2, Vec2.One * scale, 0, Color.White);
++				batcher.Image(target, output.SizeInPixels() / 2, target.Bounds.Size / 2, Vec2.One * scale, 0, Color.White);
+ 				batcher.PopSampler();
+-				batcher.Render(Window);
++				batcher.Render(output);
+ 				batcher.Clear();
+ 			}
+ 		}
++
++#if VISIONOS_KIT
++		VisionOSKit.AfterRender?.Invoke();
++#endif
+ 	}
+ 
+ 	private FMOD.RESULT MusicTimelineCallback(FMOD.Studio.EVENT_CALLBACK_TYPE type, IntPtr _event, IntPtr parameters)
 diff --git a/Source/Program.cs b/Source/Program.cs
 index b06f359..73ff61f 100644
 --- a/Source/Program.cs
@@ -98,10 +141,10 @@ index b06f359..73ff61f 100644
  		}
 diff --git a/Source/VisionOSKit.cs b/Source/VisionOSKit.cs
 new file mode 100644
-index 0000000..04b3cef
+index 0000000..13960e7
 --- /dev/null
 +++ b/Source/VisionOSKit.cs
-@@ -0,0 +1,73 @@
+@@ -0,0 +1,82 @@
 +#if VISIONOS_KIT
 +// VisionOSKit.cs — Schalter des visionOS-Ports für Mac-Läufe (K6b, nur mit UseLocalFoster gebaut).
 +//
@@ -161,6 +204,15 @@ index 0000000..04b3cef
 +
 +	/// <summary>Anzahl der bisher fertigen Command Buffer (für Hosts wie Celeste64.MacHost).</summary>
 +	public static long CompletedTotal => Interlocked.Read(ref completedTotal);
++
++	/// <summary>
++	/// Ausgabeziele für das Endbild statt des Fensters (K6d, F3): ein Durchgang pro Ziel, also
++	/// zum Beispiel ein Target pro Drawable-Schicht. null = Fenster wie bisher.
++	/// </summary>
++	public static IReadOnlyList<IDrawableTarget>? Outputs { get; set; }
++
++	/// <summary>Wird am Ende von Game.Render aufgerufen; der Host zeichnet damit eine Vorschau ins Fenster.</summary>
++	public static Action? AfterRender { get; set; }
 +
 +	/// <summary>Einmal pro Sekunde aus Game.Update aufrufen.</summary>
 +	public static void Tick()
