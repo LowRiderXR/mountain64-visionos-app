@@ -25,6 +25,18 @@
 //   --target-dump PFX   dabei die Farbe als PFX-<frame>.ppm schreiben (Vergleich MSAA an/aus)
 //   --blit-selftest     zwei Blits nebeneinander in dieselbe Textur, zurücklesen, beide Hälften
 //                       müssen stehen (K6d.2, Blit in ein Teilrechteck)
+//   --msaa N            K6d.3: die Schichtziele mit N Samples; Foster legt die MSAA-Texturen an und
+//                       löst in die vorhandenen Schichten auf (Farbe über resolve_texture, Tiefe
+//                       über die Kit-Properties)
+//   --memoryless M      none | color | color+depth: MSAA-Farbe (und Tiefe) nur im Kachelspeicher
+//   --no-multisample-store
+//                       Samples der Farbe nach dem Pass nicht behalten (nur RESOLVE); Pflicht für
+//                       memoryless Farbe. Standard ist behalten (Entscheid 3): eine vergessene
+//                       Einstellung kostet Leistung, nicht das Bild. memoryless Farbe ohne diesen
+//                       Schalter ist der Negativtest (abgelehnt)
+//   --depth-format F    d16 | d32 (Standard d32, wie die Drawable-Tiefe der Brille)
+//   --test-quad         der Host zeichnet im selben Pass ein schwarzes Feld mit schrägem grünem
+//                       Viereck; der Schichtvergleich zählt dort Kantenpixel mit Zwischenwerten
 //
 // Vorschau (K6d.1-Korrektur): Das Fenster wird in jedem Frame zuerst schwarz gecleart; jede
 // Schicht wird in eine eigene 2D-Textur geblittet (ein Blit deckt sein Ziel ganz ab, denn
@@ -56,6 +68,12 @@ var tapConfirm = new List<long>();
 int targetCheck = 0;
 string? targetDump = null;
 bool blitSelftest = false;
+int hostMsaa = 1;
+string memoryless = "none";
+bool multiSampleStore = true;
+string depthFormat = "d32";
+bool testQuad = false;
+long afterOutputCalls = 0;
 
 for (int i = 0; i < args.Length; i++)
 {
@@ -75,6 +93,11 @@ for (int i = 0; i < args.Length; i++)
 		case "--target-check": targetCheck = int.Parse(args[++i]); break;
 		case "--target-dump": targetDump = args[++i]; break;
 		case "--blit-selftest": blitSelftest = true; break;
+		case "--msaa": hostMsaa = int.Parse(args[++i]); break;
+		case "--memoryless": memoryless = args[++i]; break;
+		case "--no-multisample-store": multiSampleStore = false; break;
+		case "--depth-format": depthFormat = args[++i]; break;
+		case "--test-quad": testQuad = true; break;
 		default: Console.Error.WriteLine($"Unbekanntes Argument: {args[i]}"); return 64;
 	}
 }
@@ -146,7 +169,7 @@ if (layers != "none")
 		{
 			layerColor = new Texture(gd, LayerW, LayerH, TextureFormat.Color, LayerCount, TextureFlags.RenderTarget, 0, "k6d-color");
 			if (layerDepth)
-				layerDepthTex = new Texture(gd, LayerW, LayerH, TextureFormat.Depth16, LayerCount, TextureFlags.RenderTarget, 0, "k6d-depth");
+				layerDepthTex = new Texture(gd, LayerW, LayerH, depthFormat == "d16" ? TextureFormat.Depth16 : TextureFormat.Depth32, LayerCount, TextureFlags.RenderTarget, 0, "k6d-depth");
 		}
 		else
 		{
@@ -157,16 +180,29 @@ if (layers != "none")
 			layerColor = new Texture(gd, LayerW, LayerH, TextureFormat.Color, LayerCount, TextureFlags.RenderTarget | TextureFlags.Sampled, extColorProps, "k6d-ext-color");
 			if (layerDepth)
 			{
-				mtlDepth = K6dMetal.k6d_metal_array_texture(hostDevice, LayerW, LayerH, LayerCount, 1);
+				mtlDepth = K6dMetal.k6d_metal_array_texture(hostDevice, LayerW, LayerH, LayerCount, depthFormat == "d16" ? 1 : 2);
 				extDepthProps = SDL_CreateProperties();
 				SDL_SetPointerProperty(extDepthProps, SDL_PROP_GPU_TEXTURE_CREATE_METAL_TEXTURE_POINTER, mtlDepth);
-				layerDepthTex = new Texture(gd, LayerW, LayerH, TextureFormat.Depth16, LayerCount, TextureFlags.RenderTarget, extDepthProps, "k6d-ext-depth");
+				layerDepthTex = new Texture(gd, LayerW, LayerH, depthFormat == "d16" ? TextureFormat.Depth16 : TextureFormat.Depth32, LayerCount, TextureFlags.RenderTarget, extDepthProps, "k6d-ext-depth");
 			}
 		}
 
 		Texture[] attachments = layerDepthTex != null ? [layerColor, layerDepthTex] : [layerColor];
-		layer0 = new Target(gd, attachments, 0, "k6d-layer0");
-		layer1 = new Target(gd, attachments, 1, "k6d-layer1");
+		if (hostMsaa > 1)
+		{
+			// K6d.3: MSAA-Ziel über den vorhandenen Schichten, Auflösung in die Schichten
+			var samples = hostMsaa switch { 2 => SampleCount.Two, 4 => SampleCount.Four, 8 => SampleCount.Eight, _ => throw new ArgumentException("--msaa erwartet 2, 4 oder 8") };
+			var colorMemoryless = memoryless is "color" or "color+depth";
+			var depthMemoryless = memoryless == "color+depth";
+			layer0 = new Target(gd, attachments, 0, samples, multiSampleStore, DepthResolveFilter.Min, colorMemoryless, depthMemoryless, "k6d-layer0");
+			layer1 = new Target(gd, attachments, 1, samples, multiSampleStore, DepthResolveFilter.Min, colorMemoryless, depthMemoryless, "k6d-layer1");
+			Log.Info($"[machost] msaa={hostMsaa} memoryless={memoryless} multiSampleStore={multiSampleStore} depthFormat={depthFormat}: Ziele über den Schichten angelegt (Farbe {(layer0.ColorMemoryless ? "memoryless" : "privat")}, Tiefe {(layer0.DepthMemoryless ? "memoryless" : "privat")})");
+		}
+		else
+		{
+			layer0 = new Target(gd, attachments, 0, "k6d-layer0");
+			layer1 = new Target(gd, attachments, 1, "k6d-layer1");
+		}
 		// eine 2D-Textur pro Schicht: jeder Blit deckt sein Ziel vollständig ab
 		previewLeft = new Texture(gd, LayerW, LayerH, TextureFormat.Color, 1, TextureFlags.RenderTarget, 0, "k6d-preview-left");
 		previewRight = new Texture(gd, LayerW, LayerH, TextureFormat.Color, 1, TextureFlags.RenderTarget, 0, "k6d-preview-right");
@@ -185,6 +221,29 @@ if (layers != "none")
 			batcher.Render(window);
 			batcher.Clear();
 		};
+		if (testQuad)
+		{
+			// im selben Pass wie das Endbild: schwarzes Feld, darin ein schräges grünes Viereck,
+			// als eigener Draw mit Tiefenschreiben (Tiefe 0 statt Clear 1), damit die aufgelöste
+			// Tiefe verschiedene Werte hat; Fosters Batcher schreibt keine Tiefe
+			var fill = new Color(0, 0, 255, 0);   // Batcher-Modus «Fill»: nur die Vertexfarbe
+			var black = new Color(0, 0, 0, 255); var green = new Color(0, 255, 0, 255);
+			float bx = QuadBox.X, by = QuadBox.Y, bw = QuadBox.Width, bh = QuadBox.Height;
+			var quadMesh = new Mesh<BatcherVertex>(gd, name: "k6d-quad");
+			quadMesh.SetVertices((ReadOnlySpan<BatcherVertex>)[
+				new(new(bx, by), black, fill), new(new(bx + bw, by), black, fill), new(new(bx + bw, by + bh), black, fill), new(new(bx, by + bh), black, fill),
+				new(new(bx + 30, by + 10), green, fill), new(new(bx + 170, by + 25), green, fill), new(new(bx + 150, by + 110), green, fill), new(new(bx + 10, by + 95), green, fill),
+			]);
+			quadMesh.SetIndices((ReadOnlySpan<int>)[0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7]);
+			VisionOSKit.AfterOutput = output =>
+			{
+				if (++afterOutputCalls == 1)
+					Log.Info($"[machost] AfterOutput erstmals: output={output.GetType().Name} {output.WidthInPixels}x{output.HeightInPixels}");
+				var material = gd.Defaults.BatchMaterial;
+				material.Vertex.SetUniformBuffer(System.Numerics.Matrix4x4.CreateOrthographicOffCenter(0, output.WidthInPixels, output.HeightInPixels, 0, 0, float.MaxValue));
+				gd.Draw(new DrawCommand(output, quadMesh, material) { DepthTestEnabled = true, DepthWriteEnabled = true, DepthCompare = DepthCompare.Always, CullMode = CullMode.None, BlendMode = BlendMode.Premultiply });
+			};
+		}
 		Log.Info($"[machost] layers={layers}: Ziel {LayerW}x{LayerH} mit {LayerCount} Schichten ({(layerDepthTex != null ? "Farbe und Tiefe" : "nur Farbe")}), ein Pass pro Schicht, Vorschau nebeneinander");
 
 		if (layerSelftest)
@@ -204,10 +263,12 @@ if (layers != "none")
 			}
 		}
 	}
-	catch (NotSupportedException e)
+	catch (Exception e) when (e is NotSupportedException or ArgumentException or InvalidOperationException)
 	{
-		// erwarteter Weg mit SDL 3.4.12: der Import wird klar abgelehnt, der Rest läuft im Fenster
-		Log.Warning($"[machost] layers={layers} nicht möglich, weiter mit dem Fenster: {e.Message}");
+		// erwarteter Weg mit SDL 3.4.12 oder bei einer abgelehnten Kombination: klare Ausnahme,
+		// der Rest läuft im Fenster
+		Log.Warning($"[machost] layers={layers} nicht möglich, weiter mit dem Fenster: {e.GetType().Name}: {e.Message}");
+		VisionOSKit.Outputs = null; VisionOSKit.AfterRender = null; VisionOSKit.AfterOutput = null;
 		layerColor?.Dispose(); layerDepthTex?.Dispose();
 		layerColor = null; layerDepthTex = null;
 	}
@@ -359,6 +420,44 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 		if (diff != 0 || nonBlack0 == 0) layerChecksFailed++;
 		Log.Info($"[machost] layers check #{layerChecks} frame={game.Time.Frame} diff={diff} of {pixels0.Length} nonBlack0={nonBlack0} nonBlack1={nonBlack1} ({(diff == 0 && nonBlack0 > 0 ? "ok" : "FEHLER")})");
 
+		// Test-Viereck: im schwarzen Feld zählen, wie viele Pixel rein grün sind und wie viele
+		// Zwischenwerte haben (nur mit MSAA > 0)
+		if (testQuad)
+		{
+			int full = 0, partial = 0, other = 0;
+			for (int y = QuadBox.Y; y < QuadBox.Y + QuadBox.Height; y++)
+				for (int x = QuadBox.X; x < QuadBox.X + QuadBox.Width; x++)
+				{
+					var c = pixels0[y * LayerW + x];
+					if (c.R == 0 && c.B == 0 && c.G == 255) full++;
+					else if (c.R == 0 && c.B == 0 && c.G > 0) partial++;
+					else if (!(c.R == 0 && c.G == 0 && c.B == 0)) other++;
+				}
+			Log.Info($"[machost] quad check #{layerChecks} msaa={hostMsaa} afterOutputCalls={afterOutputCalls} full={full} partial={partial} other={other} ({(hostMsaa > 1 ? (partial > 0 ? "ok" : "FEHLER") : (partial == 0 ? "ok" : "FEHLER"))})");
+			if ((hostMsaa > 1) != (partial > 0)) layerChecksFailed++;
+		}
+
+		// externe Tiefe: nach der Auflösung muss sie beschrieben sein (nicht nur der Clear-Wert)
+		if (layerDepthTex != null)
+		{
+			try
+			{
+				string info;
+				if (layerDepthTex.Format == TextureFormat.Depth16)
+				{
+					var d = new ushort[LayerW * LayerH]; layerDepthTex.GetData<ushort>(d, rect, 0);
+					var set = new HashSet<ushort>(d); info = $"d16 distinct={set.Count} min={d.Min()} max={d.Max()}";
+				}
+				else
+				{
+					var d = new float[LayerW * LayerH]; layerDepthTex.GetData<float>(d, rect, 0);
+					var set = new HashSet<float>(d); info = $"d32 distinct={set.Count} min={d.Min():F4} max={d.Max():F4}";
+				}
+				Log.Info($"[machost] depth check #{layerChecks} layer0 {info}");
+			}
+			catch (Exception e) { Log.Warning($"[machost] depth check: {e.GetType().Name}: {e.Message}"); }
+		}
+
 		// Kompositionsprüfung: dieselbe Vorschau wie im Fenster in ein Offscreen-Ziel in
 		// Fenstergrösse, zurücklesen, Magenta zählen, Hälften vergleichen, Ränder prüfen
 		if (previewLeft != null && previewRight != null && batcher != null)
@@ -413,6 +512,7 @@ Log.Info($"[machost] End: totalTicks={totalTicks} totalUpdates={totalUpdates} el
 // Aufräumen in der Reihenfolge Ziel, Texturen, native Objekte; Foster gibt nur seine Handles frei
 VisionOSKit.Outputs = null;
 VisionOSKit.AfterSceneRender = null;
+VisionOSKit.AfterOutput = null;
 VisionOSKit.AfterRender = null;
 game.End();
 layer0?.Dispose(); layer1?.Dispose();
@@ -454,6 +554,9 @@ static partial class K6dMetal
 {
 	[DllImport("k6dmetal")] public static extern nint k6d_metal_device();
 	[DllImport("k6dmetal")] public static extern nint k6d_metal_queue(nint device);
-	[DllImport("k6dmetal")] public static extern nint k6d_metal_array_texture(nint device, uint width, uint height, uint layers, int depth);
+	[DllImport("k6dmetal")] public static extern nint k6d_metal_array_texture(nint device, uint width, uint height, uint layers, int kind);
 	[DllImport("k6dmetal")] public static extern void k6d_metal_release(nint obj);
 }
+
+/// <summary>Feld des Test-Vierecks in der Schichttextur (K6d.3).</summary>
+static class QuadBox { public const int X = 40, Y = 560, Width = 200, Height = 120; }

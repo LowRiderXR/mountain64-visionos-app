@@ -33,18 +33,19 @@ void *k6d_metal_queue(void *device)
     }
 }
 
-/* depth 0: RGBA8Unorm, Render-Target und Shader-Read (damit SDL die Schicht blitten kann);
-   depth 1: Depth16Unorm, nur Render-Target (wie eine Drawable-Tiefe). */
-void *k6d_metal_array_texture(void *device, unsigned width, unsigned height, unsigned layers, int depth)
+/* kind 0: RGBA8Unorm, Render-Target und Shader-Read (damit SDL die Schicht blitten kann);
+   kind 1: Depth16Unorm, kind 2: Depth32Float (wie die Drawable-Tiefe der Brille), nur Render-Target. */
+void *k6d_metal_array_texture(void *device, unsigned width, unsigned height, unsigned layers, int kind)
 {
     @autoreleasepool {
         if (!device || width == 0 || height == 0 || layers == 0) {
             return NULL;
         }
+        const int depth = kind != 0;
         id<MTLDevice> d = (__bridge id<MTLDevice>)device;
         MTLTextureDescriptor *desc = [MTLTextureDescriptor new];
         desc.textureType = MTLTextureType2DArray;
-        desc.pixelFormat = depth ? MTLPixelFormatDepth16Unorm : MTLPixelFormatRGBA8Unorm;
+        desc.pixelFormat = kind == 2 ? MTLPixelFormatDepth32Float : (kind == 1 ? MTLPixelFormatDepth16Unorm : MTLPixelFormatRGBA8Unorm);
         desc.width = width;
         desc.height = height;
         desc.arrayLength = layers;
