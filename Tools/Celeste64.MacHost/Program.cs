@@ -18,6 +18,13 @@
 //   --layer-selftest    einmal die verbotenen 2D-Operationen auf dem Array versuchen (Download,
 //                       Blit und Sampling ohne Schicht) und die Ausnahmen loggen
 //   --windowed          Vollbild aus dem Spielstand wieder aufheben (Test im Fenster)
+//   --tap-confirm T,T   an diesen Ticks die Bestätigungstaste (C) kurz drücken (SDL_PushEvent),
+//                       zum Beispiel 120,240,360 für Titel, Overworld, Level 1
+//   --target-check N    alle N Ticks Celestes 640x360-Welt-Ziel zurücklesen (Farbe und Tiefe):
+//                       Magenta, nicht-schwarz, Tiefenstatistik (K6d.2)
+//   --target-dump PFX   dabei die Farbe als PFX-<frame>.ppm schreiben (Vergleich MSAA an/aus)
+//   --blit-selftest     zwei Blits nebeneinander in dieselbe Textur, zurücklesen, beide Hälften
+//                       müssen stehen (K6d.2, Blit in ein Teilrechteck)
 //
 // Vorschau (K6d.1-Korrektur): Das Fenster wird in jedem Frame zuerst schwarz gecleart; jede
 // Schicht wird in eine eigene 2D-Textur geblittet (ein Blit deckt sein Ziel ganz ab, denn
@@ -45,6 +52,10 @@ int layerCheck = 300;
 bool layerDepth = true;
 bool layerSelftest = false;
 bool windowed = false;
+var tapConfirm = new List<long>();
+int targetCheck = 0;
+string? targetDump = null;
+bool blitSelftest = false;
 
 for (int i = 0; i < args.Length; i++)
 {
@@ -60,6 +71,10 @@ for (int i = 0; i < args.Length; i++)
 		case "--no-layer-depth": layerDepth = false; break;
 		case "--layer-selftest": layerSelftest = true; break;
 		case "--windowed": windowed = true; break;
+		case "--tap-confirm": foreach (var t in args[++i].Split(',')) tapConfirm.Add(long.Parse(t)); break;
+		case "--target-check": targetCheck = int.Parse(args[++i]); break;
+		case "--target-dump": targetDump = args[++i]; break;
+		case "--blit-selftest": blitSelftest = true; break;
 		default: Console.Error.WriteLine($"Unbekanntes Argument: {args[i]}"); return 64;
 	}
 }
@@ -198,6 +213,38 @@ if (layers != "none")
 	}
 }
 
+// K6d.2: Blit in ein Teilrechteck darf den Rest der Zieltextur nicht verwerfen
+if (blitSelftest)
+{
+	var gd = game.GraphicsDevice;
+	const int W = 64, H = 32;
+	var red = new Color[W * H]; var green = new Color[W * H];
+	Array.Fill(red, new Color(255, 0, 0, 255)); Array.Fill(green, new Color(0, 255, 0, 255));
+	using var srcRed = new Texture(gd, W, H, TextureFormat.Color, 1, TextureFlags.None, 0, "blit-red");
+	using var srcGreen = new Texture(gd, W, H, TextureFormat.Color, 1, TextureFlags.None, 0, "blit-green");
+	srcRed.SetData<Color>(red); srcGreen.SetData<Color>(green);
+	using var dest = new Texture(gd, W * 2, H, TextureFormat.Color, 1, TextureFlags.RenderTarget, 0, "blit-dest");
+	srcRed.Blit(new RectInt(0, 0, W, H), dest, new RectInt(0, 0, W, H), TextureFilter.Nearest);
+	srcGreen.Blit(new RectInt(0, 0, W, H), dest, new RectInt(W, 0, W, H), TextureFilter.Nearest);
+	var result = new Color[W * 2 * H];
+	dest.GetData<Color>(result);
+	int leftRed = 0, rightGreen = 0;
+	for (int y = 0; y < H; y++)
+		for (int x = 0; x < W * 2; x++)
+		{
+			var c = result[y * W * 2 + x];
+			if (x < W && c.R == 255 && c.G == 0) leftRed++;
+			if (x >= W && c.G == 255 && c.R == 0) rightGreen++;
+		}
+	var ok = leftRed == W * H && rightGreen == W * H;
+	Log.Info($"[machost] blit selftest: left red={leftRed}/{W * H} right green={rightGreen}/{W * H} ({(ok ? "ok" : "FEHLER")})");
+}
+
+// K6d.2: Celestes Welt-Ziel beobachten (Rücklesen von Farbe und Tiefe)
+Target? mainTarget = null;
+VisionOSKit.AfterSceneRender = t => mainTarget = t;
+var pendingTaps = new List<(long tick, bool down)>();
+
 var clock = Stopwatch.StartNew();
 var next = clock.Elapsed;
 var secondStart = clock.Elapsed;
@@ -242,8 +289,53 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 		Log.Info("[machost] Vollbild aufgehoben (--windowed)");
 	}
 
+	// Bestätigungstaste an festen Ticks: Druck in diesem Tick, Loslassen im nächsten
+	foreach (var t in tapConfirm)
+		if (totalTicks == t) { PushKey(true); pendingTaps.Add((totalTicks + 2, false)); }
+	for (int i = pendingTaps.Count - 1; i >= 0; i--)
+		if (pendingTaps[i].tick == totalTicks) { PushKey(pendingTaps[i].down); pendingTaps.RemoveAt(i); }
+
 	var frameBefore = game.Time.Frame;
 	game.Tick(delta, present: !noPresent);
+
+	// Welt-Ziel zurücklesen: Farbe (Auflösungstextur) und Tiefe (bei MSAA die Auflösungstiefe)
+	if (targetCheck > 0 && mainTarget != null && totalTicks % targetCheck == 0)
+	{
+		var tw = mainTarget.Width; var th = mainTarget.Height;
+		var color = new Color[tw * th];
+		mainTarget.Attachments[0].GetData<Color>(color, new RectInt(0, 0, tw, th));
+		int magenta = 0, nonBlack = 0;
+		foreach (var c in color)
+		{
+			if (c.R > 200 && c.G < 50 && c.B > 200) magenta++;
+			if (c.R + c.G + c.B > 0) nonBlack++;
+		}
+		string depthInfo = "-";
+		if (mainTarget.Attachments.Length > 1)
+		{
+			try
+			{
+				var depth = new ushort[tw * th];
+				mainTarget.Attachments[1].GetData<ushort>(depth, new RectInt(0, 0, tw, th));
+				ushort dmin = ushort.MaxValue, dmax = 0; var distinct = new HashSet<ushort>(); long zero = 0, full = 0;
+				foreach (var d in depth) { if (d < dmin) dmin = d; if (d > dmax) dmax = d; distinct.Add(d); if (d == 0) zero++; if (d == ushort.MaxValue) full++; }
+				depthInfo = $"min={dmin} max={dmax} distinct={distinct.Count} zero={zero} full={full} sampler={(mainTarget.Attachments[1].SampleCount != SampleCount.One ? "resolve" : "1x")}";
+			}
+			catch (Exception e) { depthInfo = $"Fehler: {e.GetType().Name}: {e.Message}"; }
+		}
+		Log.Info($"[machost] target check frame={game.Time.Frame} size={tw}x{th} samples={mainTarget.Attachments[0].SampleCount} magenta={magenta} nonBlack={nonBlack} of {color.Length} depth[{depthInfo}]");
+		if (targetDump != null)
+		{
+			var path = $"{targetDump}-{game.Time.Frame}.ppm";
+			using var f = new FileStream(path, FileMode.Create);
+			var header = System.Text.Encoding.ASCII.GetBytes($"P6\n{tw} {th}\n255\n");
+			f.Write(header);
+			var bytes = new byte[tw * th * 3];
+			for (int i = 0; i < color.Length; i++) { bytes[i * 3] = color[i].R; bytes[i * 3 + 1] = color[i].G; bytes[i * 3 + 2] = color[i].B; }
+			f.Write(bytes);
+			Log.Info($"[machost] target dump {path}");
+		}
+	}
 	var stepped = (int)(game.Time.Frame - frameBefore);
 	ticks++; totalTicks++;
 	updates += stepped; totalUpdates += stepped;
@@ -320,6 +412,7 @@ Log.Info($"[machost] End: totalTicks={totalTicks} totalUpdates={totalUpdates} el
 
 // Aufräumen in der Reihenfolge Ziel, Texturen, native Objekte; Foster gibt nur seine Handles frei
 VisionOSKit.Outputs = null;
+VisionOSKit.AfterSceneRender = null;
 VisionOSKit.AfterRender = null;
 game.End();
 layer0?.Dispose(); layer1?.Dispose();
@@ -342,6 +435,18 @@ static void Compose(Batcher batcher, Texture left, Texture right, Point2 size)
 	batcher.Image(left, origin, System.Numerics.Vector2.Zero, System.Numerics.Vector2.One * scale, 0, Color.White);
 	batcher.Image(right, origin + new System.Numerics.Vector2(drawW, 0), System.Numerics.Vector2.Zero, System.Numerics.Vector2.One * scale, 0, Color.White);
 	batcher.PopSampler();
+}
+
+// Bestätigungstaste C als SDL-Tastaturereignis (wie der Diagnose-Patch, hier vom Host)
+static unsafe void PushKey(bool down)
+{
+	var ev = default(SDL_Event);
+	ev.key.type = down ? SDL_EventType.SDL_EVENT_KEY_DOWN : SDL_EventType.SDL_EVENT_KEY_UP;
+	ev.key.timestamp = SDL_GetTicksNS();
+	ev.key.scancode = SDL_Scancode.SDL_SCANCODE_C;
+	ev.key.down = down;
+	ev.key.repeat = false;
+	SDL_PushEvent(ref ev);
 }
 
 /// <summary>Nativer Helfer native/k6d_metal.m (libk6dmetal.dylib neben dem Programm).</summary>

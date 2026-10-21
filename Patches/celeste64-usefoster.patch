@@ -47,10 +47,23 @@ index d210edd..bc09646 100644
      <IsLinux>true</IsLinux>
    </PropertyGroup>
 diff --git a/Source/Game.cs b/Source/Game.cs
-index 312df59..c49a6af 100644
+index 312df59..30a72af 100644
 --- a/Source/Game.cs
 +++ b/Source/Game.cs
-@@ -116,6 +116,9 @@ public class Game : App
+@@ -66,7 +66,12 @@ public class Game : App
+ 
+ 	public Game(AppConfig config) : base(config)
+ 	{
++#if VISIONOS_KIT
++		// visionOS-Port (K6d.2): Kantenglättung des Welt-Ziels per Schalter C64_MSAA (1, 2, 4, 8)
++		target = VisionOSKit.CreateMainTarget(GraphicsDevice, Width, Height);
++#else
+ 		target = new(GraphicsDevice, Width, Height, [TextureFormat.Color, TextureFormat.Depth16]);
++#endif
+ 		batcher = new(GraphicsDevice);
+ 
+ 		GraphicsDevice.VSync = true;
+@@ -116,6 +121,9 @@ public class Game : App
  
  	protected override void Update()
  	{
@@ -60,7 +73,7 @@ index 312df59..c49a6af 100644
  		Audio.Update();
  
  		// toggle mouse camera mode
-@@ -316,7 +319,15 @@ public class Game : App
+@@ -316,7 +324,15 @@ public class Game : App
  
  	protected override void Render()
  	{
@@ -77,11 +90,15 @@ index 312df59..c49a6af 100644
  
  		if (transitionStep != TransitionStep.Perform && transitionStep != TransitionStep.Hold)
  		{
-@@ -332,16 +343,21 @@ public class Game : App
+@@ -332,16 +348,25 @@ public class Game : App
  				batcher.Clear();
  			}
  
 -			// draw the target to the window
++#if VISIONOS_KIT
++			VisionOSKit.AfterSceneRender?.Invoke(target);
++#endif
++
 +			// draw the target to the window (or to each output of the host)
 +			foreach (var output in outputs)
  			{
@@ -141,10 +158,10 @@ index b06f359..73ff61f 100644
  		}
 diff --git a/Source/VisionOSKit.cs b/Source/VisionOSKit.cs
 new file mode 100644
-index 0000000..13960e7
+index 0000000..d0ae41e
 --- /dev/null
 +++ b/Source/VisionOSKit.cs
-@@ -0,0 +1,82 @@
+@@ -0,0 +1,110 @@
 +#if VISIONOS_KIT
 +// VisionOSKit.cs — Schalter des visionOS-Ports für Mac-Läufe (K6b, nur mit UseLocalFoster gebaut).
 +//
@@ -213,6 +230,34 @@ index 0000000..13960e7
 +
 +	/// <summary>Wird am Ende von Game.Render aufgerufen; der Host zeichnet damit eine Vorschau ins Fenster.</summary>
 +	public static Action? AfterRender { get; set; }
++
++	/// <summary>Wird nach dem Rendern der Szene ins Welt-Ziel aufgerufen (vor der Ausgabe); der Host liest es zurück.</summary>
++	public static Action<Target>? AfterSceneRender { get; set; }
++
++	/// <summary>Kantenglättung des Welt-Ziels aus C64_MSAA (1, 2, 4, 8; Standard 1).</summary>
++	public static SampleCount TargetSampleCount => Environment.GetEnvironmentVariable("C64_MSAA") switch
++	{
++		"2" => SampleCount.Two,
++		"4" => SampleCount.Four,
++		"8" => SampleCount.Eight,
++		_ => SampleCount.One,
++	};
++
++	/// <summary>
++	/// Welt-Ziel (Farbe und Depth16) mit der Kantenglättung aus C64_MSAA. Celeste rendert
++	/// mehrere Pässe in dieses Ziel und sampelt seine Tiefe im Kantenpass (World.cs:874).
++	/// </summary>
++	public static Target CreateMainTarget(GraphicsDevice device, int width, int height)
++	{
++		var samples = TargetSampleCount;
++		if (samples != SampleCount.One)
++			Log.Info($"[c64-msaa] Welt-Ziel {width}x{height} mit {samples} ({device.Capabilities})");
++		// Celeste rendert in Standard-Z (nah = klein): Tiefenauflösung mit Min, damit Kantenpixel am
++		// Vordergrund hängen; die Samples bleiben gespeichert (MultiSampleStore), weil spätere
++		// Pässe (Rückkopie, Sprites, Erdbeere) das Ziel laden
++		return new Target(device, width, height, [(TextureFormat.Color, TextureFlags.None, samples), (TextureFormat.Depth16, TextureFlags.None, samples)],
++			name: "world", multiSampleStore: true, depthResolve: DepthResolveFilter.Min);
++	}
 +
 +	/// <summary>Einmal pro Sekunde aus Game.Update aufrufen.</summary>
 +	public static void Tick()
