@@ -19,6 +19,8 @@
 //                       K3: mit C64_FOVEATION=1 geht die Map des Compositors an den Pass (P4).
 //                       K4a: C64_KIT_MSAA=<Samples> (Standard aus) rendert in MSAA-Texturen und
 //                       löst Farbe und Tiefe in die Drawable-Schichten auf.
+//                       K4c: C64_KIT_DEPTH_STORE=store|dontcare (Standard nicht gesetzt) wählt den
+//                       store_op der MSAA-Tiefe und schaltet die Tiefenprobe ein (step=depth-probe).
 //
 //  Prüft Risiko R1 (K0), die Besitzregeln von P1 (K1a), den Texturimport P3 (K1b) und Multiview
 //  P6 (K2) aus Docs/celeste64/sdl-gpu-kit-analyse.md. Jede Zeile der Szene geht ins Unified Log
@@ -166,12 +168,29 @@ nonisolated enum KitProbe {
     /// nächste Fläche) in die Drawable-Schichten auf. 0 = Stand K3.
     /// K4b: `memoryless` legt die MSAA-Ziele (und die MSAA-Textur des Messbilds) ohne Speicher an
     /// (C64_KIT_MEMORYLESS=1); Farbe und Tiefe werden nur aufgelöst, nie geladen oder gespeichert.
-    static func beginMultiview(device: MTLDevice, queue: MTLCommandQueue, msaaSamples: Int = 0, memoryless: Bool = false) -> OpaquePointer? {
-        c64Record("[c64-kit] start mode=multiview thread=\(Thread.current.name ?? "?") device=\"\(device.name)\" queue=\"\(queue.label ?? "-")\" msaa=\(msaaSamples) memoryless=\(memoryless)")
+    /// K4c: `depthStore` "store" oder "dontcare" (C64_KIT_DEPTH_STORE) wählt den store_op der
+    /// MSAA-Tiefe (STORE: StoreAndMultisampleResolve) und schaltet die Tiefenprobe ein; nil lässt
+    /// den Stand K4a/K4b (DONT_CARE, keine Probe). Die Sitzung lehnt die Kombination ohne MSAA
+    /// oder store mit memoryless ab (FAIL step=multiview-options).
+    static func beginMultiview(device: MTLDevice, queue: MTLCommandQueue, msaaSamples: Int = 0, memoryless: Bool = false,
+                               depthStore: String? = nil) -> OpaquePointer? {
+        c64Record("[c64-kit] start mode=multiview thread=\(Thread.current.name ?? "?") device=\"\(device.name)\" queue=\"\(queue.label ?? "-")\" msaa=\(msaaSamples) memoryless=\(memoryless) depthStore=\(depthStore ?? "-")")
         var options = kit_multiview_options()
         kit_multiview_options_default(&options)
         options.msaa_samples = UInt32(max(0, msaaSamples))
         options.memoryless = memoryless
+        switch depthStore {
+        case nil:
+            break
+        case "store":
+            options.depth_store = true
+            options.depth_probe = true
+        case "dontcare":
+            options.depth_store = false
+            options.depth_probe = true
+        default:
+            c64Record("[c64-kit] step=multiview-options C64_KIT_DEPTH_STORE=\"\(depthStore ?? "")\" unbekannt (erwartet store|dontcare), Schalter ignoriert")
+        }
         return kit_multiview_begin_ex(pointer(device as AnyObject), pointer(queue as AnyObject), &options, logLine, nil)
     }
 

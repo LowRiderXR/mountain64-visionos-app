@@ -5,7 +5,7 @@
  * Frameworks/macos/libSDL3.0.dylib aus scripts/build-sdl3.sh. Ausgabe: die [c64-kit]-Zeilen
  * auf stdout, Exit-Code = gescheiterter Schritt (0 = bestanden). Aufruf über run-mac.sh.
  *
- *   kit-testscene [--debug] [--size N] [--inject | --inject-device | --inject-queue | --import | --multiview | --foveation | --msaa]
+ *   kit-testscene [--debug] [--size N] [--inject | --inject-device | --inject-queue | --import | --multiview | --foveation | --msaa | --depth-store]
  *
  *   --inject         K1a: Device und Queue des Runners an SDL geben (P1, beide Properties)
  *   --inject-device  nur das Device; SDL legt eine eigene Queue darauf an
@@ -15,6 +15,8 @@
  *   --multiview      K2: ein Pass mit view_count 2 (P6)
  *   --foveation      K3: eigene Rate Map am Pass (P4)
  *   --msaa           K4a: MSAA 4x mit Auflösung von Farbe und Tiefe unter Multiview und Map
+ *   --depth-store    K4c: Tiefenauflösung mit view_count 2 bei gespeicherten MSAA-Samples
+ *                    (store_op STORE gegen DONT_CARE), Tiefenprobe beider Schichten
  */
 
 #include "../kit_testscene.h"
@@ -45,6 +47,7 @@ int main(int argc, char **argv)
     bool want_multiview = false;
     bool want_foveation = false;
     bool want_msaa = false;
+    bool want_depth_store = false;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--debug") == 0) {
             opt.debug_mode = true;
@@ -64,18 +67,21 @@ int main(int argc, char **argv)
             want_foveation = true;
         } else if (strcmp(argv[i], "--msaa") == 0) {
             want_msaa = true;
+        } else if (strcmp(argv[i], "--depth-store") == 0) {
+            want_depth_store = true;
         } else {
             fprintf(stderr, "Unbekanntes Argument: %s\n", argv[i]);
             return 64;
         }
     }
 
-    if (want_import || want_multiview || want_foveation || want_msaa) {
+    if (want_import || want_multiview || want_foveation || want_msaa || want_depth_store) {
         /* K1b/K2/K3: SDL_Init hier wie am Gerät im Hauptthread, Selbsttest mit eigenen Objekten. */
         if (!kit_testscene_init_sdl(log_stdout, NULL)) {
             return 1;
         }
-        const int rc = want_msaa ? kit_multiview_msaa_selftest(log_stdout, NULL)
+        const int rc = want_depth_store ? kit_multiview_depth_store_selftest(log_stdout, NULL)
+                     : want_msaa ? kit_multiview_msaa_selftest(log_stdout, NULL)
                      : want_foveation ? kit_multiview_foveation_selftest(log_stdout, NULL)
                      : want_multiview ? kit_multiview_selftest(log_stdout, NULL)
                                       : kit_import_selftest(log_stdout, NULL, opt.debug_mode);

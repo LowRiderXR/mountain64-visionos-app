@@ -62,6 +62,9 @@ typedef struct kit_multiview_stats {
     unsigned memoryless;           /* 1: MSAA-Ziele und Mess-MSAA-Textur memoryless (SDL-Property) */
     unsigned long long msaa_nominal_bytes;      /* Breite × Höhe × Schichten × Samples × Bytes, beide Ziele */
     unsigned long long measure_msaa_nominal_bytes; /* RG32F-MSAA-Textur des Messbilds, nominal */
+    /* K4c */
+    unsigned depth_store;          /* 1: store_op des MSAA-Tiefenziels STORE (StoreAndMultisampleResolve) */
+    unsigned long probes_total;    /* ausgeführte Tiefenproben (step=depth-probe) */
 } kit_multiview_stats;
 
 /* K4a: Optionen der Sitzung. msaa_samples 0 oder 1 = ohne Kantenglättung (Stand K3). Mit MSAA legt
@@ -74,7 +77,14 @@ typedef struct kit_multiview_stats {
  * Balken aus Geometrie, an dem MSAA sichtbar wird. memoryless (K4b): MSAA-Ziele und die
  * MSAA-Textur des Messbilds mit SDL_PROP_GPU_TEXTURE_CREATE_METAL_MEMORYLESS_BOOLEAN anlegen
  * (nur Tile-Speicher, Auflösung am Pass-Ende); ohne memoryless legt der Host die MSAA-Ziele an
- * und importiert sie (allocatedSize messbar). */
+ * und importiert sie (allocatedSize messbar).
+ * K4c (Gerätetest «Tiefenauflösung mit Multiview bei gespeicherten MSAA-Samples»):
+ * depth_store: store_op des MSAA-Tiefenziels STORE statt DONT_CARE, Metal macht daraus
+ * StoreAndMultisampleResolve statt MultisampleResolve (verlangt memoryless aus). depth_probe: ab
+ * Frame 120 alle 300 Frames denselben Pass ein zweites Mal rendern, Farbe und Tiefe (Filter max)
+ * in eigene 1x-Zweischichttexturen auflösen, nicht ins Drawable, und die Tiefe beider Schichten
+ * zurücklesen (step=depth-probe: beschriebene Pixel, verschiedene Werte, Minimum, Maximum). Die
+ * Probe wartet synchron auf die GPU (ein verspäteter Frame pro Probe). Beides verlangt MSAA. */
 typedef struct kit_multiview_options {
     unsigned msaa_samples;
     unsigned depth_filter;
@@ -82,7 +92,44 @@ typedef struct kit_multiview_options {
     float view_colors[2][4];
     bool with_bar;
     bool memoryless;
+    bool depth_store;
+    bool depth_probe;
 } kit_multiview_options;
+
+/* K4c: Ergebnis einer Tiefenprobe. Die Probetexturen werden vor dem Pass auf den Sentinel 1.0
+ * (Tiefe) und Schwarz (Farbe) gelöscht; «written» zählt Pixel, deren Tiefe nicht mehr der Sentinel
+ * ist, «distinct» die verschiedenen Bitmuster inklusive Sentinel, min/max nur über beschriebene
+ * Pixel, color_nonblack die Pixel der aufgelösten Farbe mit einem Kanal > 0 (Kontrolle, dass die
+ * Farbe beider Views ankommt). */
+typedef struct kit_depth_probe_layer {
+    unsigned total;
+    unsigned written;
+    unsigned nan;
+    unsigned distinct;
+    float min_written;
+    float max_written;
+    unsigned color_nonblack;
+} kit_depth_probe_layer;
+
+typedef struct kit_depth_probe_result {
+    unsigned long frame;        /* frames_total beim Probe-Pass */
+    unsigned width;
+    unsigned height;
+    unsigned layers;
+    unsigned depth_store;
+    unsigned filter;            /* immer 2 (max) */
+    kit_depth_probe_layer layer[2];
+    double ms;                  /* CPU-Zeit inklusive Warten auf die GPU und Auswertung */
+} kit_depth_probe_result;
+
+/* K4c: Tiefenprobe sofort ausführen und synchron auswerten. Grösse = Drawable-Grösse (die
+ * MSAA-Ziele der Sitzung werden darauf angelegt oder wiederverwendet), Quad und Matrizen wie
+ * kit_multiview_frame, rate_map optional. Loggt step=depth-probe pro Schicht und
+ * step=depth-probe-summary. false bei Fehler (SDL_GetError). */
+bool kit_multiview_depth_probe(kit_multiview_session *session, unsigned width, unsigned height, unsigned layers,
+                               const float rgba[4], float depth_clear, const float view_projection[32],
+                               const float center[3], const float right[3], const float up[3], void *rate_map,
+                               kit_depth_probe_result *out);
 
 /* K4b: Diagnose der SDL-Textur-Container (textureCount, canBeCycled) der MSAA-Ziele; loggt
  * step=msaa-containers. Liest das interne Layout des Metal-Backends am Pin (nur Testzwecke). */
@@ -170,6 +217,14 @@ int kit_multiview_foveation_selftest(kit_log_fn log, void *user);
  * (auch mit Textur grösser als die Map); Negativtests (Auflösungstextur multisample, unbekannter
  * Filter). 0 = bestanden, sonst Schrittnummer ab 90. */
 int kit_multiview_msaa_selftest(kit_log_fn log, void *user);
+
+/* Mac-Nachstellung K4c: Auflösungstexturen 688×688×2 wie K4a, je eine Sitzung mit MSAA 4x und
+ * depth_store aus (dontcare) und an (store), je eine Tiefenprobe ohne und mit Zweischicht-Map.
+ * Abnahme nur für dontcare: beide Schichten vollständig beschrieben, Schicht 0 bis 0,25 und
+ * Schicht 1 bis 0,75 (Quad-Tiefen der Views), Farbe in beiden Schichten. Für store wird der
+ * Befund nur geloggt (step=depth-probe-summary), er ist kein Fehler des Kits. 0 = bestanden,
+ * sonst Schrittnummer ab 130. */
+int kit_multiview_depth_store_selftest(kit_log_fn log, void *user);
 
 #ifdef __cplusplus
 }

@@ -11,6 +11,8 @@
 #   --msaa:      K4a (MSAA 4x, Auflösung von Farbe und Tiefe unter Multiview und Map, Kantenwerte,
 #                Tiefenfilter, Messbild, Negativtests); läuft mit Metal-Validierung (MTL_DEBUG_LAYER=1),
 #                ein Validierungsfehler bricht den Lauf ab.
+#   --depth-store: K4c (Tiefenauflösung mit view_count 2 bei store_op STORE gegen DONT_CARE der
+#                MSAA-Tiefe, Tiefenprobe beider Schichten, ohne und mit Map); ebenfalls mit Metal-Validierung.
 
 set -euo pipefail
 
@@ -40,7 +42,7 @@ echo "-- gelinkte SDL:"; otool -L "$BIN" | grep SDL3
 
 echo "== Lauf"
 set +e
-if [[ " $* " == *" --msaa "* ]]; then
+if [[ " $* " == *" --msaa "* || " $* " == *" --depth-store "* ]]; then
     MTL_DEBUG_LAYER=1 "$BIN" "$@"
 else
     "$BIN" "$@"

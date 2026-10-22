@@ -108,6 +108,11 @@
             value = "1"
             isEnabled = "NO">
          </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "C64_KIT_DEPTH_STORE"
+            value = "store"
+            isEnabled = "NO">
+         </EnvironmentVariable>
       </EnvironmentVariables>
       <MetalAPIValidationSettings
          isEnabled = "No">

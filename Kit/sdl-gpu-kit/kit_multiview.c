@@ -16,6 +16,10 @@
 #define KIT_TAG_CAPACITY 256
 #define KIT_GPU_SAMPLES 4096
 #define KIT_GPU_SKIP_DEFAULT 90
+/* K4c: erste Tiefenprobe bei Frame 120 (Quad eingefroren nach 90), dann alle 300 Frames. */
+#define KIT_PROBE_FIRST_FRAME 120
+#define KIT_PROBE_INTERVAL 300
+#define KIT_PROBE_SENTINEL 1.0f
 
 static const char *const kit_depth_filter_names[3] = { "sample0", "min", "max" };
 
@@ -64,6 +68,12 @@ struct kit_multiview_session {
     SDL_GPUTexture *msaa_depth;
     SDL_GPUTexture *measure_msaa;               /* RG32F MSAA (SDL-eigen) für das Messbild unter MSAA */
     bool msaa_logged;
+    /* K4c: Probetexturen (SDL-eigen, 1x, 2D-Array in Drawable-Grösse), Farbe und Tiefe. */
+    SDL_GPUTexture *probe_color;
+    SDL_GPUTexture *probe_depth;
+    unsigned probe_width;
+    unsigned probe_height;
+    unsigned probe_layers;
     /* K4a: GPU-Zeit über den Completed-Rückruf des Metal-Backends. Der Rückruf läuft auf einem
      * Metal-Thread; die Herkunft eines Command Buffers ('F' Frame, 'M' Messbild, 'R' Rücklesen)
      * steht in einer FIFO, die der Submit-Thread vor dem Submit füllt (die Queue arbeitet in
@@ -303,12 +313,14 @@ static SDL_GPUGraphicsPipeline *kit_create_pipeline(SDL_GPUDevice *device, SDL_G
 /* Beschreibung eines Passes: Ziele, optional Auflösungsziele (K4a), Clear, Views, Startschicht,
  * Rate Map (K3). Mit color_resolve wird die Farbe mit store_op RESOLVE in dieselbe Schicht
  * (base_layer) der Auflösungstextur geschrieben; mit depth_resolve die Tiefe über die
- * Pass-Property (store_op des MSAA-Ziels DONT_CARE: nur auflösen, Inhalt verwerfen). */
+ * Pass-Property (store_op des MSAA-Ziels DONT_CARE: nur auflösen, Inhalt verwerfen; K4c
+ * depth_store: STORE, Metal StoreAndMultisampleResolve, die Samples bleiben erhalten). */
 typedef struct kit_pass_desc {
     SDL_GPUTexture *color;
     SDL_GPUTexture *depth;            /* optional */
     SDL_GPUTexture *color_resolve;    /* optional, nur mit MSAA-Farbziel */
     SDL_GPUTexture *depth_resolve;    /* optional, nur mit MSAA-Tiefenziel */
+    bool depth_store;                 /* K4c: mit depth_resolve STORE statt DONT_CARE */
     unsigned depth_filter;            /* 0 sample0, 1 min, 2 max */
     const char *depth_filter_override; /* Testzwecke: Filtername direkt (NULL = aus depth_filter) */
     float rgba[4];
@@ -344,7 +356,7 @@ static SDL_GPURenderPass *kit_begin_pass_ex(SDL_GPUCommandBuffer *cmd, const kit
     dt.layer = (Uint8)d->base_layer;
     dt.clear_depth = d->depth_clear;
     dt.load_op = SDL_GPU_LOADOP_CLEAR;
-    dt.store_op = d->depth_resolve ? SDL_GPU_STOREOP_DONT_CARE : SDL_GPU_STOREOP_STORE;
+    dt.store_op = (d->depth_resolve && !d->depth_store) ? SDL_GPU_STOREOP_DONT_CARE : SDL_GPU_STOREOP_STORE;
     dt.stencil_load_op = SDL_GPU_LOADOP_DONT_CARE;
     dt.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
 
@@ -522,8 +534,23 @@ kit_multiview_session *kit_multiview_begin_ex(void *metal_device, void *metal_qu
     s->stats.msaa_samples = s->opt.msaa_samples;
     s->stats.depth_filter = s->opt.depth_filter;
     s->stats.memoryless = s->opt.memoryless ? 1 : 0;
+    s->stats.depth_store = s->opt.depth_store ? 1 : 0;
     s->gpu_skip = KIT_GPU_SKIP_DEFAULT;
     s->gpu_lock = SDL_CreateMutex();
+    /* K4c: der Schalter und die Probe gelten nur mit MSAA; STORE auf memoryless Zielen lehnt
+     * SDL ab (SDL_gpu_metal.m, memoryless-Regeln), deshalb hier schon ablehnen. */
+    if ((s->opt.depth_store || s->opt.depth_probe) && s->opt.msaa_samples <= 1) {
+        kit_logf(s, "[c64-kit] FAIL step=multiview-options error=\"depth_store/depth_probe verlangen MSAA (msaa_samples > 1)\"");
+        SDL_DestroyMutex(s->gpu_lock);
+        SDL_free(s);
+        return NULL;
+    }
+    if (s->opt.depth_store && s->opt.memoryless) {
+        kit_logf(s, "[c64-kit] FAIL step=multiview-options error=\"depth_store=store verlangt memoryless aus (STORE auf memoryless Zielen ist unzulaessig)\"");
+        SDL_DestroyMutex(s->gpu_lock);
+        SDL_free(s);
+        return NULL;
+    }
 
     SDL_PropertiesID props = SDL_CreateProperties();
     SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_SHADERS_MSL_BOOLEAN, true);
@@ -597,8 +624,9 @@ kit_multiview_session *kit_multiview_begin_ex(void *metal_device, void *metal_qu
         kit_multiview_end(s);
         return NULL;
     }
-    kit_logf(s, "[c64-kit] step=multiview view_count=%d pipeline=%p color=B8G8R8A8_UNORM_SRGB depth=D32_FLOAT depthTest=greater depthWrite=1 cull=none msaa=%u memoryless=%d depthResolveFilter=%s bar=%d vertexMSL=%zu fragmentMSL=%zu uniformBytes=%zu shaders=HLSL/SV_ViewID→DXC→SPIRV-Cross→amplification_id",
+    kit_logf(s, "[c64-kit] step=multiview view_count=%d pipeline=%p color=B8G8R8A8_UNORM_SRGB depth=D32_FLOAT depthTest=greater depthWrite=1 cull=none msaa=%u memoryless=%d depthResolveFilter=%s depthStore=%s depthProbe=%d bar=%d vertexMSL=%zu fragmentMSL=%zu uniformBytes=%zu shaders=HLSL/SV_ViewID→DXC→SPIRV-Cross→amplification_id",
              KIT_VIEW_COUNT, (void *)s->pipeline, s->opt.msaa_samples, s->opt.memoryless ? 1 : 0, kit_depth_filter_names[s->opt.depth_filter],
+             s->opt.depth_store ? "store" : "dontcare", s->opt.depth_probe ? 1 : 0,
              s->opt.with_bar ? 1 : 0, sizeof(kit_multiview_vertex_msl) - 1, sizeof(kit_multiview_fragment_msl) - 1, sizeof(kit_mv_uniforms));
     return s;
 }
@@ -666,10 +694,11 @@ static bool kit_ensure_msaa(kit_multiview_session *s, unsigned width, unsigned h
     s->stats.msaa_width = width;
     s->stats.msaa_height = height;
     s->stats.msaa_layers = layers;
-    kit_logf(s, "[c64-kit] step=multiview-msaa samples=%u memoryless=%d color{%ux%ux%u} depth{%ux%ux%u} nominalMB=%.1f allocatedMB=%s depthResolveFilter=%s resolve=color:storeOp=RESOLVE depth:passProperty storeOp=DONT_CARE cycle=0",
+    kit_logf(s, "[c64-kit] step=multiview-msaa samples=%u memoryless=%d color{%ux%ux%u} depth{%ux%ux%u} nominalMB=%.1f allocatedMB=%s depthResolveFilter=%s resolve=color:storeOp=RESOLVE depth:passProperty storeOp=%s cycle=0",
              s->opt.msaa_samples, s->opt.memoryless ? 1 : 0, width, height, layers, width, height, layers,
              (double)s->stats.msaa_nominal_bytes / (1024.0 * 1024.0),
-             s->opt.memoryless ? "-(memoryless)" : "siehe multiview-msaa-allocated", kit_depth_filter_names[s->opt.depth_filter]);
+             s->opt.memoryless ? "-(memoryless)" : "siehe multiview-msaa-allocated", kit_depth_filter_names[s->opt.depth_filter],
+             s->opt.depth_store ? "STORE(StoreAndMultisampleResolve)" : "DONT_CARE(MultisampleResolve)");
     if (!s->opt.memoryless) {
         kit_logf(s, "[c64-kit] step=multiview-msaa-allocated color=%llu depth=%llu totalMB=%.1f",
                  kit_metal_texture_allocated_bytes(s->msaa_color_mtl), kit_metal_texture_allocated_bytes(s->msaa_depth_mtl),
@@ -770,6 +799,7 @@ bool kit_multiview_frame(kit_multiview_session *s, void *color_texture, void *de
         pd.color_resolve = color;
         pd.depth_resolve = depth;
         pd.depth_filter = s->opt.depth_filter;
+        pd.depth_store = s->opt.depth_store;
     }
 
     SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(s->device);
@@ -826,6 +856,308 @@ bool kit_multiview_frame(kit_multiview_session *s, void *color_texture, void *de
     s->stats.total_sum_ms += ms;
     if (ms > s->stats.max_ms) s->stats.max_ms = ms;
     if (ms > s->stats.total_max_ms) s->stats.total_max_ms = ms;
+
+    /* K4c: Tiefenprobe nach dem Frame (eigener Command Buffer, synchron; die Zeit zählt nicht in
+     * die Frame-Statistik, steht aber in der Probe-Zeile). */
+    if (s->opt.depth_probe && s->opt.msaa_samples > 1 && draw_quad &&
+        s->stats.frames_total >= KIT_PROBE_FIRST_FRAME &&
+        (s->stats.frames_total - KIT_PROBE_FIRST_FRAME) % KIT_PROBE_INTERVAL == 0) {
+        kit_depth_probe_result r;
+        if (!kit_multiview_depth_probe(s, cdesc.width, cdesc.height, cdesc.layers, rgba, depth_clear,
+                                       view_projection, center, right, up, rate_map, &r)) {
+            kit_logf(s, "[c64-kit] FAIL step=depth-probe frame=%lu error=\"%s\"", s->stats.frames_total, SDL_GetError());
+        }
+    }
+    return true;
+}
+
+/* ------------------------------------------------------------------ K4c: Tiefenprobe */
+
+/* Beide Schichten einer SDL-Farb- und -Tiefentextur (1x, 4 Bytes pro Pixel) in Host-Speicher
+ * laden; synchron (Fence). */
+static bool kit_download_layers(kit_multiview_session *s, SDL_GPUTexture *color, SDL_GPUTexture *depth, unsigned W, unsigned H,
+                                unsigned layers, Uint8 **color_out, float **depth_out)
+{
+    bool ok = false;
+    SDL_GPUTransferBuffer *tc = NULL, *td = NULL;
+    SDL_GPUFence *fence = NULL;
+    const Uint32 layer_bytes = W * H * 4;
+    *color_out = NULL;
+    *depth_out = NULL;
+    {
+        SDL_GPUTransferBufferCreateInfo tinfo;
+        SDL_zero(tinfo);
+        tinfo.usage = SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD;
+        tinfo.size = layer_bytes * layers;
+        tc = SDL_CreateGPUTransferBuffer(s->device, &tinfo);
+        td = SDL_CreateGPUTransferBuffer(s->device, &tinfo);
+        if (!tc || !td) {
+            goto done;
+        }
+        SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(s->device);
+        if (!cmd) {
+            goto done;
+        }
+        SDL_GPUCopyPass *copy = SDL_BeginGPUCopyPass(cmd);
+        if (!copy) {
+            SDL_CancelGPUCommandBuffer(cmd);
+            goto done;
+        }
+        for (unsigned layer = 0; layer < layers; layer++) {
+            SDL_GPUTextureRegion src;
+            SDL_zero(src);
+            src.layer = layer;
+            src.w = W;
+            src.h = H;
+            src.d = 1;
+            SDL_GPUTextureTransferInfo dst;
+            SDL_zero(dst);
+            dst.offset = layer * layer_bytes;
+            dst.pixels_per_row = W;
+            dst.rows_per_layer = H;
+            src.texture = color;
+            dst.transfer_buffer = tc;
+            SDL_DownloadFromGPUTexture(copy, &src, &dst);
+            src.texture = depth;
+            dst.transfer_buffer = td;
+            SDL_DownloadFromGPUTexture(copy, &src, &dst);
+        }
+        SDL_EndGPUCopyPass(copy);
+        kit_push_tag(s, 'R');
+        fence = SDL_SubmitGPUCommandBufferAndAcquireFence(cmd);
+        if (!fence || !SDL_WaitForGPUFences(s->device, true, &fence, 1)) {
+            goto done;
+        }
+        const Uint8 *cp = (const Uint8 *)SDL_MapGPUTransferBuffer(s->device, tc, false);
+        const float *dp = (const float *)SDL_MapGPUTransferBuffer(s->device, td, false);
+        if (!cp || !dp) {
+            goto done;
+        }
+        *color_out = (Uint8 *)SDL_malloc(layer_bytes * layers);
+        *depth_out = (float *)SDL_malloc(layer_bytes * layers);
+        SDL_memcpy(*color_out, cp, layer_bytes * layers);
+        SDL_memcpy(*depth_out, dp, layer_bytes * layers);
+        SDL_UnmapGPUTransferBuffer(s->device, tc);
+        SDL_UnmapGPUTransferBuffer(s->device, td);
+        ok = true;
+    }
+done:
+    if (fence) SDL_ReleaseGPUFence(s->device, fence);
+    if (tc) SDL_ReleaseGPUTransferBuffer(s->device, tc);
+    if (td) SDL_ReleaseGPUTransferBuffer(s->device, td);
+    return ok;
+}
+
+/* Probetexturen (SDL-eigen, 1x, zwei Schichten) in der Grösse anlegen oder wiederverwenden. */
+static bool kit_ensure_probe_textures(kit_multiview_session *s, unsigned width, unsigned height, unsigned layers)
+{
+    if (s->probe_color && s->probe_width == width && s->probe_height == height && s->probe_layers == layers) {
+        return true;
+    }
+    if (s->probe_color || s->probe_depth) {
+        SDL_WaitForGPUIdle(s->device);
+        if (s->probe_color) SDL_ReleaseGPUTexture(s->device, s->probe_color);
+        if (s->probe_depth) SDL_ReleaseGPUTexture(s->device, s->probe_depth);
+        s->probe_color = s->probe_depth = NULL;
+    }
+    SDL_GPUTextureCreateInfo info;
+    SDL_zero(info);
+    info.type = SDL_GPU_TEXTURETYPE_2D_ARRAY;
+    info.width = width;
+    info.height = height;
+    info.layer_count_or_depth = layers;
+    info.num_levels = 1;
+    info.sample_count = SDL_GPU_SAMPLECOUNT_1;
+    info.format = s->color_format;
+    info.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET;
+    s->probe_color = SDL_CreateGPUTexture(s->device, &info);
+    info.format = s->depth_format;
+    info.usage = SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET;
+    s->probe_depth = s->probe_color ? SDL_CreateGPUTexture(s->device, &info) : NULL;
+    if (!s->probe_color || !s->probe_depth) {
+        return false;
+    }
+    s->probe_width = width;
+    s->probe_height = height;
+    s->probe_layers = layers;
+    return true;
+}
+
+/* Verschiedene 32-Bit-Muster in einer Schicht zählen: offene Adressierung, Tabelle doppelt so
+ * gross wie die Pixelzahl (aufgerundet auf eine Zweierpotenz). */
+static unsigned kit_count_distinct(const Uint32 *values, unsigned count)
+{
+    unsigned cap = 1;
+    while (cap < count * 2u) cap <<= 1;
+    Uint32 *table = (Uint32 *)SDL_malloc((size_t)cap * sizeof(Uint32));
+    Uint8 *used = (Uint8 *)SDL_calloc(cap, 1);
+    if (!table || !used) {
+        SDL_free(table);
+        SDL_free(used);
+        return 0;
+    }
+    unsigned distinct = 0;
+    for (unsigned i = 0; i < count; i++) {
+        const Uint32 v = values[i];
+        Uint32 h = v;
+        h ^= h >> 16;
+        h *= 0x7feb352dU;
+        h ^= h >> 15;
+        h *= 0x846ca68bU;
+        h ^= h >> 16;
+        unsigned slot = h & (cap - 1);
+        while (used[slot] && table[slot] != v) {
+            slot = (slot + 1) & (cap - 1);
+        }
+        if (!used[slot]) {
+            used[slot] = 1;
+            table[slot] = v;
+            distinct += 1;
+        }
+    }
+    SDL_free(table);
+    SDL_free(used);
+    return distinct;
+}
+
+static void kit_probe_analyze(const Uint8 *c, const float *d, unsigned W, unsigned H, kit_depth_probe_layer *r)
+{
+    SDL_zerop(r);
+    r->total = W * H;
+    r->min_written = 1e9f;
+    r->max_written = -1e9f;
+    for (unsigned i = 0; i < W * H; i++) {
+        const float v = d[i];
+        if (v != v) {
+            r->nan += 1;
+            continue;
+        }
+        if (v != KIT_PROBE_SENTINEL) {
+            r->written += 1;
+            if (v < r->min_written) r->min_written = v;
+            if (v > r->max_written) r->max_written = v;
+        }
+        if (c[i * 4 + 0] | c[i * 4 + 1] | c[i * 4 + 2]) {
+            r->color_nonblack += 1;
+        }
+    }
+    if (r->written == 0) {
+        r->min_written = r->max_written = 0;
+    }
+    r->distinct = kit_count_distinct((const Uint32 *)d, W * H);
+}
+
+bool kit_multiview_depth_probe(kit_multiview_session *s, unsigned width, unsigned height, unsigned layers,
+                               const float rgba[4], float depth_clear, const float view_projection[32],
+                               const float center[3], const float right[3], const float up[3], void *rate_map,
+                               kit_depth_probe_result *out)
+{
+    if (!s || !s->device || !out) {
+        return false;
+    }
+    if (s->opt.msaa_samples <= 1) {
+        SDL_SetError("Tiefenprobe verlangt MSAA");
+        return false;
+    }
+    if (layers != KIT_VIEW_COUNT) {
+        SDL_SetError("Tiefenprobe erwartet %d Schichten, nicht %u", KIT_VIEW_COUNT, layers);
+        return false;
+    }
+    const Uint64 t0 = SDL_GetPerformanceCounter();
+    SDL_zerop(out);
+    out->frame = s->stats.frames_total;
+    out->width = width;
+    out->height = height;
+    out->layers = layers;
+    out->depth_store = s->opt.depth_store ? 1 : 0;
+    out->filter = 2;
+    if (!kit_ensure_msaa(s, width, height, layers) || !kit_ensure_probe_textures(s, width, height, layers)) {
+        return false;
+    }
+
+    SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(s->device);
+    if (!cmd) {
+        return false;
+    }
+    /* 1. Sentinel: beide Schichten der Probetexturen in einem Zwei-View-Pass ohne Draw löschen
+     * (Tiefe 1.0, Farbe schwarz); so ist «nicht beschrieben» vom Clear des Passes (depth_clear)
+     * und von jedem Quadwert unterscheidbar. */
+    {
+        kit_pass_desc d;
+        SDL_zero(d);
+        d.color = s->probe_color;
+        d.depth = s->probe_depth;
+        d.depth_clear = KIT_PROBE_SENTINEL;
+        d.view_count = KIT_VIEW_COUNT;
+        SDL_GPURenderPass *pass = kit_begin_pass_ex(cmd, &d);
+        if (!pass) {
+            SDL_CancelGPUCommandBuffer(cmd);
+            return false;
+        }
+        SDL_EndGPURenderPass(pass);
+    }
+    /* 2. Der Probe-Pass: wie der Frame-Pass (MSAA-Ziele, view_count 2, Map, Quad), aber Farbe und
+     * Tiefe (Filter max) in die Probetexturen aufgelöst; store_op der MSAA-Tiefe nach Schalter. */
+    {
+        kit_pass_desc d;
+        SDL_zero(d);
+        d.color = s->msaa_color;
+        d.depth = s->msaa_depth;
+        d.color_resolve = s->probe_color;
+        d.depth_resolve = s->probe_depth;
+        d.depth_filter = 2;
+        d.depth_store = s->opt.depth_store;
+        SDL_memcpy(d.rgba, rgba, sizeof(d.rgba));
+        d.depth_clear = depth_clear;
+        d.view_count = KIT_VIEW_COUNT;
+        d.rate_map = rate_map;
+        SDL_GPURenderPass *pass = kit_begin_pass_ex(cmd, &d);
+        if (!pass) {
+            SDL_CancelGPUCommandBuffer(cmd);
+            return false;
+        }
+        if (!kit_bind_checked(pass, s->pipeline)) {
+            SDL_EndGPURenderPass(pass);
+            SDL_CancelGPUCommandBuffer(cmd);
+            return false;
+        }
+        kit_mv_uniforms u;
+        kit_fill_uniforms(&u, view_projection, center, right, up, s->opt.view_colors, s->opt.pattern);
+        SDL_PushGPUVertexUniformData(cmd, 0, &u, sizeof(u));
+        SDL_DrawGPUPrimitives(pass, 6, 1, 0, 0);
+        SDL_EndGPURenderPass(pass);
+    }
+    kit_push_tag(s, 'P');
+    if (!SDL_SubmitGPUCommandBuffer(cmd)) {
+        return false;
+    }
+    /* 3. Beide Schichten lesen und auswerten. */
+    Uint8 *c = NULL;
+    float *d = NULL;
+    if (!kit_download_layers(s, s->probe_color, s->probe_depth, width, height, layers, &c, &d)) {
+        return false;
+    }
+    for (unsigned layer = 0; layer < layers && layer < 2; layer++) {
+        kit_probe_analyze(c + (size_t)layer * width * height * 4, d + (size_t)layer * width * height, width, height, &out->layer[layer]);
+    }
+    SDL_free(c);
+    SDL_free(d);
+    out->ms = kit_ms_since(t0);
+    s->stats.probes_total += 1;
+
+    const char *store_name = s->opt.depth_store ? "store" : "dontcare";
+    for (unsigned layer = 0; layer < 2; layer++) {
+        const kit_depth_probe_layer *r = &out->layer[layer];
+        kit_logf(s, "[c64-kit] step=depth-probe depthStore=%s filter=max frame=%lu size=%ux%ux%u rateMap=%d layer=%u written=%u/%u (%.1f%%) distinct=%u min=%.4f max=%.4f nan=%u colorNonBlack=%u",
+                 store_name, out->frame, width, height, layers, rate_map ? 1 : 0, layer, r->written, r->total,
+                 r->total ? 100.0 * r->written / r->total : 0.0, r->distinct, r->min_written, r->max_written, r->nan, r->color_nonblack);
+    }
+    const bool l0 = out->layer[0].written == out->layer[0].total && out->layer[0].total > 0;
+    const bool l1 = out->layer[1].written == out->layer[1].total && out->layer[1].total > 0;
+    kit_logf(s, "[c64-kit] step=depth-probe-summary depthStore=%s frame=%lu rateMap=%d depthWritten=%s colorLayer0=%u colorLayer1=%u ms=%.2f",
+             store_name, out->frame, rate_map ? 1 : 0,
+             (l0 && l1) ? "both" : (l0 ? "layer0only" : (l1 ? "layer1only" : "none")),
+             out->layer[0].color_nonblack, out->layer[1].color_nonblack, out->ms);
     return true;
 }
 
@@ -859,6 +1191,8 @@ void kit_multiview_end(kit_multiview_session *s)
         if (s->measure_transfer) SDL_ReleaseGPUTransferBuffer(s->device, s->measure_transfer);
         if (s->msaa_color) SDL_ReleaseGPUTexture(s->device, s->msaa_color);
         if (s->msaa_depth) SDL_ReleaseGPUTexture(s->device, s->msaa_depth);
+        if (s->probe_color) SDL_ReleaseGPUTexture(s->device, s->probe_color);
+        if (s->probe_depth) SDL_ReleaseGPUTexture(s->device, s->probe_depth);
         if (s->pipeline) SDL_ReleaseGPUGraphicsPipeline(s->device, s->pipeline);
         if (s->vertex) SDL_ReleaseGPUShader(s->device, s->vertex);
         if (s->fragment) SDL_ReleaseGPUShader(s->device, s->fragment);
@@ -870,10 +1204,11 @@ void kit_multiview_end(kit_multiview_session *s)
     unsigned gpu_n = 0;
     double gpu_mean = 0, gpu_p95 = 0, gpu_max = 0;
     kit_multiview_gpu_percentiles(s, &gpu_n, &gpu_mean, &gpu_p95, &gpu_max);
-    kit_logf(s, "[c64-kit] step=multiview-end frames=%lu fails=%lu passes=%lu draws=%lu sdl(ms) mean=%.3f max=%.3f gpu(ms, ab Frame %u) n=%u mean=%.3f p95=%.3f max=%.3f untagged=%lu gpuErr=%lu msaa=%u wrappers created=%lu released=%lu",
+    kit_logf(s, "[c64-kit] step=multiview-end frames=%lu fails=%lu passes=%lu draws=%lu sdl(ms) mean=%.3f max=%.3f gpu(ms, ab Frame %u) n=%u mean=%.3f p95=%.3f max=%.3f untagged=%lu gpuErr=%lu msaa=%u depthStore=%s probes=%lu wrappers created=%lu released=%lu",
              s->stats.frames_total, s->stats.fails_total, s->stats.passes_total, s->stats.draws_total,
              mean, s->stats.total_max_ms, s->gpu_skip + 1, gpu_n, gpu_mean, gpu_p95, gpu_max,
              s->stats.gpu_untagged, s->stats.gpu_errors, s->opt.msaa_samples,
+             s->opt.depth_store ? "store" : "dontcare", s->stats.probes_total,
              s->stats.wrappers_created, s->stats.wrappers_released);
     /* Der Completed-Rückruf kann nach dem Warten noch kurz laufen: Sitzung als geschlossen
      * markieren, ihm eine kurze Frist lassen, dann freigeben. */
@@ -2175,5 +2510,113 @@ done:
     }
     kit_metal_release_host_objects(host_device, host_queue);
     self_logf(&ctx, "[c64-kit] result=%s failedStep=%d mode=msaa", result == 0 ? "ok" : "fail", result);
+    return result;
+}
+
+/* ------------------------------------------------------------------ K4c: Mac-Nachstellung */
+
+int kit_multiview_depth_store_selftest(kit_log_fn log, void *user)
+{
+    kit_self_ctx ctx;
+    SDL_zero(ctx);
+    ctx.log = log;
+    ctx.user = user;
+
+    int result = 0;
+    void *host_device = NULL, *host_queue = NULL;
+    void *map = NULL;
+    kit_multiview_session *s = NULL;
+    unsigned W = 0, H = 0;
+
+    if (!kit_metal_create_host_objects(&host_device, &host_queue)) {
+        self_logf(&ctx, "[c64-kit] FAIL step=selftest-host error=\"Device/Queue nicht erzeugt\"");
+        return 130;
+    }
+    /* Map wie K3/K4a: 1024×1024 logisch, physisch 688×688; die Probe läuft in dieser Grösse. */
+    if (!kit_metal_create_rate_map(host_device, 1024, 1024, KIT_VIEW_COUNT, 16, 0.5f, &map)) {
+        self_logf(&ctx, "[c64-kit] FAIL step=depth-store-map error=\"Rate Map nicht erzeugt\"");
+        result = 131;
+        goto done;
+    }
+    {
+        kit_metal_map_desc md;
+        kit_metal_map_info(map, &md);
+        W = md.physical_width[0];
+        H = md.physical_height[0];
+    }
+
+    /* Quad wie kit_edge_round: View 0 rot/0,25, View 1 blau/0,75 über Clear schwarz/0,001. */
+    float vp[32] = { 0 };
+    for (int v = 0; v < 2; v++) {
+        vp[v * 16 + 0] = 1; vp[v * 16 + 5] = 1; vp[v * 16 + 10] = 1; vp[v * 16 + 15] = 1;
+    }
+    vp[14] = 0.25f;
+    vp[16 + 14] = 0.75f;
+    const float center[3] = { 0, 0, 0 }, right[3] = { 0.6f, 0.15f, 0 }, up[3] = { -0.15f, 0.6f, 0 };
+    const float clear[4] = { 0, 0, 0, 1 };
+    const float quad_depth[2] = { 0.25f, 0.75f };
+    self_logf(&ctx, "[c64-kit] step=depth-store-setup probe{%ux%ux%u bgra8_srgb+d32f samples=1 sentinel=%.1f} msaa=4 filter=max quad view0=rot/0.25 view1=blau/0.75 clear=schwarz/0.001 cases=dontcare,store x noMap,map",
+              W, H, KIT_VIEW_COUNT, (double)KIT_PROBE_SENTINEL);
+
+    for (unsigned variant = 0; variant < 2 && result == 0; variant++) {
+        kit_multiview_options opt;
+        kit_multiview_options_default(&opt);
+        opt.msaa_samples = 4;
+        opt.depth_filter = 2;
+        opt.pattern = 0.0f;
+        opt.with_bar = false;
+        opt.depth_store = (variant == 1);
+        opt.depth_probe = true;
+        const float colors[2][4] = { { 1, 0, 0, 1 }, { 0, 0, 1, 1 } };
+        SDL_memcpy(opt.view_colors, colors, sizeof(colors));
+        s = kit_multiview_begin_ex(host_device, host_queue, &opt, log, user);
+        if (!s) {
+            result = 132;
+            break;
+        }
+        for (unsigned with_map = 0; with_map < 2 && result == 0; with_map++) {
+            kit_depth_probe_result r;
+            if (!kit_multiview_depth_probe(s, W, H, KIT_VIEW_COUNT, clear, 0.001f, vp, center, right, up,
+                                           with_map ? map : NULL, &r)) {
+                self_logf(&ctx, "[c64-kit] FAIL step=depth-store-probe depthStore=%s rateMap=%u error=\"%s\"",
+                          opt.depth_store ? "store" : "dontcare", with_map, SDL_GetError());
+                result = 133;
+                break;
+            }
+            /* Abnahme: Farbe muss in beiden Schichten ankommen (jede Variante); die Tiefe nur bei
+             * dontcare: beide Schichten voll, Maximum = Quad-Tiefe der View, Minimum = Clear. */
+            bool ok = r.layer[0].color_nonblack > 0 && r.layer[1].color_nonblack > 0;
+            if (!opt.depth_store) {
+                for (unsigned layer = 0; layer < 2; layer++) {
+                    const kit_depth_probe_layer *l = &r.layer[layer];
+                    const bool full = l->written == l->total && l->total > 0 && l->nan == 0;
+                    const bool values = SDL_fabsf(l->max_written - quad_depth[layer]) < 1e-3f && SDL_fabsf(l->min_written - 0.001f) < 1e-4f;
+                    ok = ok && full && values && l->distinct >= 2;
+                }
+            }
+            self_logf(&ctx, "[c64-kit] step=depth-store-case depthStore=%s rateMap=%u layer0{written=%.1f%% max=%.4f} layer1{written=%.1f%% max=%.4f} color{%u,%u} %s=%d",
+                      opt.depth_store ? "store" : "dontcare", with_map,
+                      100.0 * r.layer[0].written / (r.layer[0].total ? r.layer[0].total : 1), r.layer[0].max_written,
+                      100.0 * r.layer[1].written / (r.layer[1].total ? r.layer[1].total : 1), r.layer[1].max_written,
+                      r.layer[0].color_nonblack, r.layer[1].color_nonblack,
+                      opt.depth_store ? "finding(layer1written)" : "ok",
+                      opt.depth_store ? (r.layer[1].written > 0 ? 1 : 0) : (ok ? 1 : 0));
+            if (!ok) {
+                result = 134 + with_map;
+            }
+        }
+        kit_multiview_end(s);
+        s = NULL;
+    }
+
+done:
+    if (s) {
+        kit_multiview_end(s);
+    }
+    if (map) {
+        kit_metal_release_map(map);
+    }
+    kit_metal_release_host_objects(host_device, host_queue);
+    self_logf(&ctx, "[c64-kit] result=%s failedStep=%d mode=depth-store", result == 0 ? "ok" : "fail", result);
     return result;
 }
