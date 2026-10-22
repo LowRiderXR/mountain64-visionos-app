@@ -35,6 +35,8 @@
 //                       Einstellung kostet Leistung, nicht das Bild. memoryless Farbe ohne diesen
 //                       Schalter ist der Negativtest (abgelehnt)
 //   --depth-format F    d16 | d32 (Standard d32, wie die Drawable-Tiefe der Brille)
+//   --views N           K6e.1: 1 = ein Pass pro Schicht (zwei Ziele), 2 = ein Pass auf beide
+//                       Schichten (ein Ziel mit Target.ViewCount 2, Vertex Amplification)
 //   --test-quad         der Host zeichnet im selben Pass ein schwarzes Feld mit schrägem grünem
 //                       Viereck; der Schichtvergleich zählt dort Kantenpixel mit Zwischenwerten
 //
@@ -73,6 +75,7 @@ string memoryless = "none";
 bool multiSampleStore = true;
 string depthFormat = "d32";
 bool testQuad = false;
+int views = 1;
 long afterOutputCalls = 0;
 
 for (int i = 0; i < args.Length; i++)
@@ -98,6 +101,7 @@ for (int i = 0; i < args.Length; i++)
 		case "--no-multisample-store": multiSampleStore = false; break;
 		case "--depth-format": depthFormat = args[++i]; break;
 		case "--test-quad": testQuad = true; break;
+		case "--views": views = int.Parse(args[++i]); break;
 		default: Console.Error.WriteLine($"Unbekanntes Argument: {args[i]}"); return 64;
 	}
 }
@@ -188,12 +192,19 @@ if (layers != "none")
 		}
 
 		Texture[] attachments = layerDepthTex != null ? [layerColor, layerDepthTex] : [layerColor];
-		if (hostMsaa > 1)
+		var samples = hostMsaa switch { 1 => SampleCount.One, 2 => SampleCount.Two, 4 => SampleCount.Four, 8 => SampleCount.Eight, _ => throw new ArgumentException("--msaa erwartet 1, 2, 4 oder 8") };
+		var colorMemoryless = memoryless is "color" or "color+depth";
+		var depthMemoryless = memoryless == "color+depth";
+		if (views == 2)
+		{
+			// K6e.1: ein Ziel über beiden Schichten, ein Pass rendert beide Views
+			layer0 = new Target(gd, attachments, 0, samples, multiSampleStore, DepthResolveFilter.Min, colorMemoryless, depthMemoryless, "k6e-views", viewCount: 2);
+			layer1 = null;
+			Log.Info($"[machost] views=2 msaa={hostMsaa} memoryless={memoryless} multiSampleStore={multiSampleStore} depthFormat={depthFormat}: ein Ziel mit ViewCount {layer0.ViewCount} (Farbe {(layer0.ColorMemoryless ? "memoryless" : "privat")}, Tiefe {(layer0.DepthMemoryless ? "memoryless" : "privat")})");
+		}
+		else if (hostMsaa > 1)
 		{
 			// K6d.3: MSAA-Ziel über den vorhandenen Schichten, Auflösung in die Schichten
-			var samples = hostMsaa switch { 2 => SampleCount.Two, 4 => SampleCount.Four, 8 => SampleCount.Eight, _ => throw new ArgumentException("--msaa erwartet 2, 4 oder 8") };
-			var colorMemoryless = memoryless is "color" or "color+depth";
-			var depthMemoryless = memoryless == "color+depth";
 			layer0 = new Target(gd, attachments, 0, samples, multiSampleStore, DepthResolveFilter.Min, colorMemoryless, depthMemoryless, "k6d-layer0");
 			layer1 = new Target(gd, attachments, 1, samples, multiSampleStore, DepthResolveFilter.Min, colorMemoryless, depthMemoryless, "k6d-layer1");
 			Log.Info($"[machost] msaa={hostMsaa} memoryless={memoryless} multiSampleStore={multiSampleStore} depthFormat={depthFormat}: Ziele über den Schichten angelegt (Farbe {(layer0.ColorMemoryless ? "memoryless" : "privat")}, Tiefe {(layer0.DepthMemoryless ? "memoryless" : "privat")})");
@@ -207,7 +218,7 @@ if (layers != "none")
 		previewLeft = new Texture(gd, LayerW, LayerH, TextureFormat.Color, 1, TextureFlags.RenderTarget, 0, "k6d-preview-left");
 		previewRight = new Texture(gd, LayerW, LayerH, TextureFormat.Color, 1, TextureFlags.RenderTarget, 0, "k6d-preview-right");
 		batcher = new Batcher(gd, "k6d-preview");
-		VisionOSKit.Outputs = [layer0, layer1];
+		VisionOSKit.Outputs = layer1 != null ? [layer0, layer1] : [layer0];
 		VisionOSKit.AfterRender = () =>
 		{
 			var window = game.Window;
@@ -419,6 +430,7 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 		layerChecks++;
 		if (diff != 0 || nonBlack0 == 0) layerChecksFailed++;
 		Log.Info($"[machost] layers check #{layerChecks} frame={game.Time.Frame} diff={diff} of {pixels0.Length} nonBlack0={nonBlack0} nonBlack1={nonBlack1} ({(diff == 0 && nonBlack0 > 0 ? "ok" : "FEHLER")})");
+		Log.Info($"[machost] frame stats: views={views} passes/frame={game.GraphicsDevice.RenderPassesLastFrame} draws/frame={game.GraphicsDevice.DrawCallsLastFrame}");
 
 		// Test-Viereck: im schwarzen Feld zählen, wie viele Pixel rein grün sind und wie viele
 		// Zwischenwerte haben (nur mit MSAA > 0)
@@ -442,18 +454,21 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 		{
 			try
 			{
-				string info;
-				if (layerDepthTex.Format == TextureFormat.Depth16)
+				for (int layerIndex = 0; layerIndex < LayerCount; layerIndex++)
 				{
-					var d = new ushort[LayerW * LayerH]; layerDepthTex.GetData<ushort>(d, rect, 0);
-					var set = new HashSet<ushort>(d); info = $"d16 distinct={set.Count} min={d.Min()} max={d.Max()}";
+					string info;
+					if (layerDepthTex.Format == TextureFormat.Depth16)
+					{
+						var d = new ushort[LayerW * LayerH]; layerDepthTex.GetData<ushort>(d, rect, layerIndex);
+						var set = new HashSet<ushort>(d); info = $"d16 distinct={set.Count} min={d.Min()} max={d.Max()}";
+					}
+					else
+					{
+						var d = new float[LayerW * LayerH]; layerDepthTex.GetData<float>(d, rect, layerIndex);
+						var set = new HashSet<float>(d); info = $"d32 distinct={set.Count} min={d.Min():F4} max={d.Max():F4}";
+					}
+					Log.Info($"[machost] depth check #{layerChecks} layer{layerIndex} {info}");
 				}
-				else
-				{
-					var d = new float[LayerW * LayerH]; layerDepthTex.GetData<float>(d, rect, 0);
-					var set = new HashSet<float>(d); info = $"d32 distinct={set.Count} min={d.Min():F4} max={d.Max():F4}";
-				}
-				Log.Info($"[machost] depth check #{layerChecks} layer0 {info}");
 			}
 			catch (Exception e) { Log.Warning($"[machost] depth check: {e.GetType().Name}: {e.Message}"); }
 		}
