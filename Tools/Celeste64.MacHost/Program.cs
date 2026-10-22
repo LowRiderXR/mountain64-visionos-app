@@ -54,6 +54,9 @@
 //                       Meldung geben; Gegenprobe mit gültigem Ziel
 //   --minimize-at T,T   K6f.3: am ersten Tick das Fenster minimieren, am zweiten zurückholen;
 //                       der Lauf muss ohne Ausnahme weitergehen
+//   --key-probe N       K6f.4: vor Tick N ein F7-Tastenereignis einspeisen (SDL_PushEvent), zwei
+//                       Ticks später loslassen; meldet, nach welchem Tick Foster die Taste als
+//                       gedrückt bzw. losgelassen sieht (vor da3b23a N+1, nachher N)
 //
 // Vorschau (K6d.1-Korrektur): Das Fenster wird in jedem Frame zuerst schwarz gecleart; jede
 // Schicht wird in eine eigene 2D-Textur geblittet (ein Blit deckt sein Ziel ganz ab, denn
@@ -95,6 +98,8 @@ bool rateMap = false;
 float rateMapScale = 1.4f;
 bool passSelftest = false;
 var minimizeAt = new List<long>();
+long keyProbeAt = -1;
+long keyProbeSeenDown = -1, keyProbeSeenUp = -1;
 long afterOutputCalls = 0;
 // K6e.2: Map des Hosts, ihre logische und physische Grösse, Messbild-Frame
 nint rateMapPtr = 0;
@@ -130,6 +135,7 @@ for (int i = 0; i < args.Length; i++)
 		case "--rate-map-scale": rateMapScale = float.Parse(args[++i], System.Globalization.CultureInfo.InvariantCulture); break;
 		case "--pass-selftest": passSelftest = true; break;
 		case "--minimize-at": foreach (var t in args[++i].Split(',')) minimizeAt.Add(long.Parse(t)); break;
+		case "--key-probe": keyProbeAt = long.Parse(args[++i]); break;
 		default: Console.Error.WriteLine($"Unbekanntes Argument: {args[i]}"); return 64;
 	}
 }
@@ -516,6 +522,9 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 		if (totalTicks == t) { PushKey(true); pendingTaps.Add((totalTicks + 2, false)); }
 	for (int i = pendingTaps.Count - 1; i >= 0; i--)
 		if (pendingTaps[i].tick == totalTicks) { PushKey(pendingTaps[i].down); pendingTaps.RemoveAt(i); }
+	// K6f.4: Tastensonde F7, Druck vor Tick N, Loslassen vor Tick N+2
+	if (keyProbeAt >= 0 && totalTicks == keyProbeAt) PushKey(true, SDL_Scancode.SDL_SCANCODE_F7);
+	if (keyProbeAt >= 0 && totalTicks == keyProbeAt + 2) PushKey(false, SDL_Scancode.SDL_SCANCODE_F7);
 
 	var frameBefore = game.Time.Frame;
 	// K6f.3: Fenster minimieren und zurückholen (SDL-Fensterhandle über SDL_GetWindows, Foster
@@ -643,6 +652,13 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 			f.Write(bytes);
 			Log.Info($"[machost] target dump {path}");
 		}
+	}
+	// K6f.4: nach welchem Tick sieht Foster die Sonde? (Zustand nach Tick totalTicks)
+	if (keyProbeAt >= 0 && totalTicks >= keyProbeAt)
+	{
+		var down = game.Input.Keyboard.Down(Keys.F7);
+		if (down && keyProbeSeenDown < 0) { keyProbeSeenDown = totalTicks; Log.Info($"[machost] key probe: F7 eingespeist vor Tick {keyProbeAt}, als gedrückt gesehen nach Tick {totalTicks} (Verzögerung {totalTicks - keyProbeAt})"); }
+		if (!down && keyProbeSeenDown >= 0 && keyProbeSeenUp < 0) { keyProbeSeenUp = totalTicks; Log.Info($"[machost] key probe: F7 losgelassen vor Tick {keyProbeAt + 2}, als losgelassen gesehen nach Tick {totalTicks} (Verzögerung {totalTicks - keyProbeAt - 2})"); }
 	}
 	var stepped = (int)(game.Time.Frame - frameBefore);
 	ticks++; totalTicks++;
@@ -801,12 +817,12 @@ static void Compose(Batcher batcher, Texture left, Texture right, Point2 size)
 }
 
 // Bestätigungstaste C als SDL-Tastaturereignis (wie der Diagnose-Patch, hier vom Host)
-static unsafe void PushKey(bool down)
+static unsafe void PushKey(bool down, SDL_Scancode scancode = SDL_Scancode.SDL_SCANCODE_C)
 {
 	var ev = default(SDL_Event);
 	ev.key.type = down ? SDL_EventType.SDL_EVENT_KEY_DOWN : SDL_EventType.SDL_EVENT_KEY_UP;
 	ev.key.timestamp = SDL_GetTicksNS();
-	ev.key.scancode = SDL_Scancode.SDL_SCANCODE_C;
+	ev.key.scancode = scancode;
 	ev.key.down = down;
 	ev.key.repeat = false;
 	SDL_PushEvent(ref ev);
