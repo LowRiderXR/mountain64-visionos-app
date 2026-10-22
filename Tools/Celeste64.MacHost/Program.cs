@@ -217,15 +217,15 @@ if (layers != "none")
 		if (views == 2)
 		{
 			// K6e.1: ein Ziel über beiden Schichten, ein Pass rendert beide Views
-			layer0 = new Target(gd, attachments, 0, samples, multiSampleStore, DepthResolveFilter.Min, colorMemoryless, depthMemoryless, "k6e-views", viewCount: 2);
+			layer0 = new Target(gd, attachments, 0, samples, multiSampleStore, DepthResolveFilter.Min, colorMemoryless, depthMemoryless, viewCount: 2, name: "k6e-views");
 			layer1 = null;
 			Log.Info($"[machost] views=2 msaa={hostMsaa} memoryless={memoryless} multiSampleStore={multiSampleStore} depthFormat={depthFormat}: ein Ziel mit ViewCount {layer0.ViewCount} (Farbe {(layer0.ColorMemoryless ? "memoryless" : "privat")}, Tiefe {(layer0.DepthMemoryless ? "memoryless" : "privat")})");
 		}
 		else if (hostMsaa > 1)
 		{
 			// K6d.3: MSAA-Ziel über den vorhandenen Schichten, Auflösung in die Schichten
-			layer0 = new Target(gd, attachments, 0, samples, multiSampleStore, DepthResolveFilter.Min, colorMemoryless, depthMemoryless, "k6d-layer0");
-			layer1 = new Target(gd, attachments, 1, samples, multiSampleStore, DepthResolveFilter.Min, colorMemoryless, depthMemoryless, "k6d-layer1");
+			layer0 = new Target(gd, attachments, 0, samples, multiSampleStore, DepthResolveFilter.Min, colorMemoryless, depthMemoryless, name: "k6d-layer0");
+			layer1 = new Target(gd, attachments, 1, samples, multiSampleStore, DepthResolveFilter.Min, colorMemoryless, depthMemoryless, name: "k6d-layer1");
 			Log.Info($"[machost] msaa={hostMsaa} memoryless={memoryless} multiSampleStore={multiSampleStore} depthFormat={depthFormat}: Ziele über den Schichten angelegt (Farbe {(layer0.ColorMemoryless ? "memoryless" : "privat")}, Tiefe {(layer0.DepthMemoryless ? "memoryless" : "privat")})");
 		}
 		else
