@@ -49,6 +49,11 @@
 //   --rate-map-scale F  logische Grösse der Map = F × Texturgrösse (Standard 1,4; physisch rund
 //                       0,67 × logisch, passt in 1280×720). 2,0 ist der Negativtest: physisch
 //                       grösser als die Textur, SDL lehnt den Pass ab, Foster wirft
+//   --pass-selftest     K6f.3: Device im Debug-Modus (SDL_ASSERT=ignore), ein gewöhnlicher Pass,
+//                       den SDL ablehnt (Tiefentextur mit 256 Schichten), muss eine Ausnahme mit
+//                       Meldung geben; Gegenprobe mit gültigem Ziel
+//   --minimize-at T,T   K6f.3: am ersten Tick das Fenster minimieren, am zweiten zurückholen;
+//                       der Lauf muss ohne Ausnahme weitergehen
 //
 // Vorschau (K6d.1-Korrektur): Das Fenster wird in jedem Frame zuerst schwarz gecleart; jede
 // Schicht wird in eine eigene 2D-Textur geblittet (ein Blit deckt sein Ziel ganz ab, denn
@@ -88,6 +93,8 @@ bool testQuad = false;
 int views = 1;
 bool rateMap = false;
 float rateMapScale = 1.4f;
+bool passSelftest = false;
+var minimizeAt = new List<long>();
 long afterOutputCalls = 0;
 // K6e.2: Map des Hosts, ihre logische und physische Grösse, Messbild-Frame
 nint rateMapPtr = 0;
@@ -121,6 +128,8 @@ for (int i = 0; i < args.Length; i++)
 		case "--views": views = int.Parse(args[++i]); break;
 		case "--rate-map": rateMap = true; break;
 		case "--rate-map-scale": rateMapScale = float.Parse(args[++i], System.Globalization.CultureInfo.InvariantCulture); break;
+		case "--pass-selftest": passSelftest = true; break;
+		case "--minimize-at": foreach (var t in args[++i].Split(',')) minimizeAt.Add(long.Parse(t)); break;
 		default: Console.Error.WriteLine($"Unbekanntes Argument: {args[i]}"); return 64;
 	}
 }
@@ -157,6 +166,16 @@ if (layers == "external")
 }
 
 var flags = VisionOSKit.Flags | (noPresent ? AppFlags.HiddenWindow : AppFlags.None);
+if (passSelftest)
+{
+	// K6f.3: SDLs Debugprüfungen am Passbeginn melden per SDL_assert_release und geben NULL
+	// zurück; ohne diesen Hint zeigt SDL einen Dialog und der Lauf hängt. Der Hint muss über
+	// SDL_SetHint gesetzt werden: Environment.SetEnvironmentVariable erreicht unter .NET auf
+	// macOS die native Umgebung nicht (erster Versuch hing im Dialog). Debug-Modus des Devices
+	// einschalten.
+	SDL_SetHint("SDL_ASSERT", "ignore");
+	flags |= AppFlags.GraphicsDebugging;
+}
 using var game = new Game(new(
 	ApplicationName: Game.GamePath,
 	WindowTitle: Game.GameTitle,
@@ -174,6 +193,46 @@ if (kitProperties != 0)
 var delta = TimeSpan.FromSeconds(1.0 / hz);
 game.Begin();
 Log.Info($"[machost] Begin fertig, Fenster {(noPresent ? "versteckt" : "sichtbar")}, Startzeit {game.Time.Elapsed.TotalMilliseconds:F1} ms, Fähigkeiten {game.GraphicsDevice.Capabilities}");
+
+// K6f.3: ein gewöhnlicher Pass, den SDL ablehnt, muss eine Ausnahme mit Meldung geben statt
+// die Draws still zu verwerfen. Einfachster erreichbarer Fall: SDLs Debugprüfung «Cannot bind a
+// depth texture with more than 255 layers!» (Tiefentextur mit 256 Schichten, 4x4). Gegenprobe:
+// ein gültiges kleines Ziel ohne Ausnahme.
+if (passSelftest)
+{
+	var gd = game.GraphicsDevice;
+	Texture? bigColor = null, bigDepth = null; Target? bad = null;
+	try
+	{
+		bigColor = new Texture(gd, 4, 4, TextureFormat.Color, 256, TextureFlags.RenderTarget, 0, "k6f-color-256");
+		bigDepth = new Texture(gd, 4, 4, TextureFormat.Depth32, 256, TextureFlags.RenderTarget, 0, "k6f-depth-256");
+		bad = new Target(gd, [bigColor, bigDepth], 0, name: "k6f-bad-pass");
+		bad.Clear(Color.Black, 1, 0, ClearMask.Color | ClearMask.Depth);
+		Log.Error("[machost] pass selftest 'Tiefe mit 256 Schichten': KEINE Ausnahme (Draws still verworfen)");
+	}
+	catch (InvalidOperationException e)
+	{
+		Log.Info($"[machost] pass selftest 'Tiefe mit 256 Schichten': abgelehnt ({e.GetType().Name}: {e.Message})");
+	}
+	catch (Exception e)
+	{
+		Log.Error($"[machost] pass selftest 'Tiefe mit 256 Schichten': unerwartet {e.GetType().Name}: {e.Message}");
+	}
+	finally
+	{
+		bad?.Dispose(); bigColor?.Dispose(); bigDepth?.Dispose();
+	}
+	try
+	{
+		using var good = new Target(gd, 8, 8, "k6f-good-pass");
+		good.Clear(Color.Black);
+		Log.Info("[machost] pass selftest 'gültiges Ziel 8x8': ok (keine Ausnahme)");
+	}
+	catch (Exception e)
+	{
+		Log.Error($"[machost] pass selftest 'gültiges Ziel 8x8': FEHLER {e.GetType().Name}: {e.Message}");
+	}
+}
 
 // ---- K6d.1: Ausgabeziel mit zwei Schichten ----
 const int LayerW = 1280, LayerH = 720, LayerCount = 2;
@@ -459,6 +518,18 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 		if (pendingTaps[i].tick == totalTicks) { PushKey(pendingTaps[i].down); pendingTaps.RemoveAt(i); }
 
 	var frameBefore = game.Time.Frame;
+	// K6f.3: Fenster minimieren und zurückholen (SDL-Fensterhandle über SDL_GetWindows, Foster
+	// zeigt es nicht); ohne Swapchain-Bild darf kein Pass scheitern
+	if (minimizeAt.Count >= 1 && totalTicks == minimizeAt[0])
+	{
+		var windows = SDL_GetWindows();
+		if (windows.Length > 0) { SDL_MinimizeWindow(windows[0]); Log.Info($"[machost] Fenster minimiert bei Tick {totalTicks}"); }
+	}
+	if (minimizeAt.Count >= 2 && totalTicks == minimizeAt[1])
+	{
+		var windows = SDL_GetWindows();
+		if (windows.Length > 0) { SDL_RestoreWindow(windows[0]); Log.Info($"[machost] Fenster zurückgeholt bei Tick {totalTicks}"); }
+	}
 	// K6e.2: Messframe (Balkenbild statt Celeste) in der Mitte zwischen zwei Schichtvergleichen
 	measureThisFrame = rateMapPtr != 0 && layerCheck > 0 && (totalTicks + 1) % layerCheck == layerCheck / 2;
 	try
