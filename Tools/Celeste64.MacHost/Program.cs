@@ -39,6 +39,16 @@
 //                       Schichten (ein Ziel mit Target.ViewCount 2, Vertex Amplification)
 //   --test-quad         der Host zeichnet im selben Pass ein schwarzes Feld mit schrägem grünem
 //                       Viereck; der Schichtvergleich zählt dort Kantenpixel mit Zwischenwerten
+//   --rate-map          K6e.2 (F5): eigene Zweischicht-Rate-Map des Hosts (gleiches Profil in allen
+//                       Schichten und Achsen, 1,0 im ersten Drittel, 0,5 danach) jeden Frame ans
+//                       Ziel (Target.SetRasterizationRateMap); Viewport, Scissor und Batcher laufen
+//                       dann im logischen Raum der Map. Nur mit --layers external (Host-Device).
+//                       Messbild in jedem (layer-check/2)-ten Tick: schwarzes Bild mit Balken an
+//                       bekannten logischen Positionen, beide Schichten zurücklesen, Soll aus
+//                       mapScreenToPhysicalCoordinates, Toleranz 1 px
+//   --rate-map-scale F  logische Grösse der Map = F × Texturgrösse (Standard 1,4; physisch rund
+//                       0,67 × logisch, passt in 1280×720). 2,0 ist der Negativtest: physisch
+//                       grösser als die Textur, SDL lehnt den Pass ab, Foster wirft
 //
 // Vorschau (K6d.1-Korrektur): Das Fenster wird in jedem Frame zuerst schwarz gecleart; jede
 // Schicht wird in eine eigene 2D-Textur geblittet (ein Blit deckt sein Ziel ganz ab, denn
@@ -76,7 +86,14 @@ bool multiSampleStore = true;
 string depthFormat = "d32";
 bool testQuad = false;
 int views = 1;
+bool rateMap = false;
+float rateMapScale = 1.4f;
 long afterOutputCalls = 0;
+// K6e.2: Map des Hosts, ihre logische und physische Grösse, Messbild-Frame
+nint rateMapPtr = 0;
+int logicalW = 0, logicalH = 0;
+uint physW = 0, physH = 0;
+bool measureThisFrame = false;
 
 for (int i = 0; i < args.Length; i++)
 {
@@ -102,6 +119,8 @@ for (int i = 0; i < args.Length; i++)
 		case "--depth-format": depthFormat = args[++i]; break;
 		case "--test-quad": testQuad = true; break;
 		case "--views": views = int.Parse(args[++i]); break;
+		case "--rate-map": rateMap = true; break;
+		case "--rate-map-scale": rateMapScale = float.Parse(args[++i], System.Globalization.CultureInfo.InvariantCulture); break;
 		default: Console.Error.WriteLine($"Unbekanntes Argument: {args[i]}"); return 64;
 	}
 }
@@ -224,14 +243,63 @@ if (layers != "none")
 			var window = game.Window;
 			// 1. Fenster vollständig schwarz, auch die Ränder neben der Vorschau
 			window.Clear(Color.Black);
-			// 2. Schicht 0 und 1 je in ihre eigene Vorschau-Textur (ein Blit = ganze Textur)
-			layerColor.Blit(new RectInt(0, 0, LayerW, LayerH), 0, previewLeft, new RectInt(0, 0, LayerW, LayerH), 0, TextureFilter.Nearest);
-			layerColor.Blit(new RectInt(0, 0, LayerW, LayerH), 1, previewRight, new RectInt(0, 0, LayerW, LayerH), 0, TextureFilter.Nearest);
+			// 2. Schicht 0 und 1 je in ihre eigene Vorschau-Textur (ein Blit = ganze Textur).
+			//    K6e.2: mit Map schreibt der Pass nur den physischen Bereich der Textur (auch der
+			//    Clear); der Rest bleibt undefiniert und darf nicht in die Vorschau
+			var src = rateMapPtr != 0 ? new RectInt(0, 0, (int)physW, (int)physH) : new RectInt(0, 0, LayerW, LayerH);
+			layerColor.Blit(src, 0, previewLeft, new RectInt(0, 0, LayerW, LayerH), 0, TextureFilter.Nearest);
+			layerColor.Blit(src, 1, previewRight, new RectInt(0, 0, LayerW, LayerH), 0, TextureFilter.Nearest);
 			// 3. beide nebeneinander in einem Pass (LOAD nach dem Clear), skaliert auf das Fenster
 			Compose(batcher, previewLeft, previewRight, window.SizeInPixels());
 			batcher.Render(window);
 			batcher.Clear();
 		};
+		// K6e.2: Rate Map des Hosts mit zwei Schichten; logisch = Skalierung × Texturgrösse
+		Mesh<BatcherVertex>? barsMesh = null;
+		if (rateMap)
+		{
+			if (layers != "external")
+				throw new ArgumentException("--rate-map braucht --layers external (die Map entsteht auf dem Host-Device)");
+			if (K6dMetal.k6d_metal_supports_rate_map(hostDevice, LayerCount) == 0)
+				throw new NotSupportedException($"Das Gerät kann keine Rate Maps mit {LayerCount} Schichten");
+			logicalW = (int)(LayerW * rateMapScale); logicalH = (int)(LayerH * rateMapScale);
+			rateMapPtr = K6dMetal.k6d_metal_rate_map(hostDevice, (uint)logicalW, (uint)logicalH, LayerCount, 16, 0.5f);
+			if (rateMapPtr == 0)
+				throw new InvalidOperationException("Rate Map nicht erzeugt");
+			uint sw = 0, sh = 0, lc = 0, pw1 = 0, ph1 = 0;
+			K6dMetal.k6d_metal_rate_map_info(rateMapPtr, 0, out sw, out sh, out physW, out physH, out lc);
+			K6dMetal.k6d_metal_rate_map_info(rateMapPtr, 1, out _, out _, out pw1, out ph1, out _);
+			Log.Info($"[machost] rate map: screen={sw}x{sh} layers={lc} physical layer0={physW}x{physH} layer1={pw1}x{ph1} texture={LayerW}x{LayerH} fits={(physW <= LayerW && physH <= LayerH ? "ja" : "NEIN (Negativtest)")} Target vor dem Setzen: logical={layer0.LogicalSize} inPixels={((IDrawableTarget)layer0).WidthInPixels}x{((IDrawableTarget)layer0).HeightInPixels}");
+			// Negativtests der Foster-Prüfungen (die Map selbst bleibt gültig)
+			Selftest2("Map mit logischer Grösse 0", () => layer0.SetRasterizationRateMap(rateMapPtr, 0, 0));
+			if (layer1 != null)
+				Selftest2("Map auf Ziel mit Schicht 1", () => layer1.SetRasterizationRateMap(rateMapPtr, logicalW, logicalH));
+			void Selftest2(string what, Action action)
+			{
+				try { action(); Log.Error($"[machost] selftest '{what}': KEINE Ausnahme (Fehler)"); }
+				catch (Exception e) { Log.Info($"[machost] selftest '{what}': abgelehnt ({e.GetType().Name}: {e.Message})"); }
+			}
+			// Messbild: schwarzes Bild in logischer Grösse, fünf rote senkrechte und drei blaue
+			// waagrechte Balken, je 6 logische Pixel breit, an bekannten logischen Positionen
+			var fillMode = new Color(0, 0, 255, 0);
+			var blackC = new Color(0, 0, 0, 255); var red = new Color(255, 0, 0, 255); var blue = new Color(0, 0, 255, 255);
+			var verts = new List<BatcherVertex>(); var idx = new List<int>();
+			void Rect(float x, float y, float w, float h, Color c)
+			{
+				int b = verts.Count;
+				verts.Add(new(new(x, y), c, fillMode)); verts.Add(new(new(x + w, y), c, fillMode));
+				verts.Add(new(new(x + w, y + h), c, fillMode)); verts.Add(new(new(x, y + h), c, fillMode));
+				idx.AddRange([b, b + 1, b + 2, b, b + 2, b + 3]);
+			}
+			Rect(0, 0, logicalW, logicalH, blackC);
+			foreach (var f in RateMapBars.VerticalFractions) Rect(f * logicalW - 3, 0, 6, logicalH, red);
+			foreach (var f in RateMapBars.HorizontalFractions) Rect(0, f * logicalH - 3, logicalW, 6, blue);
+			barsMesh = new Mesh<BatcherVertex>(gd, name: "k6e-bars");
+			barsMesh.SetVertices((ReadOnlySpan<BatcherVertex>)verts.ToArray());
+			barsMesh.SetIndices((ReadOnlySpan<int>)idx.ToArray());
+		}
+
+		Mesh<BatcherVertex>? quadMesh = null;
 		if (testQuad)
 		{
 			// im selben Pass wie das Endbild: schwarzes Feld, darin ein schräges grünes Viereck,
@@ -240,19 +308,27 @@ if (layers != "none")
 			var fill = new Color(0, 0, 255, 0);   // Batcher-Modus «Fill»: nur die Vertexfarbe
 			var black = new Color(0, 0, 0, 255); var green = new Color(0, 255, 0, 255);
 			float bx = QuadBox.X, by = QuadBox.Y, bw = QuadBox.Width, bh = QuadBox.Height;
-			var quadMesh = new Mesh<BatcherVertex>(gd, name: "k6d-quad");
+			quadMesh = new Mesh<BatcherVertex>(gd, name: "k6d-quad");
 			quadMesh.SetVertices((ReadOnlySpan<BatcherVertex>)[
 				new(new(bx, by), black, fill), new(new(bx + bw, by), black, fill), new(new(bx + bw, by + bh), black, fill), new(new(bx, by + bh), black, fill),
 				new(new(bx + 30, by + 10), green, fill), new(new(bx + 170, by + 25), green, fill), new(new(bx + 150, by + 110), green, fill), new(new(bx + 10, by + 95), green, fill),
 			]);
 			quadMesh.SetIndices((ReadOnlySpan<int>)[0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7]);
+		}
+		if (quadMesh != null || barsMesh != null)
+		{
 			VisionOSKit.AfterOutput = output =>
 			{
 				if (++afterOutputCalls == 1)
-					Log.Info($"[machost] AfterOutput erstmals: output={output.GetType().Name} {output.WidthInPixels}x{output.HeightInPixels}");
+					Log.Info($"[machost] AfterOutput erstmals: output={output.GetType().Name} {output.WidthInPixels}x{output.HeightInPixels} (logisch)");
 				var material = gd.Defaults.BatchMaterial;
+				// Projektion aus der Grösse «in Pixeln» des Ziels: mit Map die logische Grösse
 				material.Vertex.SetUniformBuffer(System.Numerics.Matrix4x4.CreateOrthographicOffCenter(0, output.WidthInPixels, output.HeightInPixels, 0, 0, float.MaxValue));
-				gd.Draw(new DrawCommand(output, quadMesh, material) { DepthTestEnabled = true, DepthWriteEnabled = true, DepthCompare = DepthCompare.Always, CullMode = CullMode.None, BlendMode = BlendMode.Premultiply });
+				if (quadMesh != null)
+					gd.Draw(new DrawCommand(output, quadMesh, material) { DepthTestEnabled = true, DepthWriteEnabled = true, DepthCompare = DepthCompare.Always, CullMode = CullMode.None, BlendMode = BlendMode.Premultiply });
+				// Messbild nur im Messframe, über allem anderen
+				if (barsMesh != null && measureThisFrame)
+					gd.Draw(new DrawCommand(output, barsMesh, material) { DepthTestEnabled = false, DepthWriteEnabled = false, CullMode = CullMode.None, BlendMode = BlendMode.Premultiply });
 			};
 		}
 		Log.Info($"[machost] layers={layers}: Ziel {LayerW}x{LayerH} mit {LayerCount} Schichten ({(layerDepthTex != null ? "Farbe und Tiefe" : "nur Farbe")}), ein Pass pro Schicht, Vorschau nebeneinander");
@@ -312,9 +388,24 @@ if (blitSelftest)
 	Log.Info($"[machost] blit selftest: left red={leftRed}/{W * H} right green={rightGreen}/{W * H} ({(ok ? "ok" : "FEHLER")})");
 }
 
-// K6d.2: Celestes Welt-Ziel beobachten (Rücklesen von Farbe und Tiefe)
+// K6d.2: Celestes Welt-Ziel beobachten (Rücklesen von Farbe und Tiefe).
+// K6e.2: die Map jeden Frame ans Ausgabeziel setzen, bevor Celeste hineinzeichnet (auf der
+// Brille kommt sie pro Drawable neu vom Compositor; hier ist es dieselbe, der Weg ist derselbe)
 Target? mainTarget = null;
-VisionOSKit.AfterSceneRender = t => mainTarget = t;
+bool rateMapLogged = false;
+VisionOSKit.AfterSceneRender = t =>
+{
+	mainTarget = t;
+	if (rateMapPtr != 0 && layer0 != null)
+	{
+		layer0.SetRasterizationRateMap(rateMapPtr, logicalW, logicalH);
+		if (!rateMapLogged)
+		{
+			rateMapLogged = true;
+			Log.Info($"[machost] rate map gesetzt: Target.LogicalSize={layer0.LogicalSize} Bounds={layer0.Bounds} inPixels={((IDrawableTarget)layer0).WidthInPixels}x{((IDrawableTarget)layer0).HeightInPixels} map=0x{layer0.RasterizationRateMap:x}");
+		}
+	}
+};
 var pendingTaps = new List<(long tick, bool down)>();
 
 var clock = Stopwatch.StartNew();
@@ -368,7 +459,81 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 		if (pendingTaps[i].tick == totalTicks) { PushKey(pendingTaps[i].down); pendingTaps.RemoveAt(i); }
 
 	var frameBefore = game.Time.Frame;
-	game.Tick(delta, present: !noPresent);
+	// K6e.2: Messframe (Balkenbild statt Celeste) in der Mitte zwischen zwei Schichtvergleichen
+	measureThisFrame = rateMapPtr != 0 && layerCheck > 0 && (totalTicks + 1) % layerCheck == layerCheck / 2;
+	try
+	{
+		game.Tick(delta, present: !noPresent);
+	}
+	catch (InvalidOperationException e)
+	{
+		// ein abgelehnter Pass (zum Beispiel Map physisch grösser als die Textur) kommt als
+		// klare Ausnahme aus Foster; der Lauf endet hier, der Text ist das Ergebnis
+		Log.Error($"[machost] Tick abgebrochen: {e.GetType().Name}: {e.Message}");
+		layerChecksFailed++;
+		break;
+	}
+
+	// K6e.2: Messbild auswerten, beide Schichten, Soll aus der Map
+	if (measureThisFrame && layerColor != null && pixels0 != null && pixels1 != null)
+	{
+		var rect = new RectInt(0, 0, LayerW, LayerH);
+		layerColor.GetData<Color>(pixels0, rect, 0);
+		layerColor.GetData<Color>(pixels1, rect, 1);
+		float maxDev = 0, sumDev = 0; int samples = 0, missing = 0;
+		for (int layerIndex = 0; layerIndex < LayerCount; layerIndex++)
+		{
+			var px = layerIndex == 0 ? pixels0 : pixels1;
+			float layerMax = 0;
+			// senkrechte rote Balken: Soll-x aus der Map, Ist aus drei physischen Zeilen
+			foreach (var f in RateMapBars.VerticalFractions)
+			{
+				K6dMetal.k6d_metal_rate_map_screen_to_physical(rateMapPtr, (uint)layerIndex, f * logicalW, logicalH / 2f, out var ex, out _);
+				foreach (var rf in RateMapBars.RowFractions)
+				{
+					K6dMetal.k6d_metal_rate_map_screen_to_physical(rateMapPtr, (uint)layerIndex, logicalW / 2f, rf * logicalH, out _, out var ry);
+					int row = Math.Clamp((int)ry, 0, (int)physH - 1);
+					double sum = 0; int n = 0;
+					for (int x = 0; x < (int)physW && x < LayerW; x++)
+					{
+						var c = px[row * LayerW + x];
+						if (c.R == 255 && c.G == 0 && c.B == 0 && Math.Abs(x + 0.5f - ex) < 10) { sum += x + 0.5; n++; }
+					}
+					Measure(n, n > 0 ? (float)(sum / n) : float.NaN, ex, ref layerMax);
+				}
+			}
+			// waagrechte blaue Balken: Soll-y aus der Map, Ist aus drei physischen Spalten
+			foreach (var f in RateMapBars.HorizontalFractions)
+			{
+				K6dMetal.k6d_metal_rate_map_screen_to_physical(rateMapPtr, (uint)layerIndex, logicalW / 2f, f * logicalH, out _, out var ey);
+				foreach (var cf in RateMapBars.ColumnFractions)
+				{
+					K6dMetal.k6d_metal_rate_map_screen_to_physical(rateMapPtr, (uint)layerIndex, cf * logicalW, logicalH / 2f, out var cx, out _);
+					int col = Math.Clamp((int)cx, 0, (int)physW - 1);
+					double sum = 0; int n = 0;
+					for (int y = 0; y < (int)physH && y < LayerH; y++)
+					{
+						var c = px[y * LayerW + col];
+						if (c.B == 255 && c.R == 0 && c.G == 0 && Math.Abs(y + 0.5f - ey) < 10) { sum += y + 0.5; n++; }
+					}
+					Measure(n, n > 0 ? (float)(sum / n) : float.NaN, ey, ref layerMax);
+				}
+			}
+			Log.Info($"[machost] ratemap check layer{layerIndex} frame={game.Time.Frame} maxDevPx={layerMax:F3}");
+			void Measure(int count, float actual, float expected, ref float layerMaximum)
+			{
+				samples++;
+				if (count == 0) { missing++; return; }
+				var dev = Math.Abs(actual - expected);
+				sumDev += dev; if (dev > maxDev) maxDev = dev; if (dev > layerMaximum) layerMaximum = dev;
+			}
+		}
+		var found = samples - missing;
+		var ok = missing == 0 && maxDev <= 1.0f;
+		layerChecks++;
+		if (!ok) layerChecksFailed++;
+		Log.Info($"[machost] ratemap check frame={game.Time.Frame} logical={logicalW}x{logicalH} physical={physW}x{physH} samples={samples} missing={missing} maxDevPx={maxDev:F3} meanDevPx={(found > 0 ? sumDev / found : 0):F3} ({(ok ? "ok" : "FEHLER")})");
+	}
 
 	// Welt-Ziel zurücklesen: Farbe (Auflösungstextur) und Tiefe (bei MSAA die Auflösungstiefe)
 	if (targetCheck > 0 && mainTarget != null && totalTicks % targetCheck == 0)
@@ -436,16 +601,25 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 		// Zwischenwerte haben (nur mit MSAA > 0)
 		if (testQuad)
 		{
+			// Zählbereich: das Feld ist logisch gezeichnet; mit Map liegt sein Bild im physischen
+			// Raum, also die Ecken über die Map abbilden
+			int qx0 = QuadBox.X, qy0 = QuadBox.Y, qx1 = QuadBox.X + QuadBox.Width, qy1 = QuadBox.Y + QuadBox.Height;
+			if (rateMapPtr != 0)
+			{
+				K6dMetal.k6d_metal_rate_map_screen_to_physical(rateMapPtr, 0, qx0, qy0, out var px0, out var py0);
+				K6dMetal.k6d_metal_rate_map_screen_to_physical(rateMapPtr, 0, qx1, qy1, out var px1, out var py1);
+				qx0 = (int)MathF.Ceiling(px0) + 1; qy0 = (int)MathF.Ceiling(py0) + 1; qx1 = (int)MathF.Floor(px1) - 1; qy1 = (int)MathF.Floor(py1) - 1;
+			}
 			int full = 0, partial = 0, other = 0;
-			for (int y = QuadBox.Y; y < QuadBox.Y + QuadBox.Height; y++)
-				for (int x = QuadBox.X; x < QuadBox.X + QuadBox.Width; x++)
+			for (int y = qy0; y < qy1; y++)
+				for (int x = qx0; x < qx1; x++)
 				{
 					var c = pixels0[y * LayerW + x];
 					if (c.R == 0 && c.B == 0 && c.G == 255) full++;
 					else if (c.R == 0 && c.B == 0 && c.G > 0) partial++;
 					else if (!(c.R == 0 && c.G == 0 && c.B == 0)) other++;
 				}
-			Log.Info($"[machost] quad check #{layerChecks} msaa={hostMsaa} afterOutputCalls={afterOutputCalls} full={full} partial={partial} other={other} ({(hostMsaa > 1 ? (partial > 0 ? "ok" : "FEHLER") : (partial == 0 ? "ok" : "FEHLER"))})");
+			Log.Info($"[machost] quad check #{layerChecks} msaa={hostMsaa} afterOutputCalls={afterOutputCalls} region={qx0},{qy0}-{qx1},{qy1}{(rateMapPtr != 0 ? " (physisch aus der Map)" : "")} full={full} partial={partial} other={other} ({(hostMsaa > 1 ? (partial > 0 ? "ok" : "FEHLER") : (partial == 0 ? "ok" : "FEHLER"))})");
 			if ((hostMsaa > 1) != (partial > 0)) layerChecksFailed++;
 		}
 
@@ -454,20 +628,22 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 		{
 			try
 			{
+				// mit Map nur der physische Bereich (ausserhalb schreibt der Pass nichts)
+				var drect = rateMapPtr != 0 ? new RectInt(0, 0, (int)physW, (int)physH) : rect;
 				for (int layerIndex = 0; layerIndex < LayerCount; layerIndex++)
 				{
 					string info;
 					if (layerDepthTex.Format == TextureFormat.Depth16)
 					{
-						var d = new ushort[LayerW * LayerH]; layerDepthTex.GetData<ushort>(d, rect, layerIndex);
+						var d = new ushort[drect.Width * drect.Height]; layerDepthTex.GetData<ushort>(d, drect, layerIndex);
 						var set = new HashSet<ushort>(d); info = $"d16 distinct={set.Count} min={d.Min()} max={d.Max()}";
 					}
 					else
 					{
-						var d = new float[LayerW * LayerH]; layerDepthTex.GetData<float>(d, rect, layerIndex);
+						var d = new float[drect.Width * drect.Height]; layerDepthTex.GetData<float>(d, drect, layerIndex);
 						var set = new HashSet<float>(d); info = $"d32 distinct={set.Count} min={d.Min():F4} max={d.Max():F4}";
 					}
-					Log.Info($"[machost] depth check #{layerChecks} layer{layerIndex} {info}");
+					Log.Info($"[machost] depth check #{layerChecks} layer{layerIndex} region={drect.Width}x{drect.Height} {info}");
 				}
 			}
 			catch (Exception e) { Log.Warning($"[machost] depth check: {e.GetType().Name}: {e.Message}"); }
@@ -534,6 +710,7 @@ layer0?.Dispose(); layer1?.Dispose();
 composeCheck?.Dispose(); previewLeft?.Dispose(); previewRight?.Dispose(); layerColor?.Dispose(); layerDepthTex?.Dispose();
 if (extColorProps != 0) SDL_DestroyProperties(extColorProps);
 if (extDepthProps != 0) SDL_DestroyProperties(extDepthProps);
+K6dMetal.k6d_metal_release(rateMapPtr);
 K6dMetal.k6d_metal_release(mtlColor);
 K6dMetal.k6d_metal_release(mtlDepth);
 K6dMetal.k6d_metal_release(hostQueue);
@@ -571,7 +748,23 @@ static partial class K6dMetal
 	[DllImport("k6dmetal")] public static extern nint k6d_metal_queue(nint device);
 	[DllImport("k6dmetal")] public static extern nint k6d_metal_array_texture(nint device, uint width, uint height, uint layers, int kind);
 	[DllImport("k6dmetal")] public static extern void k6d_metal_release(nint obj);
+	// K6e.2: Rate Map des Hosts
+	[DllImport("k6dmetal")] public static extern int k6d_metal_supports_rate_map(nint device, uint layers);
+	[DllImport("k6dmetal")] public static extern nint k6d_metal_rate_map(nint device, uint screenWidth, uint screenHeight, uint layers, uint samples, float edgeQuality);
+	[DllImport("k6dmetal")] public static extern int k6d_metal_rate_map_info(nint map, uint layer, out uint screenWidth, out uint screenHeight, out uint physicalWidth, out uint physicalHeight, out uint layerCount);
+	[DllImport("k6dmetal")] public static extern void k6d_metal_rate_map_screen_to_physical(nint map, uint layer, float sx, float sy, out float px, out float py);
+	[DllImport("k6dmetal")] public static extern void k6d_metal_rate_map_physical_to_screen(nint map, uint layer, float px, float py, out float sx, out float sy);
 }
 
 /// <summary>Feld des Test-Vierecks in der Schichttextur (K6d.3).</summary>
 static class QuadBox { public const int X = 40, Y = 560, Width = 200, Height = 120; }
+
+/// <summary>Messbild K6e.2: Balkenlagen als Anteile der logischen Grösse; Zeilen und Spalten der
+/// Stichproben liegen zwischen den Kreuzungen.</summary>
+static class RateMapBars
+{
+	public static readonly float[] VerticalFractions = [0.1f, 0.3f, 0.5f, 0.7f, 0.9f];
+	public static readonly float[] HorizontalFractions = [0.15f, 0.5f, 0.85f];
+	public static readonly float[] RowFractions = [0.3f, 0.65f, 0.95f];
+	public static readonly float[] ColumnFractions = [0.2f, 0.6f, 0.8f];
+}
