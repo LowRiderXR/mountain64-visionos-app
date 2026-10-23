@@ -1,0 +1,54 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Celeste64.VisionOS: the native library that a visionOS host app embeds. It wraps the
+       Celeste 64 game (Source/Celeste64, built against the Foster fork for visionOS) as a
+       Native AOT shared library with C exports (see Exports.cs) and resolves the native
+       dependencies to the frameworks embedded in the app bundle (see NativeResolver.cs).
+
+       Build with scripts/build-game.sh: it publishes for ios-arm64, packages the result as
+       Celeste64.VisionOS.framework and relabels the binary for visionOS. The runtime identifier
+       and the properties UseLocalFoster and FosterUseExternalSDL are passed on the command line
+       as global properties, so they also apply to the referenced projects during restore. -->
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Library</OutputType>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <RootNamespace>Celeste64.VisionOS</RootNamespace>
+    <AssemblyName>Celeste64.VisionOS</AssemblyName>
+
+    <!-- Native AOT as a shared library (.dylib); on iOS-like runtime identifiers this is the
+         default output, NativeLib makes it explicit so the macOS check build gets one too. -->
+    <PublishAot>true</PublishAot>
+    <PublishAotUsingRuntimePack>true</PublishAotUsingRuntimePack>
+    <NativeLib>Shared</NativeLib>
+    <SelfContained>true</SelfContained>
+
+    <!-- Celeste 64 runs with the invariant culture anyway; this saves ICU. -->
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <UseSystemResourceKeys>true</UseSystemResourceKeys>
+
+    <!-- Keep the trimming and AOT analysis strict and every warning visible. -->
+    <IsAotCompatible>true</IsAotCompatible>
+    <TrimmerSingleWarn>false</TrimmerSingleWarn>
+
+    <!-- Readable managed stack traces on the device come from StackTraceSupport, not from
+         native symbols; the binary is stripped (about 10 MB instead of 33 MB) and the native
+         symbols go to the .dSYM next to the framework for crash reports. -->
+    <StackTraceSupport>true</StackTraceSupport>
+    <StripSymbols>true</StripSymbols>
+
+    <!-- The game's SDL comes from the SDL3.framework the host app embeds, never from the
+         library Foster ships; UseKitSDL stays off because it describes the macOS dylib. -->
+    <UseKitSDL Condition="'$(UseKitSDL)' == ''">false</UseKitSDL>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../Source/Celeste64/Celeste64.csproj" AdditionalProperties="UseLocalFoster=true;UseKitSDL=$(UseKitSDL)" />
+    <!-- Without a Main method as root the trimmer would remove the whole game; root it. -->
+    <TrimmerRootAssembly Include="Celeste64" />
+  </ItemGroup>
+
+</Project>

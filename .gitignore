@@ -15,3 +15,5 @@ xcuserdata/
 # .NET build output of tools
 Tools/*/bin/
 Tools/*/obj/
+Wrapper/*/bin/
+Wrapper/*/obj/
