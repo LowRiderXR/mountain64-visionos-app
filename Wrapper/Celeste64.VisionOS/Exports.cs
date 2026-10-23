@@ -1,28 +1,273 @@
 using System.Runtime.InteropServices;
+using Foster.Framework;
+using static SDL3.SDL;
 
 namespace Celeste64.VisionOS;
 
 /// <summary>
-/// C entry points of the library. The host declares them in its bridging header:
-///
-///   const char *celeste_version(void);
-///
-/// Strings returned to the host stay valid for the lifetime of the process.
+/// Options of celeste_init; must match celeste_init_options in celeste.h field by field.
 /// </summary>
-public static class Exports
+[StructLayout(LayoutKind.Sequential)]
+public struct CelesteInitOptions
 {
+	public int Size;
+	public int HiddenWindow;
+	public int DepthClip;
+	public int Reserved;
+	public IntPtr MetalDevice;
+	public IntPtr MetalCommandQueue;
+	public IntPtr CompletedCallback;
+	public IntPtr CompletedUserdata;
+	public IntPtr ContentRoot;
+}
+
+/// <summary>
+/// Result of celeste_capabilities_get; must match celeste_capabilities in celeste.h.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+public struct CelesteCapabilities
+{
+	public int Size;
+	public int KitSdlLoaded;
+	public int KitExports;
+	public int MultiView;
+	public int PassProperties;
+	public int ExternalTextures;
+	public int Memoryless;
+	public int DepthResolve;
+}
+
+/// <summary>
+/// C entry points of the library, declared for the host in celeste.h. Every entry point catches
+/// all exceptions: an exception leaving an UnmanagedCallersOnly method would end the process, so
+/// failures become -1 and a text in celeste_last_error. Only blittable parameters and returns.
+/// </summary>
+public static unsafe class Exports
+{
+	private const string Tag = "[celeste-visionos]";
+	private const int Ok = 0;
+	private const int Exiting = 1;
+	private const int Failed = -1;
+
 	private static IntPtr version;
+	private static IntPtr lastError;
+	private static Game? game;
+	private static int initThreadId;
+	private static long ticks;
+	private static bool tickThreadLogged;
 
 	/// <summary>
-	/// Game and runtime version, for example "Celeste 64 v.1.2.0, .NET 10.0.0". Also registers
+	/// Game and runtime version, for example "Celeste 64 v.1.2.0, .NET 10.0.12". Also registers
 	/// the native library resolver, so a host can call it first as a smoke test.
 	/// </summary>
 	[UnmanagedCallersOnly(EntryPoint = "celeste_version")]
 	public static IntPtr CelesteVersion()
 	{
-		NativeResolver.EnsureRegistered();
-		if (version == IntPtr.Zero)
-			version = Marshal.StringToCoTaskMemUTF8($"Celeste 64 {Game.VersionString}, {RuntimeInformation.FrameworkDescription}");
-		return version;
+		try
+		{
+			NativeResolver.EnsureRegistered();
+			if (version == IntPtr.Zero)
+				version = Marshal.StringToCoTaskMemUTF8($"Celeste 64 {Game.VersionString}, {RuntimeInformation.FrameworkDescription}");
+			return version;
+		}
+		catch (Exception e)
+		{
+			SetError(e);
+			return IntPtr.Zero;
+		}
+	}
+
+	/// <summary>
+	/// Capabilities of the loaded SDL: the kit probe by export name works before the game exists,
+	/// the detailed flags come from the graphics device once celeste_init has run.
+	/// </summary>
+	[UnmanagedCallersOnly(EntryPoint = "celeste_capabilities_get")]
+	public static int CelesteCapabilitiesGet(CelesteCapabilities* output)
+	{
+		try
+		{
+			if (output == null || output->Size != sizeof(CelesteCapabilities))
+				return SetError($"celeste_capabilities: size must be {sizeof(CelesteCapabilities)}");
+			NativeResolver.EnsureRegistered();
+			var result = new CelesteCapabilities { Size = sizeof(CelesteCapabilities), KitSdlLoaded = GraphicsDevice.IsKitSDLLoaded() ? 1 : 0 };
+			if (game != null)
+			{
+				var caps = game.GraphicsDevice.Capabilities;
+				result.KitExports = caps.KitExports ? 1 : 0;
+				result.MultiView = caps.MultiView ? 1 : 0;
+				result.PassProperties = caps.PassProperties ? 1 : 0;
+				result.ExternalTextures = caps.ExternalTextures ? 1 : 0;
+				result.Memoryless = caps.Memoryless ? 1 : 0;
+				result.DepthResolve = caps.DepthResolve ? 1 : 0;
+			}
+			*output = result;
+			return Ok;
+		}
+		catch (Exception e)
+		{
+			return SetError(e);
+		}
+	}
+
+	/// <summary>
+	/// Creates the game and runs Celeste's Startup. Call on the main thread: SDL initializes
+	/// its video subsystem here and creates the window (hidden if requested); the thread that
+	/// does this is SDL's main thread from now on.
+	/// </summary>
+	[UnmanagedCallersOnly(EntryPoint = "celeste_init")]
+	public static int CelesteInit(CelesteInitOptions* options)
+	{
+		uint properties = 0;
+		try
+		{
+			if (game != null)
+				return SetError("celeste_init: the game already exists; call celeste_end first");
+			if (options == null || options->Size != sizeof(CelesteInitOptions))
+				return SetError($"celeste_init: options.size must be {sizeof(CelesteInitOptions)}");
+
+			var contentRoot = Marshal.PtrToStringUTF8(options->ContentRoot);
+			if (string.IsNullOrEmpty(contentRoot))
+				return SetError("celeste_init: content_root is required (the directory that contains Content/)");
+			if (!Directory.Exists(Path.Join(contentRoot, "Content")))
+				return SetError($"celeste_init: no Content directory in '{contentRoot}'");
+
+			NativeResolver.EnsureRegistered();
+
+			// Celeste looks for Content/ from AppContext.BaseDirectory upwards; point it at the
+			// host's directory so the search hits at once and never leaves the app bundle.
+			var baseDirectory = contentRoot.EndsWith(Path.DirectorySeparatorChar) ? contentRoot : contentRoot + Path.DirectorySeparatorChar;
+			AppContext.SetData("APP_CONTEXT_BASE_DIRECTORY", baseDirectory);
+
+			// SDL on iOS and visionOS insists on SDL_main unless told that main is handled by the host.
+			SDL_SetMainReady();
+
+			// Device properties for the SDL_GPU kit: host device and queue, completion callback.
+			if (options->MetalDevice != IntPtr.Zero || options->MetalCommandQueue != IntPtr.Zero || options->CompletedCallback != IntPtr.Zero)
+			{
+				properties = SDL_CreateProperties();
+				if (options->MetalDevice != IntPtr.Zero)
+					SDL_SetPointerProperty(properties, SDL_PROP_GPU_DEVICE_CREATE_METAL_DEVICE_POINTER, options->MetalDevice);
+				if (options->MetalCommandQueue != IntPtr.Zero)
+					SDL_SetPointerProperty(properties, SDL_PROP_GPU_DEVICE_CREATE_METAL_COMMAND_QUEUE_POINTER, options->MetalCommandQueue);
+				if (options->CompletedCallback != IntPtr.Zero)
+				{
+					SDL_SetPointerProperty(properties, SDL_PROP_GPU_DEVICE_CREATE_METAL_COMMAND_BUFFER_COMPLETED_CALLBACK_POINTER, options->CompletedCallback);
+					SDL_SetPointerProperty(properties, SDL_PROP_GPU_DEVICE_CREATE_METAL_COMMAND_BUFFER_COMPLETED_USERDATA_POINTER, options->CompletedUserdata);
+				}
+			}
+
+			var flags = AppFlags.None;
+			if (options->HiddenWindow != 0) flags |= AppFlags.HiddenWindow;
+			if (options->DepthClip != 0) flags |= AppFlags.DepthClip;
+
+			initThreadId = Environment.CurrentManagedThreadId;
+			ticks = 0;
+			tickThreadLogged = false;
+			Log.Info($"{Tag} init thread={initThreadId} contentRoot=\"{contentRoot}\" baseDirectory=\"{AppContext.BaseDirectory}\" hiddenWindow={options->HiddenWindow} depthClip={options->DepthClip} metalDevice=0x{options->MetalDevice:x} queue=0x{options->MetalCommandQueue:x} callback={(options->CompletedCallback != IntPtr.Zero ? 1 : 0)}");
+
+			var created = new Game(new(
+				ApplicationName: Game.GamePath,
+				WindowTitle: Game.GameTitle,
+				Width: 1280,
+				Height: 720,
+				Fullscreen: false,
+				Resizable: true,
+				UpdateMode: UpdateMode.FixedStep(60),   // unused: the host owns the clock
+				Flags: flags,
+				GraphicsDeviceProperties: properties
+			));
+			if (properties != 0)
+			{
+				SDL_DestroyProperties(properties);
+				properties = 0;
+			}
+			created.Begin();
+			game = created;
+			Log.Info($"{Tag} init ok userPath=\"{created.UserPath}\" capabilities={created.GraphicsDevice.Capabilities}");
+			return Ok;
+		}
+		catch (Exception e)
+		{
+			if (properties != 0)
+				SDL_DestroyProperties(properties);
+			return SetError(e);
+		}
+	}
+
+	/// <summary>
+	/// One frame of the host clock. Returns 1 once the game asked to exit.
+	/// </summary>
+	[UnmanagedCallersOnly(EntryPoint = "celeste_tick")]
+	public static int CelesteTick(double deltaSeconds, int present)
+	{
+		try
+		{
+			if (game == null)
+				return SetError("celeste_tick: no game; call celeste_init first");
+			if (!tickThreadLogged)
+			{
+				tickThreadLogged = true;
+				var threadId = Environment.CurrentManagedThreadId;
+				Log.Info($"{Tag} first tick thread={threadId} sameAsInit={(threadId == initThreadId ? 1 : 0)} sdlMainThread={(SDL_IsMainThread() ? 1 : 0)} delta={deltaSeconds * 1000:F3}ms present={present}");
+			}
+			game.Tick(TimeSpan.FromSeconds(deltaSeconds), present != 0);
+			ticks++;
+			return game.Exiting ? Exiting : Ok;
+		}
+		catch (Exception e)
+		{
+			return SetError(e);
+		}
+	}
+
+	[UnmanagedCallersOnly(EntryPoint = "celeste_exiting")]
+	public static int CelesteExiting()
+	{
+		return game == null || game.Exiting ? 1 : 0;
+	}
+
+	/// <summary>
+	/// Shuts the game down (Celeste's Shutdown, windows hidden, input closed) and disposes it,
+	/// which quits SDL.
+	/// </summary>
+	[UnmanagedCallersOnly(EntryPoint = "celeste_end")]
+	public static int CelesteEnd()
+	{
+		try
+		{
+			if (game == null)
+				return SetError("celeste_end: no game");
+			var ending = game;
+			game = null;
+			Log.Info($"{Tag} end ticks={ticks} frame={ending.Time.Frame} renderFrame={ending.Time.RenderFrame}");
+			ending.End();
+			ending.Dispose();
+			return Ok;
+		}
+		catch (Exception e)
+		{
+			return SetError(e);
+		}
+	}
+
+	/// <summary>Text of the last failure, empty if none.</summary>
+	[UnmanagedCallersOnly(EntryPoint = "celeste_last_error")]
+	public static IntPtr CelesteLastError()
+	{
+		if (lastError == IntPtr.Zero)
+			lastError = Marshal.StringToCoTaskMemUTF8(string.Empty);
+		return lastError;
+	}
+
+	private static int SetError(Exception e) => SetError(e.ToString());
+
+	private static int SetError(string message)
+	{
+		Log.Error($"{Tag} {message}");
+		var previous = lastError;
+		lastError = Marshal.StringToCoTaskMemUTF8(message);
+		if (previous != IntPtr.Zero)
+			Marshal.FreeCoTaskMem(previous);
+		return Failed;
 	}
 }

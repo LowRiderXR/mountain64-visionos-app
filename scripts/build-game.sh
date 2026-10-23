@@ -5,8 +5,13 @@
 #   scripts/build-game.sh            Publish for ios-arm64, package Frameworks/Celeste64.VisionOS.framework,
 #                                    relabel the binary for visionOS with vtool, verify.
 #   scripts/build-game.sh mac-check  Publish the same project for osx-arm64 as a dylib, build the small
-#                                    C program Wrapper/Celeste64.VisionOS/mac-check/main.c, load the
-#                                    dylib with dlopen and call celeste_version().
+#                                    C program Wrapper/Celeste64.VisionOS/mac-check/main.c and drive the
+#                                    dylib through the whole C interface (celeste.h): version,
+#                                    capabilities, init with a hidden window, 90 ticks without
+#                                    presenting, end; then the error case (missing content root).
+#                                    The run needs a content root with Content/, the SDL3 kit dylib
+#                                    for macOS (Frameworks/macos) and the FMOD dylibs from the Celeste
+#                                    checkout; the script stages them in build/wrapper/mac-check-root.
 #
 # Steps of the visionOS build:
 #   1. dotnet publish -r ios-arm64 -c Release (Native AOT; .NET has no visionOS target, the iOS
@@ -51,7 +56,20 @@ FW_VERSION_STRING="${GAME_VERSION:-1.0}"
 FW_BUILD_NUMBER="${GAME_BUILD:-1}"
 VISIONOS_MIN="${VISIONOS_MIN:-1.0}"
 
+EXPECTED_EXPORTS=(celeste_version celeste_capabilities_get celeste_init celeste_tick celeste_exiting celeste_end celeste_last_error)
+
 step() { print -P "\n%F{cyan}== $1%f"; }
+
+check_exports() {
+    local binary="$1" exports name
+    exports="$(nm -gU "$binary" | grep -E " _celeste_" || true)"
+    echo "$exports"
+    for name in "${EXPECTED_EXPORTS[@]}"; do
+        echo "$exports" | grep -q " _${name}\$" || { echo "error: _${name} not exported" >&2; exit 1; }
+    done
+    local count=$(echo "$exports" | grep -c " _celeste_")
+    [[ "$count" == "${#EXPECTED_EXPORTS[@]}" ]] || { echo "error: $count celeste_* exports, expected ${#EXPECTED_EXPORTS[@]}" >&2; exit 1; }
+}
 
 report_warnings() {
     local log="$1"
@@ -85,10 +103,37 @@ if [[ "$MODE" == "mac-check" ]]; then
     DYLIB="$PROJ_DIR/bin/Release/net10.0/osx-arm64/publish/$NAME.dylib"
     [[ -f "$DYLIB" ]] || { echo "error: $DYLIB missing" >&2; exit 1; }
     echo "-- dylib: $(stat -f %z "$DYLIB") bytes, $(file -b "$DYLIB")"
-    echo "-- exports:"; nm -gU "$DYLIB" | grep -E " _celeste_" || { echo "error: no celeste_* export" >&2; exit 1; }
+    echo "-- exports (expected: ${EXPECTED_EXPORTS[*]})"; check_exports "$DYLIB"
+
+    # Content root for the run: the host app passes the directory that contains Content/; on the
+    # Mac the native libraries have to be found from there as well. Celeste loads FMOD from the
+    # directory of AppContext.BaseDirectory, and SDL3 is resolved by name, so the staged root
+    # also serves as DYLD_LIBRARY_PATH. The SDL3 kit dylib for macOS comes from Frameworks/macos
+    # (the same kit the device gets as SDL3.framework), FMOD from the Celeste checkout.
+    STAGE="$BUILD_DIR/mac-check-root"
+    KIT_DYLIB="$ROOT/Frameworks/macos/libSDL3.0.dylib"
+    FMOD_DIR="$CELESTE/Source/Audio/FMOD/libs/osx"
+    [[ -d "$CELESTE/Content" ]] || { echo "error: $CELESTE/Content missing" >&2; exit 1; }
+    [[ -f "$KIT_DYLIB" ]] || { echo "error: $KIT_DYLIB missing (SDL3 kit dylib for macOS)" >&2; exit 1; }
+    [[ -f "$FMOD_DIR/libfmod.dylib" && -f "$FMOD_DIR/libfmodstudio.dylib" ]] || { echo "error: FMOD dylibs missing in $FMOD_DIR" >&2; exit 1; }
+    rm -rf "$STAGE"; mkdir -p "$STAGE"
+    ln -s "$CELESTE/Content" "$STAGE/Content"
+    cp "$KIT_DYLIB" "$STAGE/libSDL3.dylib"
+    cp "$FMOD_DIR/libfmod.dylib" "$FMOD_DIR/libfmodstudio.dylib" "$STAGE/"
+    echo "-- content root: $STAGE"
+    REV="$(strings "$STAGE/libSDL3.dylib" | grep "SDL-3\.[0-9.]*-release" | head -1 || true)"
+    echo "   ${REV:-(no SDL revision string)}"
+
     step "Mac check: build and run the C program"
     clang -std=gnu17 -Wall -Wextra -o "$BUILD_DIR/mac-check" "$PROJ_DIR/mac-check/main.c"
-    "$BUILD_DIR/mac-check" "$DYLIB"
+    RUN_LOG="$BUILD_DIR/mac-check-run.log"
+    echo "-- run (log: $RUN_LOG)"
+    DYLD_LIBRARY_PATH="$STAGE" "$BUILD_DIR/mac-check" "$DYLIB" "$STAGE" > "$RUN_LOG" 2>&1 || { echo "error: mac check run failed (exit $?)" >&2; tail -30 "$RUN_LOG" >&2; exit 1; }
+    grep -E "^mac-check:|Foster: |SDL: |Graphics Driver|visionOS kit|celeste-visionos|Loaded Assets|Exception|rror" "$RUN_LOG" | head -40
+    ERR_LOG="$BUILD_DIR/mac-check-error.log"
+    echo "-- error case (log: $ERR_LOG)"
+    DYLD_LIBRARY_PATH="$STAGE" "$BUILD_DIR/mac-check" "$DYLIB" --bad-content > "$ERR_LOG" 2>&1 || { echo "error: mac check error case failed (exit $?)" >&2; tail -30 "$ERR_LOG" >&2; exit 1; }
+    grep -E "^mac-check:" "$ERR_LOG"
     print -P "\n%F{green}OK: mac check passed%f"
     exit 0
 fi
@@ -214,10 +259,8 @@ PLATFORM="$(otool -l "$FW/$NAME" | grep -A2 LC_BUILD_VERSION | grep platform | a
 echo "-- otool -L (expected: system libraries only; SDL3 and FMOD are loaded at run time)"
 otool -L "$FW/$NAME" | tail -n +2
 if otool -L "$FW/$NAME" | grep -qiE "SDL3|fmod"; then echo "error: unexpected link-time dependency on SDL3 or FMOD" >&2; exit 1; fi
-echo "-- exports (expected: _celeste_version)"
-EXPORTS="$(nm -gU "$FW/$NAME" | grep -E " _celeste_" || true)"
-echo "$EXPORTS"
-echo "$EXPORTS" | grep -q " _celeste_version$" || { echo "error: _celeste_version not exported" >&2; exit 1; }
+echo "-- exports (expected: ${EXPECTED_EXPORTS[*]})"
+check_exports "$FW/$NAME"
 echo "-- native library names referenced by DllImport/LibraryImport (expected: SDL3, fmod, fmodstudio)"
 # The names are stored as NUL-terminated ASCII in the P/Invoke stubs (strings(1) does not list
 # them reliably, they may be shorter than its minimum length or packed without a newline).
