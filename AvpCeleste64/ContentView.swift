@@ -41,6 +41,17 @@ struct ContentView: View {
         .padding(40)
         .frame(minWidth: 520)
         .task {
+            // M1a.2: Hülle ohne Spiel hinter C64_CELESTE=probe (Standard aus): celeste_version und
+            // celeste_capabilities_get aus Celeste64.VisionOS.framework, auf dem Hauptthread, vor
+            // den Kit-Modi und ohne sie zu berühren. Kein celeste_init in dieser Stufe.
+            if CelesteProbe.isRequested, !celesteProbeRan {
+                celesteProbeRan = true
+                let result = CelesteProbe.runProbe()
+                appModel.statusLine = result.ok
+                    ? "Celeste-Hülle: \(result.version); \(result.capabilitiesLine). Siehe Log [c64-celeste]."
+                    : "Celeste-Hülle: Fähigkeitsprüfung fehlgeschlagen, siehe Log [c64-celeste]."
+            }
+
             // Kit-Testszene hinter C64_KIT (Standard aus), auf dem Hauptthread, sobald das Fenster
             // steht; der ImmersiveSpace ist noch zu.
             //   =1       K0: ganze Szene hier, SDL erzeugt Device und Queue selbst, SDL_Quit am Ende.
@@ -76,6 +87,7 @@ struct ContentView: View {
     }
 
     @State private var kitProbeRan = false
+    @State private var celesteProbeRan = false
 
     private func openSpace() async {
         appModel.immersiveState = .opening

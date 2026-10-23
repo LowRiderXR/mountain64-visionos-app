@@ -9,6 +9,10 @@
 /* Begin PBXBuildFile section */
 		7331B4BD30839B6B00F4FDA9 /* SDL3.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 7331B4BC30839B6B00F4FDA9 /* SDL3.framework */; };
 		7331B4BE30839B6B00F4FDA9 /* SDL3.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 7331B4BC30839B6B00F4FDA9 /* SDL3.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		73441954308BEDEE0039AFA2 /* Celeste64.VisionOS.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 73441953308BEDEE0039AFA2 /* Celeste64.VisionOS.framework */; };
+		73441955308BEDEE0039AFA2 /* Celeste64.VisionOS.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 73441953308BEDEE0039AFA2 /* Celeste64.VisionOS.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		73441957308BEE0C0039AFA2 /* FMOD.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 73441956308BEE0C0039AFA2 /* FMOD.framework */; };
+		73441958308BEE0C0039AFA2 /* FMOD.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 73441956308BEE0C0039AFA2 /* FMOD.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -17,7 +21,9 @@
 			dstPath = "";
 			dstSubfolder = Frameworks;
 			files = (
+				73441958308BEE0C0039AFA2 /* FMOD.framework in Embed Frameworks */,
 				7331B4BE30839B6B00F4FDA9 /* SDL3.framework in Embed Frameworks */,
+				73441955308BEDEE0039AFA2 /* Celeste64.VisionOS.framework in Embed Frameworks */,
 			);
 			name = "Embed Frameworks";
 		};
@@ -26,6 +32,8 @@
 /* Begin PBXFileReference section */
 		732C7D38307EBA4C00C3A31D /* Mountain64.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Mountain64.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		7331B4BC30839B6B00F4FDA9 /* SDL3.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SDL3.framework; path = Frameworks/SDL3.framework; sourceTree = "<group>"; };
+		73441953308BEDEE0039AFA2 /* Celeste64.VisionOS.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Celeste64.VisionOS.framework; path = Frameworks/Celeste64.VisionOS.framework; sourceTree = "<group>"; };
+		73441956308BEE0C0039AFA2 /* FMOD.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = FMOD.framework; path = Frameworks/FMOD.framework; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -71,7 +79,9 @@
 		732C7D35307EBA4C00C3A31D /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			files = (
+				73441957308BEE0C0039AFA2 /* FMOD.framework in Frameworks */,
 				7331B4BD30839B6B00F4FDA9 /* SDL3.framework in Frameworks */,
+				73441954308BEDEE0039AFA2 /* Celeste64.VisionOS.framework in Frameworks */,
 			);
 		};
 /* End PBXFrameworksBuildPhase section */
@@ -98,6 +108,8 @@
 		7331B4BB30839B6B00F4FDA9 /* Frameworks */ = {
 			isa = PBXGroup;
 			children = (
+				73441956308BEE0C0039AFA2 /* FMOD.framework */,
+				73441953308BEDEE0039AFA2 /* Celeste64.VisionOS.framework */,
 				7331B4BC30839B6B00F4FDA9 /* SDL3.framework */,
 			);
 			name = Frameworks;
