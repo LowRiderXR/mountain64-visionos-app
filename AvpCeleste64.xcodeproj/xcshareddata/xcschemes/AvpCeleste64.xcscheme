@@ -61,12 +61,12 @@
          <EnvironmentVariable
             key = "C64_FOVEATION"
             value = "1"
-            isEnabled = "YES">
+            isEnabled = "NO">
          </EnvironmentVariable>
          <EnvironmentVariable
             key = "C64_RENDERQUALITY"
             value = "1.0"
-            isEnabled = "YES">
+            isEnabled = "NO">
          </EnvironmentVariable>
          <EnvironmentVariable
             key = "C64_LAYOUT"
@@ -116,7 +116,7 @@
          <EnvironmentVariable
             key = "C64_CELESTE"
             value = "play"
-            isEnabled = "YES">
+            isEnabled = "NO">
          </EnvironmentVariable>
          <EnvironmentVariable
             key = "C64_PROBE_TRUNCATE"
@@ -136,12 +136,12 @@
          <EnvironmentVariable
             key = "C64_RES"
             value = "2560x1440"
-            isEnabled = "YES">
+            isEnabled = "NO">
          </EnvironmentVariable>
          <EnvironmentVariable
             key = "C64_LINE"
             value = "auto"
-            isEnabled = "YES">
+            isEnabled = "NO">
          </EnvironmentVariable>
       </EnvironmentVariables>
       <MetalAPIValidationSettings
