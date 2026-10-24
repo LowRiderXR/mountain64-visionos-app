@@ -108,6 +108,44 @@ index e96e261..e8c3f6f 100644
  	public const string AssetFolder = "Content";
  
  	private static string? contentPath = null;
+diff --git a/Source/Data/Controls.cs b/Source/Data/Controls.cs
+index 300dab1..4d0b815 100644
+--- a/Source/Data/Controls.cs
++++ b/Source/Data/Controls.cs
+@@ -53,11 +53,32 @@ public class Controls : VirtualDevice
+ 		_ => "Xbox Series",
+ 	};
+ 
++	/// <summary>
++	/// Whether the button prompts show gamepad buttons. The original shows them once the
++	/// gamepad was used more recently than the keyboard; the visionOS build shows them as soon
++	/// as a gamepad is connected, because the device has no keyboard and the title would
++	/// otherwise show keyboard prompts until the first button press.
++	/// </summary>
++#if VISIONOS_KIT
++	private bool UseGamepadPrompts => Input.Controllers[ControllerIndex].IsGamepad;
++	private string? lastPromptDevice;
++#else
++	private bool UseGamepadPrompts => IsGamepadLatest;
++#endif
++
+ 	private string GetPromptLocation(string name)
+ 	{
+-		var deviceTypeName = IsGamepadLatest
++		var deviceTypeName = UseGamepadPrompts
+ 			? GetControllerName(Input.Controllers[ControllerIndex].GamepadProvider)
+ 			: "PC";
++#if VISIONOS_KIT
++		// One line per change of the prompt set, so a host log shows which symbols are drawn.
++		if (deviceTypeName != lastPromptDevice)
++		{
++			lastPromptDevice = deviceTypeName;
++			Log.Info($"[c64-prompts] device=\"{deviceTypeName}\"");
++		}
++#endif
+ 
+ 		if (!prompts.TryGetValue(deviceTypeName, out var list))
+ 			prompts[deviceTypeName] = list = [];
 diff --git a/Source/Game.cs b/Source/Game.cs
 index 312df59..fe2289e 100644
 --- a/Source/Game.cs

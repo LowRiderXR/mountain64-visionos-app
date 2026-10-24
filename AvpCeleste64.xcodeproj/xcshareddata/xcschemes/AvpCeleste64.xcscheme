@@ -135,7 +135,7 @@
          </EnvironmentVariable>
          <EnvironmentVariable
             key = "C64_RES"
-            value = "2560x1440"
+            value = "1920x1080"
             isEnabled = "NO">
          </EnvironmentVariable>
          <EnvironmentVariable
