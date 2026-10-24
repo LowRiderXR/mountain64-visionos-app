@@ -68,6 +68,13 @@ struct ContentView: View {
                     CelesteProbe.windowSnapshot("t0", since: probeStart)
                     appModel.statusLine = "Vergleichslauf Fenster ohne Celeste: Schnappschüsse bei 0, 0,2, 1 und 2 s. Siehe Log [c64-celeste]."
                     await snapshotMarks(since: probeStart)
+                case .canvas:
+                    // M4a.2: Device, Queue und gefüllte Leinwandtextur anlegen; der Renderer nimmt
+                    // dieselbe Queue und zeichnet die Leinwand, sobald der ImmersiveSpace offen ist.
+                    let ok = CelesteProbe.prepareCanvas()
+                    appModel.statusLine = ok
+                        ? "Leinwand bereit (\(CelesteProbe.canvasWidth)×\(CelesteProbe.canvasHeight), \(CelesteProbe.canvasFovDegrees)°, \(CelesteProbe.canvasNearest ? "nearest" : "linear")). ImmersiveSpace öffnen: Farbfläche in 500 m, Markierung oben links gelb. Siehe Log [c64-canvas]."
+                        : "Leinwand konnte nicht angelegt werden, siehe Log [c64-canvas]."
                 case .tick:
                     // M1a.5: init und Laden wie init (acht Ticks hier auf dem Hauptthread), dann
                     // Freigabe; der Render-Thread tickt ab dem ersten Compositor-Frame.

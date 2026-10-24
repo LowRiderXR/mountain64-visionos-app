@@ -42,6 +42,95 @@ nonisolated enum CelesteProbe {
         /// Frame-Takt begrenzt auf 1/30 s. Kein Bild in die Drawables (M4a). Beim Pausieren oder
         /// Schliessen des ImmersiveSpace pausieren die Ticks, kein celeste_end.
         case tick
+        /// M4a.2: Leinwand ohne Celeste. Der Host legt Device, Queue und eine 1280×720-Textur
+        /// (RGBA8Unorm, PixelFormatView) an, füllt sie einmal (Verlauf, Gitter, Markierung oben
+        /// links) und der Renderer zeichnet sie als Quad in 500 m in beide Augen (CanvasScene).
+        /// Prüft Pass, Tiefe, Grund-Clear, Verankerung, Foveation und die gemeinsame Queue, bevor
+        /// Celestes Bild kommt (M4a.3). Kein celeste_init.
+        case canvas
+    }
+
+    // MARK: Leinwand (M4a)
+
+    static let canvasWidth = 1280
+    static let canvasHeight = 720
+
+    /// Winkelbreite der Leinwand in Grad (C64_CANVAS_FOV, Standard 50).
+    static var canvasFovDegrees: Float {
+        Float(ProcessInfo.processInfo.environment["C64_CANVAS_FOV"] ?? "") ?? 50
+    }
+
+    /// C64_CANVAS_FILTER=nearest für den Pixel-Look, sonst linear.
+    static var canvasNearest: Bool {
+        ProcessInfo.processInfo.environment["C64_CANVAS_FILTER"] == "nearest"
+    }
+
+    /// Die Leinwandtextur des Hosts; der Renderer übernimmt sie beim Start des ImmersiveSpace.
+    @MainActor static var canvasTexture: MTLTexture?
+
+    /// Device und Queue des Hosts, einmal angelegt: dieselbe Queue bekommt celeste_init (SDL
+    /// committet darauf) und der Renderer (Gerüst-Buffer), damit Command Buffer in
+    /// Commit-Reihenfolge laufen und Celestes Bild fertig ist, bevor der Leinwand-Pass es liest.
+    @MainActor static func ensureHostDevice() -> Bool {
+        if device != nil, commandQueue != nil { return true }
+        guard let mtlDevice = MTLCreateSystemDefaultDevice(), let queue = mtlDevice.makeCommandQueue() else {
+            c64Record("[c64-celeste] kein MTLDevice oder keine Queue")
+            return false
+        }
+        queue.label = "c64-celeste-queue"
+        device = mtlDevice
+        commandQueue = queue
+        c64Record("[c64-celeste] host device=\(Unmanaged.passUnretained(mtlDevice).toOpaque()) name=\"\(mtlDevice.name)\" queue=\"c64-celeste-queue\"")
+        return true
+    }
+
+    /// M4a.2: Leinwandtextur anlegen (privat, RenderTarget | ShaderRead | PixelFormatView, wie
+    /// sie Celeste in M4a.3 beschreibt) und einmal über einen Staging-Puffer auf der gemeinsamen
+    /// Queue füllen. Muster: Verlauf (rot nach rechts, grün nach unten, blau 64), weisses Gitter
+    /// alle 128 Pixel, gelbe Markierung 160×90 oben links, blaue 80×45 unten rechts, schwarzer
+    /// Rand von 4 Pixeln.
+    @MainActor static func prepareCanvas() -> Bool {
+        guard ensureHostDevice(), let device, let queue = commandQueue else { return false }
+        if canvasTexture != nil { return true }
+        let width = canvasWidth, height = canvasHeight
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba8Unorm, width: width, height: height, mipmapped: false)
+        descriptor.storageMode = .private
+        descriptor.usage = [.renderTarget, .shaderRead, .pixelFormatView]
+        guard let texture = device.makeTexture(descriptor: descriptor) else {
+            c64Record("[c64-canvas] Leinwandtextur konnte nicht angelegt werden")
+            return false
+        }
+        texture.label = "c64-canvas"
+
+        var pixels = [UInt8](repeating: 0, count: width * height * 4)
+        for y in 0..<height {
+            for x in 0..<width {
+                var r = UInt8(x * 255 / (width - 1))
+                var g = UInt8(y * 255 / (height - 1))
+                var b: UInt8 = 64
+                if x % 128 == 0 || y % 128 == 0 || x % 128 == 1 || y % 128 == 1 { r = 255; g = 255; b = 255 }
+                if x < 160, y < 90 { r = 255; g = 220; b = 0 }                           // Markierung oben links
+                if x >= width - 80, y >= height - 45 { r = 40; g = 90; b = 255 }         // Markierung unten rechts
+                if x < 4 || y < 4 || x >= width - 4 || y >= height - 4 { r = 0; g = 0; b = 0 }
+                let i = (y * width + x) * 4
+                pixels[i] = r; pixels[i + 1] = g; pixels[i + 2] = b; pixels[i + 3] = 255
+            }
+        }
+        guard let staging = device.makeBuffer(bytes: pixels, length: pixels.count, options: .storageModeShared),
+              let commandBuffer = queue.makeCommandBuffer(),
+              let blit = commandBuffer.makeBlitCommandEncoder() else {
+            c64Record("[c64-canvas] Staging oder Blit nicht möglich")
+            return false
+        }
+        blit.copy(from: staging, sourceOffset: 0, sourceBytesPerRow: width * 4, sourceBytesPerImage: pixels.count,
+                  sourceSize: MTLSize(width: width, height: height, depth: 1),
+                  to: texture, destinationSlice: 0, destinationLevel: 0, destinationOrigin: MTLOrigin(x: 0, y: 0, z: 0))
+        blit.endEncoding()
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+        canvasTexture = texture
+        c64Record("[c64-canvas] Leinwandtextur \(width)x\(height) rgba8Unorm usage=0x\(String(texture.usage.rawValue, radix: 16)) hazard=\(texture.hazardTrackingMode.rawValue) gefüllt (status=\(commandBuffer.status.rawValue)) fov=\(canvasFovDegrees)° filter=\(canvasNearest ? "nearest" : "linear")")
+        return true
     }
 
     /// M1a.5: Zustand des Tickens auf dem Render-Thread. Der Hauptthread gibt nach init und Laden
@@ -233,15 +322,12 @@ nonisolated enum CelesteProbe {
         let contentFiles = (FileManager.default.enumerator(atPath: contentDir)?.allObjects.count) ?? 0
         c64Record("[c64-celeste] step=content root=\"\(contentRoot)\" entries=\(contentFiles)")
 
-        // Device und Queue des Hosts, wie später der LayerRenderer sie nutzt (Vergleich in M4a).
-        guard let mtlDevice = MTLCreateSystemDefaultDevice(), let queue = mtlDevice.makeCommandQueue() else {
+        // Device und Queue des Hosts; der Renderer übernimmt dieselbe Queue (M4a.2).
+        guard ensureHostDevice(), let mtlDevice = device, let queue = commandQueue else {
             c64Record("[c64-celeste] step=init skipped: kein MTLDevice oder keine Queue")
             result.ok = false
             return result
         }
-        queue.label = "c64-celeste-queue"
-        device = mtlDevice
-        commandQueue = queue
 
         // Logzeilen des Spiels ab jetzt über den Rückruf (Foster schreibt dann nicht mehr auf stdout).
         let logRc = celeste_set_log_callback(logLine, nil)

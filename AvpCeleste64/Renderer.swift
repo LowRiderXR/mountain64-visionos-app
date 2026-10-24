@@ -100,6 +100,21 @@ nonisolated final class Renderer: @unchecked Sendable {
     private var testScene: TestScene?
     private var testSceneFailed = false
 
+    // Leinwand (M4a.2, C64_CELESTE=canvas): Textur vom Host, Szene lazy auf dem Render-Thread.
+    // Mit Leinwand cleart der Grund-Pass die Tiefe auf 0,0001 (1000 m, hinter der Leinwand in
+    // 500 m) statt 0 («kein Inhalt»), damit der Rand eigenes Schwarz ist und nicht Durchsicht.
+    private let canvasRequested: Bool
+    private let canvasTexture: MTLTexture?
+    private var canvasScene: CanvasScene?
+    private var canvasFailed = false
+    private static let canvasClearDepth = 0.0001
+
+    // GPU-Zeit der Gerüst-Command-Buffer (gpuEndTime − gpuStartTime) aus dem Completed-Handler,
+    // hinter cmdErrLock; der Render-Thread liest und nullt pro Sekunde.
+    private var gpuTimeSum = 0.0
+    private var gpuTimeMax = 0.0
+    private var gpuTimeCount = 0
+
     // Fehlerstatus der Command Buffer. Der Completed-Handler läuft auf einem Metal-Thread,
     // deshalb hinter einem Lock; der Render-Thread liest und nullt den Zähler pro Sekunde.
     private let cmdErrLock = NSLock()
@@ -157,15 +172,31 @@ nonisolated final class Renderer: @unchecked Sendable {
     // C64_KIT_MEMORYLESS aus; unbekannte Werte werden geloggt und ignoriert.
     private let kitDepthStore: String? = ProcessInfo.processInfo.environment["C64_KIT_DEPTH_STORE"]
 
+    @MainActor
     private init(layerRenderer: LayerRenderer, appModel: AppModel) {
         self.layerRenderer = layerRenderer
         self.appModel = appModel
         self.device = layerRenderer.device
-        guard let queue = device.makeCommandQueue() else {
-            fatalError("MTLCommandQueue konnte nicht erzeugt werden")
+        // M4a: hat der Host schon Device und Queue (Celeste-Modi init, tick, canvas), nimmt der
+        // Renderer dieselbe Queue; dann laufen SDLs Command Buffer (Celestes Bild) und die
+        // Gerüst-Buffer in Commit-Reihenfolge, und der Leinwand-Pass liest das fertige Bild.
+        if let shared = CelesteProbe.commandQueue {
+            let hostDevice = CelesteProbe.device
+            let same = hostDevice.map { $0 === layerRenderer.device } ?? false
+            self.commandQueue = shared
+            c64Record("[c64-canvas] queue shared=1 label=\"\(shared.label ?? "")\" layerDevice=\(Unmanaged.passUnretained(layerRenderer.device).toOpaque()) hostDevice=\(hostDevice.map { "\(Unmanaged.passUnretained($0).toOpaque())" } ?? "nil") same=\(same ? 1 : 0)")
+            if !same {
+                c64Record("[c64-canvas] WARNUNG: LayerRenderer-Device und Host-Device sind verschieden; Texturen des einen sind auf dem anderen ungültig")
+            }
+        } else {
+            guard let queue = device.makeCommandQueue() else {
+                fatalError("MTLCommandQueue konnte nicht erzeugt werden")
+            }
+            queue.label = "c64-render-queue"
+            self.commandQueue = queue
         }
-        queue.label = "c64-render-queue"
-        self.commandQueue = queue
+        self.canvasRequested = CelesteProbe.mode == .canvas
+        self.canvasTexture = CelesteProbe.canvasTexture
         self.stallPlan = StallPlan.fromEnvironment()
     }
 
@@ -708,16 +739,19 @@ nonisolated final class Renderer: @unchecked Sendable {
     /// die tatsächliche Anzahl.
     private func encodeClearPasses(drawable: LayerRenderer.Drawable, commandBuffer: MTLCommandBuffer, deviceAnchor: DeviceAnchor?) {
         let scene = currentTestScene()
+        let canvas = currentCanvasScene()
         let maps = layerRenderer.configuration.isFoveationEnabled ? drawable.rasterizationRateMaps : []
         let views = drawable.views
         guard let firstView = views.first else { return }
         let isArray = drawable.colorTextures[firstView.textureMap.textureIndex].textureType == .type2DArray
+        let clearDepth = canvasRequested ? Self.canvasClearDepth : 0.0
+        canvas?.logEyesOnce(drawable: drawable, views: views, maps: maps)
 
         if isArray, views.count > 1 {
             let baseSlice = views.map { $0.textureMap.sliceIndex }.min() ?? 0
             let descriptor = Self.clearDescriptor(color: drawable.colorTextures[firstView.textureMap.textureIndex],
                                                   depth: drawable.depthTextures[firstView.textureMap.textureIndex],
-                                                  slice: baseSlice)
+                                                  slice: baseSlice, clearDepth: clearDepth)
             descriptor.renderTargetArrayLength = views.count
             if let map = maps.first {
                 descriptor.rasterizationRateMap = map
@@ -727,9 +761,11 @@ nonisolated final class Renderer: @unchecked Sendable {
                 return
             }
             encoder.label = "c64-clear layered x\(views.count)"
-            // Testszene: beide Schichten in einem Draw, Amplification 2, Map bleibt am Pass.
+            // Testszene und Leinwand: beide Schichten in einem Draw, Amplification 2, Map bleibt am Pass.
             scene?.encode(encoder: encoder, drawable: drawable, views: Array(views.prefix(2)),
                           viewIndices: Array(0..<min(views.count, 2)), deviceAnchor: deviceAnchor)
+            canvas?.encode(encoder: encoder, drawable: drawable, views: Array(views.prefix(2)),
+                           viewIndices: Array(0..<min(views.count, 2)), deviceAnchor: deviceAnchor)
             encoder.endEncoding()
             return
         }
@@ -738,7 +774,7 @@ nonisolated final class Renderer: @unchecked Sendable {
             let textureMap = view.textureMap
             let descriptor = Self.clearDescriptor(color: drawable.colorTextures[textureMap.textureIndex],
                                                   depth: drawable.depthTextures[textureMap.textureIndex],
-                                                  slice: textureMap.sliceIndex)
+                                                  slice: textureMap.sliceIndex, clearDepth: clearDepth)
             if !maps.isEmpty {
                 descriptor.rasterizationRateMap = textureMap.textureIndex < maps.count ? maps[textureMap.textureIndex] : maps[0]
             }
@@ -747,11 +783,35 @@ nonisolated final class Renderer: @unchecked Sendable {
                 continue
             }
             encoder.label = "c64-clear view\(viewIndex)"
-            // Testszene bei .dedicated/.shared: pro View ein Draw ohne Amplification.
+            // Testszene und Leinwand bei .dedicated/.shared: pro View ein Draw ohne Amplification.
             scene?.encode(encoder: encoder, drawable: drawable, views: [view],
                           viewIndices: [viewIndex], deviceAnchor: deviceAnchor)
+            canvas?.encode(encoder: encoder, drawable: drawable, views: [view],
+                           viewIndices: [viewIndex], deviceAnchor: deviceAnchor)
             encoder.endEncoding()
         }
+    }
+
+    /// Leinwand beim ersten Bedarf erzeugen (Render-Thread); scheitert sie, bleibt sie aus.
+    private func currentCanvasScene() -> CanvasScene? {
+        guard canvasRequested, !canvasFailed else { return nil }
+        if let canvasScene { return canvasScene }
+        guard let texture = canvasTexture else {
+            canvasFailed = true
+            c64Record("[c64-canvas] keine Leinwandtextur vom Host (prepareCanvas lief nicht), Leinwand bleibt aus")
+            return nil
+        }
+        let config = layerRenderer.configuration
+        let scene = CanvasScene(device: device,
+                                colorFormat: config.colorFormat,
+                                depthFormat: config.depthFormat,
+                                viewCount: layerRenderer.properties.viewCount,
+                                texture: texture,
+                                fovDegrees: CelesteProbe.canvasFovDegrees,
+                                nearest: CelesteProbe.canvasNearest)
+        if scene == nil { canvasFailed = true }
+        canvasScene = scene
+        return scene
     }
 
     /// Testszene beim ersten Bedarf erzeugen (Render-Thread); scheitert sie, bleibt sie aus.
@@ -770,7 +830,7 @@ nonisolated final class Renderer: @unchecked Sendable {
         return scene
     }
 
-    private static func clearDescriptor(color colorTexture: MTLTexture, depth depthTexture: MTLTexture, slice: Int) -> MTLRenderPassDescriptor {
+    private static func clearDescriptor(color colorTexture: MTLTexture, depth depthTexture: MTLTexture, slice: Int, clearDepth: Double = 0.0) -> MTLRenderPassDescriptor {
         let descriptor = MTLRenderPassDescriptor()
         let color = descriptor.colorAttachments[0]!
         color.texture = colorTexture
@@ -784,7 +844,7 @@ nonisolated final class Renderer: @unchecked Sendable {
         depth.slice = slice
         depth.loadAction = .clear
         depth.storeAction = .store
-        depth.clearDepth = 0.0
+        depth.clearDepth = clearDepth   // 0 = «kein Inhalt» (Leerframe), mit Leinwand 0,0001 = 1000 m eigenes Schwarz
         return descriptor
     }
 
@@ -900,6 +960,16 @@ nonisolated final class Renderer: @unchecked Sendable {
     private func noteCommandBufferCompletion(_ buffer: MTLCommandBuffer, frameIndex: UInt64) {
         let status = buffer.status
         let error = buffer.error
+        if status == .completed {
+            let gpuSeconds = buffer.gpuEndTime - buffer.gpuStartTime
+            if gpuSeconds > 0 {
+                cmdErrLock.lock()
+                gpuTimeSum += gpuSeconds
+                gpuTimeMax = max(gpuTimeMax, gpuSeconds)
+                gpuTimeCount += 1
+                cmdErrLock.unlock()
+            }
+        }
         guard status != .completed || error != nil else { return }
 
         cmdErrLock.lock()
@@ -918,6 +988,17 @@ nonisolated final class Renderer: @unchecked Sendable {
             errorText = "-"
         }
         c64Record("[c64-cmderr] frame=\(frameIndex) status=\(Self.name(status)) error=\(errorText)")
+    }
+
+    /// GPU-Zeit der Gerüst-Buffer im Fenster lesen und nullen (Render-Thread, einmal pro Sekunde).
+    private func takeGpuTime() -> (mean: Double, max: Double, count: Int) {
+        cmdErrLock.lock()
+        defer { cmdErrLock.unlock() }
+        let result = (gpuTimeCount > 0 ? gpuTimeSum / Double(gpuTimeCount) : 0, gpuTimeMax, gpuTimeCount)
+        gpuTimeSum = 0
+        gpuTimeMax = 0
+        gpuTimeCount = 0
+        return result
     }
 
     /// Zähler lesen und nullen (Render-Thread, einmal pro Sekunde).
@@ -998,6 +1079,9 @@ nonisolated final class Renderer: @unchecked Sendable {
                               lateMin * 1000, lateMax * 1000, statLateFrames,
                               statGaps, drawablesMin, statDrawablesMax, statCancelled, statNoCmdBuf, cmdErr,
                               statFramesWithoutAnchor, ProbeContext.thermalState, totalFrames)
+            // GPU-Zeit der Gerüst-Buffer (Clear, Testszene, Leinwand; nicht SDLs eigene Buffer).
+            let gpu = takeGpuTime()
+            line += String(format: " hostGpu(ms) mean=%.3f max=%.3f n=%d", gpu.mean * 1000, gpu.max * 1000, gpu.count)
             // K1b: CPU-Zeit des SDL-Teils (Wrapper, Pässe, Submit, Release) im Fenster.
             if let session = kitImportSession {
                 let stats = KitProbe.takeImportStats(session: session)

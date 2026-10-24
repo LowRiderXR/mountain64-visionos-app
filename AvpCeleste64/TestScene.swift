@@ -17,7 +17,8 @@ import simd
 
 /// Muss dem Layout von C64TestUniforms in TestScene.metal entsprechen (float4 statt float3,
 /// damit Swift und MSL dieselbe Ausrichtung haben).
-private struct TestUniforms {
+/// Uniforms des Quad-Vertex-Shaders c64_test_vertex; auch die Leinwand (CanvasScene) nutzt ihn.
+struct TestUniforms {
     var viewProjection: (simd_float4x4, simd_float4x4)
     var center: SIMD4<Float>
     var right: SIMD4<Float>
