@@ -71,7 +71,35 @@ public static unsafe class Exports
 	private static Game? game;
 	private static int initThreadId;
 	private static long ticks;
-	private static bool tickThreadLogged;
+	private static int lastTickThreadId;
+	private static readonly bool[] controllerConnected = new bool[InputState.MaxControllers];
+
+	/// <summary>
+	/// Logs controller connections and button presses as Foster's input sees them after a tick,
+	/// so a host can verify that SDL's events reach the thread that ticks (gamepads are the
+	/// input of the port; the keyboard is not probed).
+	/// </summary>
+	private static void LogControllerChanges(Game game)
+	{
+		var controllers = game.Input.Controllers;
+		var threadId = Environment.CurrentManagedThreadId;
+		for (int i = 0; i < controllers.Length && i < controllerConnected.Length; i++)
+		{
+			var controller = controllers[i];
+			if (controller.Connected != controllerConnected[i])
+			{
+				controllerConnected[i] = controller.Connected;
+				Log.Info($"{Tag} controller index={i} connected={(controller.Connected ? 1 : 0)} name=\"{controller.Name}\" gamepad={(controller.IsGamepad ? 1 : 0)} type={controller.GamepadType} thread={threadId} tick={ticks}");
+			}
+			if (!controller.Connected)
+				continue;
+			for (int button = 0; button < ControllerState.MaxButtons; button++)
+			{
+				if (controller.Pressed(button))
+					Log.Info($"{Tag} controller index={i} pressed={(Buttons)button} ({button}) thread={threadId} tick={ticks}");
+			}
+		}
+	}
 	private static delegate* unmanaged<int, byte*, void*, void> logCallback;
 	private static void* logUserdata;
 
@@ -219,7 +247,8 @@ public static unsafe class Exports
 
 			initThreadId = Environment.CurrentManagedThreadId;
 			ticks = 0;
-			tickThreadLogged = false;
+			lastTickThreadId = 0;
+			Array.Clear(controllerConnected);
 			Log.Info($"{Tag} init thread={initThreadId} contentRoot=\"{contentRoot}\" baseDirectory=\"{AppContext.BaseDirectory}\" hiddenWindow={options->HiddenWindow} depthClip={options->DepthClip} metalDevice=0x{options->MetalDevice:x} queue=0x{options->MetalCommandQueue:x} callback={(options->CompletedCallback != IntPtr.Zero ? 1 : 0)}");
 
 			var created = new Game(new(
@@ -261,14 +290,17 @@ public static unsafe class Exports
 		{
 			if (game == null)
 				return SetError("celeste_tick: no game; call celeste_init first");
-			if (!tickThreadLogged)
+			// One line per thread that ticks: the first tick, and every change of the ticking
+			// thread (the host moves from its main thread to the compositor's render thread).
+			var threadId = Environment.CurrentManagedThreadId;
+			if (threadId != lastTickThreadId)
 			{
-				tickThreadLogged = true;
-				var threadId = Environment.CurrentManagedThreadId;
-				Log.Info($"{Tag} first tick thread={threadId} sameAsInit={(threadId == initThreadId ? 1 : 0)} sdlMainThread={(SDL_IsMainThread() ? 1 : 0)} delta={deltaSeconds * 1000:F3}ms present={present}");
+				lastTickThreadId = threadId;
+				Log.Info($"{Tag} tick thread={threadId} name=\"{Thread.CurrentThread.Name}\" sameAsInit={(threadId == initThreadId ? 1 : 0)} sdlMainThread={(SDL_IsMainThread() ? 1 : 0)} delta={deltaSeconds * 1000:F3}ms present={present} tick={ticks}");
 			}
 			game.Tick(TimeSpan.FromSeconds(deltaSeconds), present != 0);
 			ticks++;
+			LogControllerChanges(game);
 			return game.Exiting ? Exiting : Ok;
 		}
 		catch (Exception e)

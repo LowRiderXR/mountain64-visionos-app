@@ -115,7 +115,7 @@
          </EnvironmentVariable>
          <EnvironmentVariable
             key = "C64_CELESTE"
-            value = "init"
+            value = "tick"
             isEnabled = "NO">
          </EnvironmentVariable>
          <EnvironmentVariable

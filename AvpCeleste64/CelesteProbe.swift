@@ -36,7 +36,121 @@ nonisolated enum CelesteProbe {
         /// denselben Zeitpunkten (Start, 0,2 s, 1 s, 2 s). Zeigt, was SwiftUI allein mit dem
         /// Fenster macht (Standardgrösse 1280×720, dann Layout auf die Inhaltsgrösse).
         case window
+        /// M1a.5 (Variante B, Teil 2): wie init, danach übernimmt der Render-Thread des
+        /// Compositors das Ticken, ein celeste_tick pro Frame in der Update-Phase
+        /// (Renderer.renderFrame, zwischen startUpdate und endUpdate), present 0, Delta aus dem
+        /// Frame-Takt begrenzt auf 1/30 s. Kein Bild in die Drawables (M4a). Beim Pausieren oder
+        /// Schliessen des ImmersiveSpace pausieren die Ticks, kein celeste_end.
+        case tick
     }
+
+    /// M1a.5: Zustand des Tickens auf dem Render-Thread. Der Hauptthread gibt nach init und Laden
+    /// frei (markReady), der Render-Thread tickt. Alle Felder hinter einem Lock, und dasselbe Lock
+    /// umschliesst jeden celeste_tick, damit nie zwei Ticks gleichzeitig laufen (der Hauptthread
+    /// tickt in runInit synchron vor der Freigabe, der Render-Thread entsteht erst mit dem
+    /// ImmersiveSpace; das Lock ist die Absicherung, nicht der Plan).
+    nonisolated final class TickState: @unchecked Sendable {
+        private let lock = NSLock()
+        private var ready = false
+        private var stopped = false
+        private var firstLogged = false
+        private var totalTicks = 0
+        private var totalFrames = 0
+        // Fenster von einer Sekunde
+        private var windowStart: CFAbsoluteTime = 0
+        private var windowFrames = 0
+        private var windowTicks = 0
+        private var deltaSum = 0.0
+        private var deltaMax = 0.0
+        private var tickMsSum = 0.0
+        private var tickMsMax = 0.0
+
+        var isActive: Bool { lock.withLock { ready && !stopped } }
+
+        func markReady() {
+            lock.withLock { ready = true }
+            c64Record("[c64-celeste] tick ready: Ticks laufen im Render-Thread, sobald der ImmersiveSpace offen ist")
+        }
+
+        /// Ein Tick pro Compositor-Frame. frameInterval: Wanduhr-Intervall zwischen den Rückkehren
+        /// von queryNextFrame (Takt des Compositors, am Render-Thread gemessen), nil beim ersten
+        /// Frame nach Start oder Pause; dann 1/90 s.
+        func tick(frameInterval: TimeInterval?) {
+            lock.lock()
+            defer { lock.unlock() }
+            guard ready, !stopped else { return }
+            let delta = min(max(frameInterval ?? CelesteProbe.tickDelta, 0.001), 1.0 / 30.0)
+            let now = CFAbsoluteTimeGetCurrent()
+            if !firstLogged {
+                firstLogged = true
+                windowStart = now
+                c64Record("[c64-celeste] tick first-render-thread thread=\(Thread.current.name ?? "?") isMainThread=\(Thread.isMainThread) qos=\(Thread.current.qualityOfService.rawValue) delta=\(CelesteProbe.format(delta * 1000))ms")
+            }
+            totalFrames += 1
+            windowFrames += 1
+            let start = DispatchTime.now()
+            let rc = celeste_tick(delta, 0)
+            let tickMs = Double(DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000
+            if rc == -1 {
+                let error = celeste_last_error().map { String(cString: $0) } ?? ""
+                c64Record("[c64-celeste] tick rc=-1 after \(totalTicks) ticks, ticking stopped: \"\(error)\"")
+                stopped = true
+                return
+            }
+            totalTicks += 1
+            windowTicks += 1
+            if rc == 1 {
+                c64Record("[c64-celeste] tick rc=1: game asked to exit after \(totalTicks) ticks, ticking stopped (no celeste_end)")
+                stopped = true
+                return
+            }
+            deltaSum += delta
+            deltaMax = max(deltaMax, delta)
+            tickMsSum += tickMs
+            tickMsMax = max(tickMsMax, tickMs)
+            let elapsed = now - windowStart
+            if elapsed >= 1.0, windowFrames > 0 {
+                let updatesPerFrame = Double(windowTicks) / Double(windowFrames)
+                c64Record(String(format: "[c64-celeste] tick-stats frames=%d ticks=%d updatesPerFrame=%.2f compositor=%.1f Hz delta(ms) mean=%.2f max=%.2f tick(ms) mean=%.2f max=%.2f total=%d",
+                                 windowFrames, windowTicks, updatesPerFrame, Double(windowFrames) / elapsed,
+                                 deltaSum / Double(windowTicks) * 1000, deltaMax * 1000,
+                                 tickMsSum / Double(windowTicks), tickMsMax, totalTicks))
+                windowStart = now
+                windowFrames = 0
+                windowTicks = 0
+                deltaSum = 0
+                deltaMax = 0
+                tickMsSum = 0
+                tickMsMax = 0
+            }
+        }
+
+        /// Pause oder Ende der Renderschleife: die Ticks setzen aus, das Spiel bleibt (kein
+        /// celeste_end); nach dem Wiederöffnen beginnt das Fenster der Statistik neu.
+        func pause(reason: String) {
+            lock.lock()
+            defer { lock.unlock() }
+            guard ready else { return }
+            c64Record("[c64-celeste] tick paused reason=\"\(reason)\" totalTicks=\(totalTicks) totalFrames=\(totalFrames)")
+            windowStart = 0
+            windowFrames = 0
+            windowTicks = 0
+            deltaSum = 0
+            deltaMax = 0
+            tickMsSum = 0
+            tickMsMax = 0
+        }
+
+        func resume(reason: String) {
+            lock.lock()
+            defer { lock.unlock() }
+            guard ready else { return }
+            windowStart = CFAbsoluteTimeGetCurrent()
+            c64Record("[c64-celeste] tick resumed reason=\"\(reason)\" thread=\(Thread.current.name ?? "?") totalTicks=\(totalTicks)")
+        }
+    }
+
+    static let tickState = TickState()
 
     static var mode: Mode? {
         Mode(rawValue: ProcessInfo.processInfo.environment[environmentKey] ?? "")
@@ -252,7 +366,7 @@ nonisolated enum CelesteProbe {
         Double(DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000
     }
 
-    private static func format(_ value: Double) -> String {
+    static func format(_ value: Double) -> String {
         String(format: "%.1f", value)
     }
 }

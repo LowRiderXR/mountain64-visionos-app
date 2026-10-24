@@ -68,6 +68,16 @@ struct ContentView: View {
                     CelesteProbe.windowSnapshot("t0", since: probeStart)
                     appModel.statusLine = "Vergleichslauf Fenster ohne Celeste: Schnappschüsse bei 0, 0,2, 1 und 2 s. Siehe Log [c64-celeste]."
                     await snapshotMarks(since: probeStart)
+                case .tick:
+                    // M1a.5: init und Laden wie init (acht Ticks hier auf dem Hauptthread), dann
+                    // Freigabe; der Render-Thread tickt ab dem ersten Compositor-Frame.
+                    let result = CelesteProbe.runInit(since: probeStart)
+                    if result.ok {
+                        CelesteProbe.tickState.markReady()
+                        appModel.statusLine = "Celeste geladen (\(result.version)). ImmersiveSpace öffnen: dann tickt der Render-Thread. Gamepad einschalten und Tasten drücken, siehe Log [c64-celeste]."
+                    } else {
+                        appModel.statusLine = "Celeste-Start fehlgeschlagen: \(result.capabilitiesLine). Siehe Log [c64-celeste]."
+                    }
                 }
             }
 

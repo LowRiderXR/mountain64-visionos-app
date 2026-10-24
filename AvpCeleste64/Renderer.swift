@@ -238,6 +238,9 @@ nonisolated final class Renderer: @unchecked Sendable {
         statWindowStart = start
         nextStallAt = start + Self.stallSpacing
         c64Record("[c64-loop] Renderschleife gestartet, thread=\(Thread.current.name ?? "?")")
+        if CelesteProbe.mode == .tick {
+            CelesteProbe.tickState.resume(reason: "render loop started")
+        }
 
         // Kit-Stufe K1a (C64_KIT=inject): einmal vor dem ersten Frame, mit dem Device des
         // Layer-Renderers und der Queue dieses Gerüsts. SDL_Init lief im Hauptthread (ContentView).
@@ -266,6 +269,9 @@ nonisolated final class Renderer: @unchecked Sendable {
             switch layerRenderer.state {
             case .invalidated:
                 c64Record("[c64-loop] Layer invalidiert, Schleife endet nach \(totalFrames) Frames")
+                if CelesteProbe.mode == .tick {
+                    CelesteProbe.tickState.pause(reason: "layer invalidated, render loop ends; game keeps running without celeste_end")
+                }
                 logLoopSummary()
                 Task { @MainActor [appModel] in
                     appModel.immersiveState = .closed
@@ -274,9 +280,16 @@ nonisolated final class Renderer: @unchecked Sendable {
                 return
             case .paused:
                 c64Log.notice("[c64-loop] Layer pausiert, warte")
+                if CelesteProbe.mode == .tick {
+                    CelesteProbe.tickState.pause(reason: "layer paused")
+                }
                 layerRenderer.waitUntilRunning()
                 c64Log.notice("[c64-loop] Layer läuft wieder")
+                if CelesteProbe.mode == .tick {
+                    CelesteProbe.tickState.resume(reason: "layer running again")
+                }
                 lastPresentationTime = nil
+                lastQueryReturn = nil
                 continue
             default:
                 break
@@ -530,8 +543,10 @@ nonisolated final class Renderer: @unchecked Sendable {
 
         // Wanduhr-Intervall seit der letzten Rückkehr von queryNextFrame.
         let queryReturn = CFAbsoluteTimeGetCurrent()
+        var frameInterval: TimeInterval?
         if let last = lastQueryReturn {
             let wall = queryReturn - last
+            frameInterval = wall
             statWallMin = min(statWallMin, wall)
             statWallMax = max(statWallMax, wall)
             statWallSum += wall
@@ -539,8 +554,14 @@ nonisolated final class Renderer: @unchecked Sendable {
         }
         lastQueryReturn = queryReturn
 
-        // Update-Phase: hier läuft später Celestes Update (ein Schritt pro Frame).
+        // Update-Phase: Celestes Tick (M1a.5, C64_CELESTE=tick), ein Update und ein Render in
+        // Celestes eigene Ziele pro Frame, present 0; Delta ist der Frame-Takt. Noch kein Bild in
+        // die Drawables, die kommen erst nach startSubmission (M4a verschiebt den Render-Teil
+        // dorthin oder reicht die Drawable-Texturen vorher als Ausgabeziele).
         frame.startUpdate()
+        if CelesteProbe.mode == .tick {
+            CelesteProbe.tickState.tick(frameInterval: frameInterval)
+        }
         frame.endUpdate()
 
         guard let timing = frame.predictTiming() else { return }
