@@ -195,7 +195,7 @@ nonisolated final class Renderer: @unchecked Sendable {
             queue.label = "c64-render-queue"
             self.commandQueue = queue
         }
-        self.canvasRequested = CelesteProbe.mode == .canvas
+        self.canvasRequested = CelesteProbe.canvasWanted
         self.canvasTexture = CelesteProbe.canvasTexture
         self.stallPlan = StallPlan.fromEnvironment()
     }
@@ -269,7 +269,7 @@ nonisolated final class Renderer: @unchecked Sendable {
         statWindowStart = start
         nextStallAt = start + Self.stallSpacing
         c64Record("[c64-loop] Renderschleife gestartet, thread=\(Thread.current.name ?? "?")")
-        if CelesteProbe.mode == .tick {
+        if CelesteProbe.ticksGame {
             CelesteProbe.tickState.resume(reason: "render loop started")
         }
 
@@ -300,7 +300,7 @@ nonisolated final class Renderer: @unchecked Sendable {
             switch layerRenderer.state {
             case .invalidated:
                 c64Record("[c64-loop] Layer invalidiert, Schleife endet nach \(totalFrames) Frames")
-                if CelesteProbe.mode == .tick {
+                if CelesteProbe.ticksGame {
                     CelesteProbe.tickState.pause(reason: "layer invalidated, render loop ends; game keeps running without celeste_end")
                 }
                 logLoopSummary()
@@ -311,12 +311,12 @@ nonisolated final class Renderer: @unchecked Sendable {
                 return
             case .paused:
                 c64Log.notice("[c64-loop] Layer pausiert, warte")
-                if CelesteProbe.mode == .tick {
+                if CelesteProbe.ticksGame {
                     CelesteProbe.tickState.pause(reason: "layer paused")
                 }
                 layerRenderer.waitUntilRunning()
                 c64Log.notice("[c64-loop] Layer läuft wieder")
-                if CelesteProbe.mode == .tick {
+                if CelesteProbe.ticksGame {
                     CelesteProbe.tickState.resume(reason: "layer running again")
                 }
                 lastPresentationTime = nil
@@ -590,7 +590,7 @@ nonisolated final class Renderer: @unchecked Sendable {
         // die Drawables, die kommen erst nach startSubmission (M4a verschiebt den Render-Teil
         // dorthin oder reicht die Drawable-Texturen vorher als Ausgabeziele).
         frame.startUpdate()
-        if CelesteProbe.mode == .tick {
+        if CelesteProbe.ticksGame {
             CelesteProbe.tickState.tick(frameInterval: frameInterval)
         }
         frame.endUpdate()

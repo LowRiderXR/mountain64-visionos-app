@@ -62,10 +62,13 @@ fragment float4 c64_test_fragment(C64TestInOut in [[stage_in]])
 // Die Textur kommt als sRGB-Ansicht (linear nach dem Abtasten), das Drawable kodiert beim
 // Schreiben zurück. uv (0,0) liegt an der Ecke unten links des Quads, Texturzeile 0 ist oben,
 // deshalb v gespiegelt: die Markierung oben links der Textur erscheint oben links in der Welt.
+// fade (0 bis 1) blendet nach dem Verankern ein; die Leinwand bleibt opak (Alpha 1), nur die
+// Farbe wird aus dem Schwarz des Grund-Clears hochgezogen.
 fragment float4 c64_canvas_fragment(C64TestInOut in [[stage_in]],
                                     texture2d<float> canvas [[texture(0)]],
-                                    sampler canvasSampler [[sampler(0)]])
+                                    sampler canvasSampler [[sampler(0)]],
+                                    constant float &fade [[buffer(0)]])
 {
     float3 color = canvas.sample(canvasSampler, float2(in.uv.x, 1.0 - in.uv.y)).rgb;
-    return float4(color, 1.0);
+    return float4(color * fade, 1.0);
 }

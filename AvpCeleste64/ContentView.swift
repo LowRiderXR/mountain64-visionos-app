@@ -75,6 +75,21 @@ struct ContentView: View {
                     appModel.statusLine = ok
                         ? "Leinwand bereit (\(CelesteProbe.canvasWidth)×\(CelesteProbe.canvasHeight), \(CelesteProbe.canvasFovDegrees)°, \(CelesteProbe.canvasNearest ? "nearest" : "linear")). ImmersiveSpace öffnen: Farbfläche in 500 m, Markierung oben links gelb. Siehe Log [c64-canvas]."
                         : "Leinwand konnte nicht angelegt werden, siehe Log [c64-canvas]."
+                case .play:
+                    // M4a.3: Leinwand anlegen, Celeste laden (Hauptthread), Endbild in die Leinwand
+                    // leiten (ohne laufenden Tick), dann Freigabe; der Render-Thread tickt und
+                    // zeichnet die Leinwand nach dem Verankern. Rücklesen nach 600 Ticks.
+                    guard CelesteProbe.prepareCanvas() else {
+                        appModel.statusLine = "Leinwand konnte nicht angelegt werden, siehe Log [c64-canvas]."
+                        break
+                    }
+                    let result = CelesteProbe.runInit(since: probeStart)
+                    if result.ok, CelesteProbe.attachCanvasToGame() {
+                        CelesteProbe.tickState.markReady(snapshotQueue: CelesteProbe.commandQueue, snapshotTexture: CelesteProbe.canvasTexture)
+                        appModel.statusLine = "Celeste geladen (\(result.version)), Endbild auf der Leinwand. ImmersiveSpace öffnen: Titelbild in 500 m nach etwa 1 s; Gamepad führt ins Level. Siehe Log [c64-celeste] und [c64-canvas]."
+                    } else {
+                        appModel.statusLine = "Celeste-Start oder Leinwand fehlgeschlagen: \(result.capabilitiesLine). Siehe Log."
+                    }
                 case .tick:
                     // M1a.5: init und Laden wie init (acht Ticks hier auf dem Hauptthread), dann
                     // Freigabe; der Render-Thread tickt ab dem ersten Compositor-Frame.

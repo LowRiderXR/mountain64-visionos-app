@@ -206,3 +206,65 @@ int k6d_metal_read_pixel(void *queue, void *texture, unsigned x, unsigned y, uns
         return 1;
     }
 }
+
+/* ---- M4a.3: canvas dump for the colour comparison between Mac and device ---- */
+
+#import <ImageIO/ImageIO.h>
+
+/* Reads the whole 2D RGBA8 texture back (blit on the given queue, wait) and writes it as PNG
+   and as raw RGBA bytes (width*height*4, rows top-down); fills mean_rgb (0..255 per channel).
+   Returns 1 on success. */
+int k6d_metal_write_canvas(void *queue, void *texture, const char *png_path, const char *raw_path, double mean_rgb[3])
+{
+    @autoreleasepool {
+        if (!queue || !texture) {
+            return 0;
+        }
+        id<MTLCommandQueue> q = (__bridge id<MTLCommandQueue>)queue;
+        id<MTLTexture> t = (__bridge id<MTLTexture>)texture;
+        NSUInteger width = t.width, height = t.height, bytesPerRow = width * 4;
+        id<MTLBuffer> buffer = [q.device newBufferWithLength:bytesPerRow * height options:MTLResourceStorageModeShared];
+        id<MTLCommandBuffer> cb = [q commandBuffer];
+        id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
+        [blit copyFromTexture:t sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake(width, height, 1)
+                     toBuffer:buffer destinationOffset:0 destinationBytesPerRow:bytesPerRow destinationBytesPerImage:bytesPerRow * height];
+        [blit endEncoding];
+        [cb commit];
+        [cb waitUntilCompleted];
+        if (cb.status != MTLCommandBufferStatusCompleted) {
+            return 0;
+        }
+        const unsigned char *p = buffer.contents;
+        unsigned long long sum[3] = {0, 0, 0};
+        for (NSUInteger i = 0; i < width * height * 4; i += 4) {
+            sum[0] += p[i]; sum[1] += p[i + 1]; sum[2] += p[i + 2];
+        }
+        if (mean_rgb) {
+            for (int c = 0; c < 3; c++) mean_rgb[c] = (double)sum[c] / (double)(width * height);
+        }
+        int ok = 1;
+        if (raw_path) {
+            NSData *raw = [NSData dataWithBytes:p length:bytesPerRow * height];
+            ok = [raw writeToFile:[NSString stringWithUTF8String:raw_path] atomically:YES] ? ok : 0;
+        }
+        if (png_path) {
+            CGDataProviderRef provider = CGDataProviderCreateWithData(NULL, p, bytesPerRow * height, NULL);
+            CGColorSpaceRef space = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+            CGImageRef image = CGImageCreate(width, height, 8, 32, bytesPerRow, space, kCGBitmapByteOrderDefault | kCGImageAlphaNoneSkipLast,
+                                             provider, NULL, false, kCGRenderingIntentDefault);
+            NSURL *url = [NSURL fileURLWithPath:[NSString stringWithUTF8String:png_path]];
+            CGImageDestinationRef destination = CGImageDestinationCreateWithURL((__bridge CFURLRef)url, CFSTR("public.png"), 1, NULL);
+            if (image && destination) {
+                CGImageDestinationAddImage(destination, image, NULL);
+                ok = CGImageDestinationFinalize(destination) ? ok : 0;
+            } else {
+                ok = 0;
+            }
+            if (destination) CFRelease(destination);
+            if (image) CGImageRelease(image);
+            if (space) CGColorSpaceRelease(space);
+            if (provider) CGDataProviderRelease(provider);
+        }
+        return ok;
+    }
+}

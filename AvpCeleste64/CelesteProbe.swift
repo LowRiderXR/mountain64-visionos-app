@@ -21,7 +21,9 @@
 //  Devices auf demselben MTLDevice), die Kit-Modi laufen aber unverändert danach.
 //
 
+import CoreGraphics
 import Foundation
+import ImageIO
 import Metal
 import os
 import UIKit
@@ -48,6 +50,122 @@ nonisolated enum CelesteProbe {
         /// Prüft Pass, Tiefe, Grund-Clear, Verankerung, Foveation und die gemeinsame Queue, bevor
         /// Celestes Bild kommt (M4a.3). Kein celeste_init.
         case canvas
+        /// M4a.3: Celestes Bild auf der Leinwand. Init und Laden wie tick, dann celeste_set_canvas
+        /// mit der Leinwandtextur (vor dem ersten Tick im Render-Thread, Vertrag aus M4a.1),
+        /// Ticks im Render-Thread, Leinwand-Pass danach mit sRGB-Ansicht; die Leinwand erscheint
+        /// erst nach dem Verankern (0,3 s Einblendung). Completion-Rückruf des Kits misst die
+        /// GPU-Zeit von Celestes Command Buffern; nach rund 7 s ein Rücklesen der Leinwand als PNG
+        /// und RGBA-Rohdaten in Documents für den Farbvergleich mit dem Mac.
+        case play
+    }
+
+    /// Modi, in denen der Render-Thread Celeste tickt.
+    static var ticksGame: Bool { mode == .tick || mode == .play }
+    /// Modi, in denen der Renderer die Leinwand zeichnet.
+    static var canvasWanted: Bool { mode == .canvas || mode == .play }
+
+    /// GPU-Zeit von Command Buffern (gpuEndTime − gpuStartTime), gesammelt aus einem
+    /// Completed-Rückruf (Metal-Thread), gelesen pro Sekunde vom Render-Thread.
+    nonisolated final class GpuStats: @unchecked Sendable {
+        private let lock = NSLock()
+        private var sum = 0.0
+        private var maxValue = 0.0
+        private var count = 0
+        func add(_ seconds: Double) {
+            guard seconds > 0 else { return }
+            lock.withLock { sum += seconds; maxValue = max(maxValue, seconds); count += 1 }
+        }
+        func take() -> (mean: Double, max: Double, count: Int) {
+            lock.withLock {
+                let result = (count > 0 ? sum / Double(count) : 0, maxValue, count)
+                sum = 0; maxValue = 0; count = 0
+                return result
+            }
+        }
+    }
+
+    /// GPU-Zeit von Celestes SDL-Command-Buffern (Kit-Rückruf, SDL_PROP_GPU_DEVICE_CREATE_METAL_COMMAND_BUFFER_COMPLETED_CALLBACK_POINTER).
+    static let celesteGpu = GpuStats()
+
+    /// C-Rückruf des Kits: void (*)(void *userdata, void *mtl_command_buffer); läuft auf Metals
+    /// Completion-Thread, der Buffer ist dort vollständig (gpuStartTime und gpuEndTime gesetzt).
+    static let celesteCommandBufferCompleted: @convention(c) (UnsafeMutableRawPointer?, UnsafeMutableRawPointer?) -> Void = { _, raw in
+        guard let raw else { return }
+        let buffer = Unmanaged<AnyObject>.fromOpaque(raw).takeUnretainedValue()
+        guard let commandBuffer = buffer as? MTLCommandBuffer else { return }
+        CelesteProbe.celesteGpu.add(commandBuffer.gpuEndTime - commandBuffer.gpuStartTime)
+    }
+
+    /// M4a.3: Celestes Endbild in die Leinwand (celeste_set_canvas), auf dem Hauptthread nach
+    /// runInit und vor der Freigabe des Render-Threads, also ohne laufenden Tick.
+    @MainActor static func attachCanvasToGame() -> Bool {
+        guard let texture = canvasTexture else {
+            c64Record("[c64-canvas] keine Leinwandtextur für celeste_set_canvas")
+            return false
+        }
+        let rc = celeste_set_canvas(Unmanaged.passUnretained(texture).toOpaque(), Int32(texture.width), Int32(texture.height))
+        if rc != 0 {
+            let error = celeste_last_error().map { String(cString: $0) } ?? ""
+            c64Record("[c64-canvas] celeste_set_canvas rc=\(rc) error=\"\(error)\"")
+            return false
+        }
+        c64Record("[c64-canvas] celeste_set_canvas rc=0: Celestes Endbild geht in die Leinwand \(texture.width)x\(texture.height)")
+        return true
+    }
+
+    /// Farbvergleich mit dem Mac: die Leinwand einmal zurücklesen (Blit auf der gemeinsamen
+    /// Queue, nach Celestes Commits), mittlere Farbe loggen und als PNG und RGBA-Rohdaten in
+    /// Documents ablegen (c64-canvas-<Gerät>.png/.rgba; scripts/compare-canvas.py vergleicht
+    /// mit dem Bild aus mac-check). Blockiert den rufenden Thread bis zum Ende des Blits.
+    static func writeCanvasSnapshot(queue: MTLCommandQueue, texture: MTLTexture, label: String) {
+        let width = texture.width, height = texture.height
+        let bytesPerRow = width * 4
+        guard let buffer = queue.device.makeBuffer(length: bytesPerRow * height, options: .storageModeShared),
+              let commandBuffer = queue.makeCommandBuffer(),
+              let blit = commandBuffer.makeBlitCommandEncoder() else {
+            c64Record("[c64-canvas] snapshot \(label): Blit nicht möglich")
+            return
+        }
+        let start = DispatchTime.now()
+        blit.copy(from: texture, sourceSlice: 0, sourceLevel: 0, sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0),
+                  sourceSize: MTLSize(width: width, height: height, depth: 1),
+                  to: buffer, destinationOffset: 0, destinationBytesPerRow: bytesPerRow, destinationBytesPerImage: bytesPerRow * height)
+        blit.endEncoding()
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+        let data = Data(bytes: buffer.contents(), count: bytesPerRow * height)
+        var sum = [UInt64](repeating: 0, count: 3)
+        var black = 0
+        data.withUnsafeBytes { raw in
+            let p = raw.bindMemory(to: UInt8.self)
+            var i = 0
+            while i < p.count {
+                sum[0] += UInt64(p[i]); sum[1] += UInt64(p[i + 1]); sum[2] += UInt64(p[i + 2])
+                if p[i] == 0 && p[i + 1] == 0 && p[i + 2] == 0 { black += 1 }
+                i += 4
+            }
+        }
+        let pixels = Double(width * height)
+        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let base = "c64-canvas-\(ProbeContext.hardwareMachine)-\(label)"
+        let rawURL = documents.appendingPathComponent(base + ".rgba")
+        let pngURL = documents.appendingPathComponent(base + ".png")
+        var written = "raw=\((try? data.write(to: rawURL)) != nil ? 1 : 0)"
+        if let provider = CGDataProvider(data: data as CFData),
+           let image = CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: bytesPerRow,
+                               space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                               bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipLast.rawValue),
+                               provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent),
+           let destination = CGImageDestinationCreateWithURL(pngURL as CFURL, "public.png" as CFString, 1, nil) {
+            CGImageDestinationAddImage(destination, image, nil)
+            written += " png=\(CGImageDestinationFinalize(destination) ? 1 : 0)"
+        } else {
+            written += " png=0"
+        }
+        let ms = Double(DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000
+        c64Record(String(format: "[c64-canvas] snapshot %@ %dx%d mean(rgb)=%.1f,%.1f,%.1f black=%.1f%% %@ ms=%.1f files=%@",
+                         label, width, height, Double(sum[0]) / pixels, Double(sum[1]) / pixels, Double(sum[2]) / pixels,
+                         Double(black) / pixels * 100, written, ms, base))
     }
 
     // MARK: Leinwand (M4a)
@@ -153,12 +271,21 @@ nonisolated enum CelesteProbe {
         private var deltaMax = 0.0
         private var tickMsSum = 0.0
         private var tickMsMax = 0.0
+        // M4a.3: Leinwand und Queue für das einmalige Rücklesen nach snapshotAtTicks Ticks.
+        private var snapshotQueue: MTLCommandQueue?
+        private var snapshotTexture: MTLTexture?
+        private var snapshotDone = false
+        static let snapshotAtTicks = 600
 
         var isActive: Bool { lock.withLock { ready && !stopped } }
 
-        func markReady() {
-            lock.withLock { ready = true }
-            c64Record("[c64-celeste] tick ready: Ticks laufen im Render-Thread, sobald der ImmersiveSpace offen ist")
+        func markReady(snapshotQueue: MTLCommandQueue? = nil, snapshotTexture: MTLTexture? = nil) {
+            lock.withLock {
+                ready = true
+                self.snapshotQueue = snapshotQueue
+                self.snapshotTexture = snapshotTexture
+            }
+            c64Record("[c64-celeste] tick ready: Ticks laufen im Render-Thread, sobald der ImmersiveSpace offen ist\(snapshotTexture != nil ? "; Leinwand-Rücklesen nach \(Self.snapshotAtTicks) Ticks" : "")")
         }
 
         /// Ein Tick pro Compositor-Frame. frameInterval: Wanduhr-Intervall zwischen den Rückkehren
@@ -197,13 +324,19 @@ nonisolated enum CelesteProbe {
             deltaMax = max(deltaMax, delta)
             tickMsSum += tickMs
             tickMsMax = max(tickMsMax, tickMs)
+            if !snapshotDone, totalTicks >= Self.snapshotAtTicks, let queue = snapshotQueue, let texture = snapshotTexture {
+                snapshotDone = true
+                CelesteProbe.writeCanvasSnapshot(queue: queue, texture: texture, label: "tick\(totalTicks)")
+            }
             let elapsed = now - windowStart
             if elapsed >= 1.0, windowFrames > 0 {
                 let updatesPerFrame = Double(windowTicks) / Double(windowFrames)
-                c64Record(String(format: "[c64-celeste] tick-stats frames=%d ticks=%d updatesPerFrame=%.2f compositor=%.1f Hz delta(ms) mean=%.2f max=%.2f tick(ms) mean=%.2f max=%.2f total=%d",
+                let gpu = CelesteProbe.celesteGpu.take()
+                c64Record(String(format: "[c64-celeste] tick-stats frames=%d ticks=%d updatesPerFrame=%.2f compositor=%.1f Hz delta(ms) mean=%.2f max=%.2f tick(ms) mean=%.2f max=%.2f celesteGpu(ms) mean=%.3f max=%.3f n=%d total=%d",
                                  windowFrames, windowTicks, updatesPerFrame, Double(windowFrames) / elapsed,
                                  deltaSum / Double(windowTicks) * 1000, deltaMax * 1000,
-                                 tickMsSum / Double(windowTicks), tickMsMax, totalTicks))
+                                 tickMsSum / Double(windowTicks), tickMsMax,
+                                 gpu.mean * 1000, gpu.max * 1000, gpu.count, totalTicks))
                 windowStart = now
                 windowFrames = 0
                 windowTicks = 0
@@ -344,7 +477,8 @@ nonisolated enum CelesteProbe {
         options.depth_clip = 0      // Foster schaltet Depth Clip auf visionOS selbst ein
         options.metal_device = Unmanaged.passUnretained(mtlDevice).toOpaque()
         options.metal_command_queue = Unmanaged.passUnretained(queue).toOpaque()
-        options.completed_callback = nil
+        // GPU-Zeit von Celestes Command Buffern über den Kit-Rückruf (M4a.3).
+        options.completed_callback = unsafeBitCast(celesteCommandBufferCompleted, to: UnsafeMutableRawPointer.self)
         options.completed_userdata = nil
 
         let initStart = DispatchTime.now()

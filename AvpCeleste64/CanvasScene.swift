@@ -40,6 +40,11 @@ nonisolated final class CanvasScene {
     private var placementFrames = 0
     private var frozen = false
     private var eyesLogged = false
+    // Erst nach dem Verankern zeigen (in der Verankerungsphase ginge die Fläche mit dem Kopf
+    // mit, M4a.2), dann über fadeInFrames einblenden; vorher bleibt nur der Grund-Clear.
+    private var fadeFrames = 0
+    static let fadeInFrames = 27    // rund 0,3 s bei 90 Hz
+    private var fadeLogged = false
 
     init?(device: MTLDevice, colorFormat: MTLPixelFormat, depthFormat: MTLPixelFormat, viewCount: Int,
           texture: MTLTexture, fovDegrees: Float, nearest: Bool) {
@@ -177,7 +182,13 @@ nonisolated final class CanvasScene {
         guard let deviceAnchor else { return }
         let anchorTransform = deviceAnchor.originFromAnchorTransform
         place(anchor: anchorTransform)
-        guard let center else { return }
+        guard let center, frozen else { return }   // vor dem Verankern nichts zeichnen
+        var fade = min(1, Float(fadeFrames) / Float(Self.fadeInFrames))
+        if fadeFrames <= Self.fadeInFrames { fadeFrames += 1 }
+        if !fadeLogged, fade >= 1 {
+            fadeLogged = true
+            c64Record("[c64-canvas] sichtbar: Einblendung nach \(Self.fadeInFrames) Frames abgeschlossen")
+        }
         var matrices = [matrix_identity_float4x4, matrix_identity_float4x4]
         for (slot, viewIndex) in viewIndices.prefix(2).enumerated() {
             let viewMatrix = (anchorTransform * views[slot].transform).inverse
@@ -204,6 +215,7 @@ nonisolated final class CanvasScene {
         encoder.setVertexBytes(&uniforms, length: MemoryLayout<TestUniforms>.stride, index: 0)
         encoder.setFragmentTexture(srgbView, index: 0)
         encoder.setFragmentSamplerState(sampler, index: 0)
+        encoder.setFragmentBytes(&fade, length: MemoryLayout<Float>.size, index: 0)
         encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
         encoder.popDebugGroup()
     }

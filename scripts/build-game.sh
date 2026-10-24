@@ -150,11 +150,13 @@ if [[ "$MODE" == "mac-check" ]]; then
     step "Mac check: build and run the C program"
     # The Metal helper of the MacHost provides device, queue, the canvas texture and the pixel
     # read-back (Objective-C, ARC); the C program itself stays plain C.
-    clang -std=gnu17 -Wall -Wextra -fobjc-arc -framework Metal -framework Foundation \
+    clang -std=gnu17 -Wall -Wextra -fobjc-arc -framework Metal -framework Foundation -framework CoreGraphics -framework ImageIO \
         -o "$BUILD_DIR/mac-check" "$PROJ_DIR/mac-check/main.c" "$ROOT/Tools/Celeste64.MacHost/native/k6d_metal.m"
     RUN_LOG="$BUILD_DIR/mac-check-run.log"
     echo "-- run (log: $RUN_LOG)"
-    DYLD_LIBRARY_PATH="$STAGE" "$BUILD_DIR/mac-check" "$DYLIB" "$STAGE" > "$RUN_LOG" 2>&1 || { echo "error: mac check run failed (exit $?)" >&2; tail -30 "$RUN_LOG" >&2; exit 1; }
+    # --dump: the title screen on the canvas as PNG and raw RGBA, the Mac reference for the colour
+    # comparison with the device (scripts/compare-canvas.py <mac.rgba> <device.rgba>).
+    DYLD_LIBRARY_PATH="$STAGE" "$BUILD_DIR/mac-check" "$DYLIB" "$STAGE" --dump "$BUILD_DIR/mac-check-canvas" > "$RUN_LOG" 2>&1 || { echo "error: mac check run failed (exit $?)" >&2; tail -30 "$RUN_LOG" >&2; exit 1; }
     grep -E "^mac-check:|Foster: |SDL: |Graphics Driver|visionOS kit|celeste-visionos|Loaded Assets|Exception|rror" "$RUN_LOG" | head -40
     ERR_LOG="$BUILD_DIR/mac-check-error.log"
     echo "-- error case (log: $ERR_LOG)"

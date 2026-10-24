@@ -6,11 +6,13 @@
  * queue), back to the window, celeste_end. Built and run by scripts/build-game.sh mac-check,
  * together with Tools/Celeste64.MacHost/native/k6d_metal.m for the Metal objects.
  *
- *   mac-check <path to Celeste64.VisionOS.dylib> <content root>
+ *   mac-check <path to Celeste64.VisionOS.dylib> <content root> [--dump <base path>]
  *   mac-check <path to Celeste64.VisionOS.dylib> --bad-content
  *
  * The second form passes a content root that does not exist: celeste_init must return -1 with
- * a text in celeste_last_error instead of crashing. Exit code 0 when every check passes.
+ * a text in celeste_last_error instead of crashing. --dump writes the canvas after the first
+ * canvas ticks as <base>.png and <base>.rgba (reference for scripts/compare-canvas.py against
+ * the dump the device writes). Exit code 0 when every check passes.
  */
 
 #include <dlfcn.h>
@@ -25,10 +27,13 @@ void *k6d_metal_device(void);
 void *k6d_metal_queue(void *device);
 void *k6d_metal_texture_2d(void *device, unsigned width, unsigned height, int pixel_format_view);
 int k6d_metal_read_pixel(void *queue, void *texture, unsigned x, unsigned y, unsigned char out[4]);
+int k6d_metal_write_canvas(void *queue, void *texture, const char *png_path, const char *raw_path, double mean_rgb[3]);
 void k6d_metal_release(void *object);
 
 #define TICKS_WINDOW 60     /* ticks into the hidden window: Startup loads in tick 5, title after the wipe */
-#define TICKS_CANVAS 60     /* ticks into the canvas before the first read-back */
+#define TICKS_CANVAS 548    /* ticks into the canvas before the first read-back and the dump: game frame 608,
+                               the same frame at which the device writes its dump (8 main-thread ticks plus
+                               600 on the render thread), so the title screen is in the same state */
 #define TICKS_CANVAS_2 30   /* more canvas ticks before the second read-back (does the image change?) */
 #define TICKS_AFTER 30      /* ticks after celeste_clear_canvas (the canvas must not change any more) */
 #define HZ 90.0
@@ -232,6 +237,20 @@ int main(int argc, char **argv)
     printf("mac-check: canvas after %d ticks: center=(%u,%u,%u,%u) letterbox=(%u,%u,%u,%u)\n", TICKS_CANVAS,
            center1[0], center1[1], center1[2], center1[3], edge[0], edge[1], edge[2], edge[3]);
     int canvas_ok = nonblack(center1) && !nonblack(edge) && edge[3] == 255;
+    /* Reference image for the colour comparison with the device (scripts/compare-canvas.py). */
+    for (int i = 3; i + 1 < argc; i++) {
+        if (strcmp(argv[i], "--dump") == 0) {
+            char png[1024], raw[1024];
+            snprintf(png, sizeof png, "%s.png", argv[i + 1]);
+            snprintf(raw, sizeof raw, "%s.rgba", argv[i + 1]);
+            double mean[3] = {0, 0, 0};
+            int ok = k6d_metal_write_canvas(queue, canvas, png, raw, mean);
+            printf("mac-check: canvas dump ok=%d %dx%d mean(rgb)=%.1f,%.1f,%.1f -> %s / %s\n", ok, CANVAS_W, CANVAS_H, mean[0], mean[1], mean[2], png, raw);
+            if (!ok) {
+                return 17;
+            }
+        }
+    }
     if (!failed) {
         n = run_ticks(celeste_tick, celeste_last_error, TICKS_CANVAS_2, "canvas", &ticks_exit);
         if (n < 0) failed = 1; else ticks_ok += n;

@@ -31,7 +31,8 @@ fi
 build_k6d_helper() {
   local out="$1" src="$ROOT/Tools/Celeste64.MacHost/native/k6d_metal.m" dylib="$1/libk6dmetal.dylib"
   if [[ ! -f "$dylib" || "$src" -nt "$dylib" ]]; then
-    clang -std=gnu17 -Wall -Wextra -O1 -fobjc-arc -dynamiclib -framework Metal -framework Foundation \
+    # CoreGraphics und ImageIO für den Leinwand-Dump (k6d_metal_write_canvas, M4a.3)
+    clang -std=gnu17 -Wall -Wextra -O1 -fobjc-arc -dynamiclib -framework Metal -framework Foundation -framework CoreGraphics -framework ImageIO \
       -install_name @rpath/libk6dmetal.dylib "$src" -o "$dylib"
     echo "   libk6dmetal.dylib gebaut"
   fi
