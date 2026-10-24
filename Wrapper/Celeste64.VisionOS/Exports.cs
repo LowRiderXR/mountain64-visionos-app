@@ -21,6 +21,10 @@ public struct CelesteInitOptions
 	public IntPtr CompletedCallback;
 	public IntPtr CompletedUserdata;
 	public IntPtr ContentRoot;
+	// Added later; a host that passes the size of the struct up to ContentRoot gets the defaults.
+	public int InternalWidth;
+	public int InternalHeight;
+	public int EdgeLineWidth;
 }
 
 /// <summary>
@@ -100,6 +104,18 @@ public static unsafe class Exports
 	private const nuint MTLTextureUsageShaderRead = 0x1;
 	private const nuint MTLTextureUsageRenderTarget = 0x4;
 	private const nuint MTLHazardTrackingModeTracked = 2;
+
+	// Limits of the internal resolution and the outline width (celeste.h). Width a multiple of
+	// 16 and height a multiple of 8: 16:9 steps such as 640x360 and 1920x1080 have heights that
+	// are not multiples of 16.
+	private const int MinInternalWidth = 640;
+	private const int MinInternalHeight = 360;
+	private const int MaxInternalWidth = 4096;
+	private const int MaxInternalHeight = 2304;
+	private const int InternalWidthStep = 16;
+	private const int InternalHeightStep = 8;
+	private const int MinEdgeLineWidth = 1;
+	private const int MaxEdgeLineWidth = 4;
 
 	/// <summary>
 	/// Points the game's output pass at the host's texture: a Foster texture over the MTLTexture
@@ -337,8 +353,27 @@ public static unsafe class Exports
 		{
 			if (game != null)
 				return SetError("celeste_init: the game already exists; call celeste_end first");
-			if (options == null || options->Size != sizeof(CelesteInitOptions))
-				return SetError($"celeste_init: options.size must be {sizeof(CelesteInitOptions)}");
+			if (options == null)
+				return SetError("celeste_init: options is null");
+			// Two sizes are valid: the struct up to content_root (older hosts, defaults for the
+			// rest) and the whole struct.
+			var sizeWithoutResolution = (int)((byte*)&options->InternalWidth - (byte*)options);
+			var hasResolution = options->Size == sizeof(CelesteInitOptions);
+			if (!hasResolution && options->Size != sizeWithoutResolution)
+				return SetError($"celeste_init: options.size must be {sizeWithoutResolution} or {sizeof(CelesteInitOptions)}");
+
+			// Internal resolution and outline width: 0 means default; anything else is checked.
+			var internalWidth = hasResolution && options->InternalWidth != 0 ? options->InternalWidth : MinInternalWidth;
+			var internalHeight = hasResolution && options->InternalHeight != 0 ? options->InternalHeight : MinInternalHeight;
+			var edgeLineWidth = hasResolution && options->EdgeLineWidth != 0 ? options->EdgeLineWidth : MinEdgeLineWidth;
+			if (internalWidth < MinInternalWidth || internalHeight < MinInternalHeight)
+				return SetError($"celeste_init: internal resolution {internalWidth}x{internalHeight} is below the minimum {MinInternalWidth}x{MinInternalHeight}");
+			if (internalWidth > MaxInternalWidth || internalHeight > MaxInternalHeight)
+				return SetError($"celeste_init: internal resolution {internalWidth}x{internalHeight} is above the maximum {MaxInternalWidth}x{MaxInternalHeight}");
+			if (internalWidth % InternalWidthStep != 0 || internalHeight % InternalHeightStep != 0)
+				return SetError($"celeste_init: internal resolution {internalWidth}x{internalHeight} must have a width that is a multiple of {InternalWidthStep} and a height that is a multiple of {InternalHeightStep}");
+			if (edgeLineWidth < MinEdgeLineWidth || edgeLineWidth > MaxEdgeLineWidth)
+				return SetError($"celeste_init: edge_line_width {edgeLineWidth} must be {MinEdgeLineWidth} to {MaxEdgeLineWidth}");
 
 			var contentRoot = Marshal.PtrToStringUTF8(options->ContentRoot);
 			if (string.IsNullOrEmpty(contentRoot))
@@ -380,7 +415,13 @@ public static unsafe class Exports
 			ticks = 0;
 			lastTickThreadId = 0;
 			Array.Clear(controllerConnected);
-			Log.Info($"{Tag} init thread={initThreadId} contentRoot=\"{contentRoot}\" baseDirectory=\"{AppContext.BaseDirectory}\" hiddenWindow={options->HiddenWindow} depthClip={options->DepthClip} metalDevice=0x{options->MetalDevice:x} queue=0x{options->MetalCommandQueue:x} callback={(options->CompletedCallback != IntPtr.Zero ? 1 : 0)}");
+
+			// The game reads its resolution from these when it creates its targets (Game.Width,
+			// Game.Height, Game.RelativeScale) and the outline width in its edge pass.
+			VisionOSKit.InternalWidth = internalWidth;
+			VisionOSKit.InternalHeight = internalHeight;
+			VisionOSKit.EdgeLineWidth = edgeLineWidth;
+			Log.Info($"{Tag} init thread={initThreadId} contentRoot=\"{contentRoot}\" baseDirectory=\"{AppContext.BaseDirectory}\" hiddenWindow={options->HiddenWindow} depthClip={options->DepthClip} metalDevice=0x{options->MetalDevice:x} queue=0x{options->MetalCommandQueue:x} callback={(options->CompletedCallback != IntPtr.Zero ? 1 : 0)} internal={internalWidth}x{internalHeight} edgeLine={edgeLineWidth} optionsSize={options->Size}");
 
 			var created = new Game(new(
 				ApplicationName: Game.GamePath,
@@ -400,7 +441,7 @@ public static unsafe class Exports
 			}
 			created.Begin();
 			game = created;
-			Log.Info($"{Tag} init ok userPath=\"{created.UserPath}\" window={created.Window.Width}x{created.Window.Height} pixels={created.Window.WidthInPixels}x{created.Window.HeightInPixels} capabilities={created.GraphicsDevice.Capabilities}");
+			Log.Info($"{Tag} init ok userPath=\"{created.UserPath}\" window={created.Window.Width}x{created.Window.Height} pixels={created.Window.WidthInPixels}x{created.Window.HeightInPixels} internal={Game.Width}x{Game.Height} relativeScale={Game.RelativeScale:F3} edgeLine={VisionOSKit.EdgeLineWidth} capabilities={created.GraphicsDevice.Capabilities}");
 			return Ok;
 		}
 		catch (Exception e)

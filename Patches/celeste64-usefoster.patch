@@ -46,6 +46,27 @@ index d210edd..bc09646 100644
    <PropertyGroup Condition="($(RuntimeIdentifier) == '' and $([MSBuild]::IsOSPlatform('Linux'))) or $(RuntimeIdentifier.StartsWith('linux'))">
      <IsLinux>true</IsLinux>
    </PropertyGroup>
+diff --git a/Source/Actors/Cutscene.cs b/Source/Actors/Cutscene.cs
+index 3b98afe..111db92 100644
+--- a/Source/Actors/Cutscene.cs
++++ b/Source/Actors/Cutscene.cs
+@@ -204,11 +204,11 @@ public class Cutscene : Actor, IHaveUI
+ 
+ 	public void RenderUI(Batcher batch, Rect bounds)
+ 	{
+-		const float BarSize = 40 * Game.RelativeScale;
+-		const float PortraitSize = 128 * Game.RelativeScale;
+-		const float TopOffset = 100 * Game.RelativeScale;
+-		const float EaseOffset = 32 * Game.RelativeScale;
+-		const float Padding = 8 * Game.RelativeScale;
++		float BarSize = 40 * Game.RelativeScale;
++		float PortraitSize = 128 * Game.RelativeScale;
++		float TopOffset = 100 * Game.RelativeScale;
++		float EaseOffset = 32 * Game.RelativeScale;
++		float Padding = 8 * Game.RelativeScale;
+ 
+ 		batch.Rect(new Rect(bounds.X, bounds.Y, bounds.Width, BarSize * ease), Color.Black);
+ 		batch.Rect(new Rect(bounds.X, bounds.Bottom - BarSize * ease, bounds.Width, BarSize * ease), Color.Black);
 diff --git a/Source/Audio/Audio.cs b/Source/Audio/Audio.cs
 index bbbc4b0..d6db1bd 100644
 --- a/Source/Audio/Audio.cs
@@ -74,11 +95,54 @@ index bbbc4b0..d6db1bd 100644
  
  		banks.Add(bank);
  		bank.getEventList(out var evs);
+diff --git a/Source/Data/Assets.cs b/Source/Data/Assets.cs
+index e96e261..e8c3f6f 100644
+--- a/Source/Data/Assets.cs
++++ b/Source/Data/Assets.cs
+@@ -7,7 +7,7 @@ namespace Celeste64;
+ 
+ public static partial class Assets
+ {
+-	public const float FontSize = Game.RelativeScale * 16;
++	public static readonly float FontSize = Game.RelativeScale * 16;
+ 	public const string AssetFolder = "Content";
+ 
+ 	private static string? contentPath = null;
 diff --git a/Source/Game.cs b/Source/Game.cs
-index 312df59..a626733 100644
+index 312df59..fe2289e 100644
 --- a/Source/Game.cs
 +++ b/Source/Game.cs
-@@ -66,7 +66,12 @@ public class Game : App
+@@ -37,15 +37,29 @@ public class Game : App
+ 
+ 	public const string GamePath = "Celeste64";
+ 	public const string GameTitle = "Celeste 64: Fragments of the Mountain";
++#if VISIONOS_KIT
++	// visionOS port: the host chooses the internal resolution before the game is created
++	// (VisionOSKit.InternalWidth and InternalHeight). Properties rather than readonly fields,
++	// because Game's type initializer may run before the host has set the values (the wrapper
++	// reads VersionString first). Values derived from these are static readonly fields in
++	// their classes, which are first touched after the game exists.
++	public static int Width => VisionOSKit.InternalWidth;
++	public static int Height => VisionOSKit.InternalHeight;
++#else
+ 	public const int Width = 640;
+ 	public const int Height = 360;
++#endif
+ 	public static readonly Version Version = typeof(Game).Assembly.GetName().Version!;
+ 	public static readonly string VersionString = $"v.{Version.Major}.{Version.Minor}.{Version.Build}";
+ 
+ 	/// <summary>
+ 	/// Used by various rendering elements to proportionally scale if you change the default game resolution
+ 	/// </summary>
++#if VISIONOS_KIT
++	public static float RelativeScale => Height / 360.0f;
++#else
+ 	public const float RelativeScale = Height / 360.0f;
++#endif
+ 
+ 	private static Game? instance;
+ 	public static Game Instance => instance ?? throw new Exception("Game isn't running");
+@@ -66,7 +80,12 @@ public class Game : App
  
  	public Game(AppConfig config) : base(config)
  	{
@@ -91,7 +155,7 @@ index 312df59..a626733 100644
  		batcher = new(GraphicsDevice);
  
  		GraphicsDevice.VSync = true;
-@@ -116,6 +121,9 @@ public class Game : App
+@@ -116,6 +135,9 @@ public class Game : App
  
  	protected override void Update()
  	{
@@ -101,7 +165,7 @@ index 312df59..a626733 100644
  		Audio.Update();
  
  		// toggle mouse camera mode
-@@ -316,9 +324,20 @@ public class Game : App
+@@ -316,9 +338,20 @@ public class Game : App
  
  	protected override void Render()
  	{
@@ -125,7 +189,7 @@ index 312df59..a626733 100644
  		{
  			// draw the world to the target
  			if (scenes.TryPeek(out var scene))
-@@ -332,16 +351,31 @@ public class Game : App
+@@ -332,16 +365,31 @@ public class Game : App
  				batcher.Clear();
  			}
  
@@ -161,6 +225,36 @@ index 312df59..a626733 100644
  	}
  
  	private FMOD.RESULT MusicTimelineCallback(FMOD.Studio.EVENT_CALLBACK_TYPE type, IntPtr _event, IntPtr parameters)
+diff --git a/Source/Helpers/Menu.cs b/Source/Helpers/Menu.cs
+index 4f614cb..ae41dc8 100644
+--- a/Source/Helpers/Menu.cs
++++ b/Source/Helpers/Menu.cs
+@@ -3,8 +3,8 @@ namespace Celeste64;
+ 
+ public class Menu(Controls controls)
+ {
+-	public const float Spacing = 4 * Game.RelativeScale;
+-	public const float SpacerHeight = 12 * Game.RelativeScale;
++	public static readonly float Spacing = 4 * Game.RelativeScale;
++	public static readonly float SpacerHeight = 12 * Game.RelativeScale;
+ 	public const float TitleScale = 0.75f;
+ 
+ 	public abstract class Item
+diff --git a/Source/Helpers/UI.cs b/Source/Helpers/UI.cs
+index 7a5517e..da0c59f 100644
+--- a/Source/Helpers/UI.cs
++++ b/Source/Helpers/UI.cs
+@@ -3,8 +3,8 @@ namespace Celeste64;
+ 
+ public static class UI
+ {
+-	public const float IconSize = 30 * Game.RelativeScale;
+-	public const float PromptSize = 28 * Game.RelativeScale;
++	public static readonly float IconSize = 30 * Game.RelativeScale;
++	public static readonly float PromptSize = 28 * Game.RelativeScale;
+ 
+ 	public static void Text(Batcher batch, string text, in Vec2 at, in Vec2 justify, in Color color)
+ 	{
 diff --git a/Source/Program.cs b/Source/Program.cs
 index b06f359..73ff61f 100644
 --- a/Source/Program.cs
@@ -197,12 +291,70 @@ index b06f359..73ff61f 100644
  			errorLogPath = game.UserPath;
  			game.Run();
  		}
+diff --git a/Source/Scenes/Overworld.cs b/Source/Scenes/Overworld.cs
+index 697d6fe..7cb8e77 100644
+--- a/Source/Scenes/Overworld.cs
++++ b/Source/Scenes/Overworld.cs
+@@ -3,8 +3,8 @@ namespace Celeste64;
+ 
+ public class Overworld : Scene
+ {
+-	public const int CardWidth = (int)(480 * Game.RelativeScale);
+-	public const int CardHeight = (int)(320 * Game.RelativeScale);
++	public static readonly int CardWidth = (int)(480 * Game.RelativeScale);
++	public static readonly int CardHeight = (int)(320 * Game.RelativeScale);
+ 
+ 	public class Entry
+ 	{
+@@ -40,7 +40,7 @@ public class Overworld : Scene
+ 
+ 		public void Redraw(Batcher batch, float shine)
+ 		{
+-			const float Padding = 16 * Game.RelativeScale;
++			float Padding = 16 * Game.RelativeScale;
+ 
+ 			Target.Clear(Color.Transparent);
+ 			batch.PushSampler(new(TextureFilter.Linear, TextureWrap.Clamp, TextureWrap.Clamp));
+diff --git a/Source/Scenes/World.cs b/Source/Scenes/World.cs
+index bdfb740..abcdafb 100644
+--- a/Source/Scenes/World.cs
++++ b/Source/Scenes/World.cs
+@@ -872,9 +872,15 @@ public class World : Scene
+ 			// apply post fx
+ 			postMaterial.CopyFrom(Assets.Materials["Edge"]);
+ 			postMaterial.Fragment.Samplers[1] = new(target.Attachments[1], new(TextureFilter.Nearest, TextureWrap.Clamp, TextureWrap.Clamp));
++#if VISIONOS_KIT
++			// visionOS port: outline width in target pixels, chosen by the host with the resolution
++			var edgeLineWidth = (float)VisionOSKit.EdgeLineWidth;
++#else
++			var edgeLineWidth = 1.0f;
++#endif
+ 			postMaterial.Fragment.SetUniformBuffer(new UniformBuffers.EdgeFragment()
+ 			{
+-				Pixel = new Vec2(1.0f / postTarget.Width, 1.0f / postTarget.Height),
++				Pixel = new Vec2(edgeLineWidth / postTarget.Width, edgeLineWidth / postTarget.Height),
+ 				Edge = new Color(0x110d33).ToVector4()
+ 			});
+ 			batch.PushMaterial(postMaterial);
+diff --git a/Source/Screenwipes/SpotlightWipe.cs b/Source/Screenwipes/SpotlightWipe.cs
+index 650a35e..68b1c05 100644
+--- a/Source/Screenwipes/SpotlightWipe.cs
++++ b/Source/Screenwipes/SpotlightWipe.cs
+@@ -6,7 +6,7 @@ public class SpotlightWipe : ScreenWipe
+ 	public Vec2? FocusPoint;
+ 	public float Modifier = 0;
+ 	public bool Linear = false;
+-	private const float SmallCircleRadius = 96 * Game.RelativeScale;
++	private static readonly float SmallCircleRadius = 96 * Game.RelativeScale;
+ 	private const float EaseDuration = 1.2f;
+ 	private const float EaseOpenPercent = 0.3f; // how long (in percent) it eases the small circle open
+ 	private const float EaseClosePercent = 0.3f; // how long (in percent) it eases the entire screen
 diff --git a/Source/VisionOSKit.cs b/Source/VisionOSKit.cs
 new file mode 100644
-index 0000000..2db851c
+index 0000000..8f2d3b9
 --- /dev/null
 +++ b/Source/VisionOSKit.cs
-@@ -0,0 +1,116 @@
+@@ -0,0 +1,132 @@
 +#if VISIONOS_KIT
 +// VisionOSKit.cs — Schalter des visionOS-Ports für Mac-Läufe (K6b, nur mit UseLocalFoster gebaut).
 +//
@@ -225,6 +377,22 @@ index 0000000..2db851c
 +	private static long completedLast;
 +	private static readonly Stopwatch timer = Stopwatch.StartNew();
 +	private static bool timing;
++
++	/// <summary>
++	/// Internal resolution of the game's world target, set by the host before the game is
++	/// created (Celeste's own value is 640x360). Game.Width, Game.Height and everything scaled
++	/// by Game.RelativeScale follow these values. The targets are created once with the game,
++	/// so a change after that has no effect.
++	/// </summary>
++	public static int InternalWidth { get; set; } = 640;
++	public static int InternalHeight { get; set; } = 360;
++
++	/// <summary>
++	/// Width of the outline drawn by the edge post pass, in pixels of the world target (1 is
++	/// Celeste's one-texel outline; the host raises it with the internal resolution). The edge
++	/// shader samples the depth at this offset.
++	/// </summary>
++	public static int EdgeLineWidth { get; set; } = 1;
 +
 +	/// <summary>Zusatz-Flags für die AppConfig aus den Umgebungsvariablen.</summary>
 +	public static AppFlags Flags

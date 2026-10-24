@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 """compare-canvas.py: compare two canvas dumps (raw RGBA8, rows top-down) by colour statistics.
 
-Usage: scripts/compare-canvas.py <a.rgba> <b.rgba> [--width 1280]
+Usage: scripts/compare-canvas.py <a.rgba> <b.rgba> [--width 1280] [--width-b <width of b>]
 
 The dumps come from scripts/build-game.sh mac-check (build/wrapper/mac-check-canvas.rgba, the
 title screen on the Mac) and from the device (Documents/c64-canvas-<machine>-tick600.rgba, written
 by the app in mode C64_CELESTE=play). The title screen is animated, so the comparison is
 statistical, not byte by byte: mean per channel, a 16-bin luminance histogram and its
-intersection, the share of black pixels. The height follows from the file size; when one dump is
-taller (mac-check uses a 1280x800 canvas with letterbox bars of 40 rows), the extra rows are
-cropped symmetrically before comparing. Only the standard library is used.
+intersection, the share of black pixels. The height follows from the file size; when one dump has
+a taller shape (mac-check's default canvas is 1280x800 with letterbox bars of 40 rows), its extra
+rows are cropped symmetrically to the other's shape before comparing. The two dumps may differ in
+size (--width-b for the second one; the statistics are per pixel). Only the standard library is
+used.
 """
 
 import struct
@@ -49,23 +51,38 @@ def stats(data):
 
 
 def main():
-    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    args = []
     width = 1280
-    for i, a in enumerate(sys.argv):
-        if a == "--width":
-            width = int(sys.argv[i + 1])
+    width_b = None
+    argv = sys.argv[1:]
+    i = 0
+    while i < len(argv):
+        if argv[i] == "--width":
+            width = int(argv[i + 1])
+            i += 2
+        elif argv[i] == "--width-b":
+            width_b = int(argv[i + 1])
+            i += 2
+        else:
+            args.append(argv[i])
+            i += 1
+    if width_b is None:
+        width_b = width
     if len(args) != 2:
         sys.exit(__doc__)
     a, ha = load(args[0], width)
-    b, hb = load(args[1], width)
-    h = min(ha, hb)
-    a = crop(a, width, ha, h)
-    b = crop(b, width, hb, h)
+    b, hb = load(args[1], width_b)
+    # Crop the taller shape to the flatter one (letterbox bars), rows only.
+    aspect = min(ha / width, hb / width_b)
+    h_a = min(ha, round(width * aspect))
+    h_b = min(hb, round(width_b * aspect))
+    a = crop(a, width, ha, h_a)
+    b = crop(b, width_b, hb, h_b)
     ma, hista, blacka = stats(a)
     mb, histb, blackb = stats(b)
     intersection = sum(min(x, y) for x, y in zip(hista, histb))
-    print(f"A {args[0]}: {width}x{ha} (compared {h} rows) mean rgb = {ma[0]:.1f} {ma[1]:.1f} {ma[2]:.1f} black = {blacka * 100:.1f}%")
-    print(f"B {args[1]}: {width}x{hb} (compared {h} rows) mean rgb = {mb[0]:.1f} {mb[1]:.1f} {mb[2]:.1f} black = {blackb * 100:.1f}%")
+    print(f"A {args[0]}: {width}x{ha} (compared {h_a} rows) mean rgb = {ma[0]:.1f} {ma[1]:.1f} {ma[2]:.1f} black = {blacka * 100:.1f}%")
+    print(f"B {args[1]}: {width_b}x{hb} (compared {h_b} rows) mean rgb = {mb[0]:.1f} {mb[1]:.1f} {mb[2]:.1f} black = {blackb * 100:.1f}%")
     print(f"mean difference (B - A) = {mb[0] - ma[0]:+.1f} {mb[1] - ma[1]:+.1f} {mb[2] - ma[2]:+.1f}")
     print("luminance histogram (16 bins, percent):")
     print("  A " + " ".join(f"{x * 100:5.1f}" for x in hista))

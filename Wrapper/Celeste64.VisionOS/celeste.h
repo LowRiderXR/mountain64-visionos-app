@@ -25,7 +25,8 @@ extern "C" {
 #endif
 
 /* Options for celeste_init. Zero the struct, set size to sizeof(celeste_init_options), then the
- * fields you need. Pointers that are NULL are not used. */
+ * fields you need. Pointers that are NULL are not used. A size that ends after content_root is
+ * accepted as well (older hosts); the fields after it then take their defaults. */
 typedef struct celeste_init_options {
     int32_t size;                 /* sizeof(celeste_init_options), for versioning */
     int32_t hidden_window;        /* 1: SDL window stays hidden (the host shows the image) */
@@ -36,6 +37,17 @@ typedef struct celeste_init_options {
     void *completed_callback;     /* void (*)(void *userdata, void *mtl_command_buffer), or NULL */
     void *completed_userdata;
     const char *content_root;     /* UTF-8 directory that contains "Content/"; required */
+    /* Internal resolution of the game's world image (0 = 640x360, the original). The game draws
+     * its 3D world, HUD and text at this size and scales them with it; the canvas should have the
+     * same size, otherwise the image is letterboxed into it. Fixed for the lifetime of the game.
+     * At least 640x360, at most 4096x2304, width a multiple of 16, height a multiple of 8;
+     * anything else makes celeste_init fail with a text. */
+    int32_t internal_width;
+    int32_t internal_height;
+    /* Width of the outline in the game's edge pass, in pixels of the world image: 1 to 4
+     * (0 = 1, the original one-pixel outline). Whole numbers only; a host that offers "auto"
+     * resolves it to round(internal_height / 360) itself. */
+    int32_t edge_line_width;
 } celeste_init_options;
 
 /* Capabilities of the loaded SDL as Foster reports them. kit_sdl_loaded is probed by export name

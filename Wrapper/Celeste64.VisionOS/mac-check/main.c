@@ -7,17 +7,29 @@
  * together with Tools/Celeste64.MacHost/native/k6d_metal.m for the Metal objects.
  *
  *   mac-check <path to Celeste64.VisionOS.dylib> <content root> [--dump <base path>]
+ *             [--res <W>x<H>] [--line <1..4>|auto]
+ *   mac-check <path to Celeste64.VisionOS.dylib> <content root> --bad-options
  *   mac-check <path to Celeste64.VisionOS.dylib> --bad-content
  *
- * The second form passes a content root that does not exist: celeste_init must return -1 with
- * a text in celeste_last_error instead of crashing. --dump writes the canvas after the first
- * canvas ticks as <base>.png and <base>.rgba (reference for scripts/compare-canvas.py against
- * the dump the device writes). Exit code 0 when every check passes.
+ * --res sets the game's internal resolution (celeste_init_options.internal_width/height) and
+ * --line the outline width (edge_line_width; auto = round(height / 360)). The canvas has the
+ * same size as the internal resolution, except at 640x360, where it stays 1280x800 (the 16:10
+ * canvas letterboxes the 16:9 image, which the run checks); without --res the defaults apply.
+ * --bad-options drives celeste_init with invalid resolutions, an invalid line width and a wrong
+ * struct size (each must return -1 with a text), then with the struct size of an older host
+ * (must succeed with the defaults). --bad-content passes a content root that does not exist:
+ * celeste_init must return -1 with a text in celeste_last_error instead of crashing. --dump
+ * writes the canvas after the first canvas ticks as <base>.png and <base>.rgba (reference for
+ * scripts/compare-canvas.py against the dump the device writes). Exit code 0 when every check
+ * passes.
  */
 
 #include <dlfcn.h>
+#include <math.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "../celeste.h"
@@ -37,9 +49,11 @@ void k6d_metal_release(void *object);
 #define TICKS_CANVAS_2 30   /* more canvas ticks before the second read-back (does the image change?) */
 #define TICKS_AFTER 30      /* ticks after celeste_clear_canvas (the canvas must not change any more) */
 #define HZ 90.0
-/* Canvas with a 16:10 shape, so the game's 16:9 image is letterboxed: bars of 40 rows top and bottom. */
+/* Default canvas with a 16:10 shape, so the game's 16:9 image is letterboxed: bars of 40 rows top
+   and bottom. With --res the canvas takes the internal resolution (640x360 keeps this default). */
 #define CANVAS_W 1280
 #define CANVAS_H 800
+#define TICKS_OLD_SIZE 8    /* ticks of the run with the older struct size (--bad-options) */
 
 typedef const char *(*version_fn)(void);
 typedef int32_t (*set_log_fn)(celeste_log_fn, void *);
@@ -96,12 +110,92 @@ static int nonblack(const unsigned char p[4])
     return p[0] != 0 || p[1] != 0 || p[2] != 0;
 }
 
+/* One celeste_init that must fail: rc -1 and a text. Returns 1 when it behaved. */
+static int expect_init_failure(init_fn celeste_init, last_error_fn celeste_last_error, const celeste_init_options *options, const char *label)
+{
+    int32_t rc = celeste_init(options);
+    const char *error = celeste_last_error();
+    printf("mac-check: celeste_init %s: rc=%d last_error=\"%s\"\n", label, rc, error ? error : "(null)");
+    if (rc != -1 || error == NULL || error[0] == '\0') {
+        fprintf(stderr, "expected rc=-1 and an error text for %s\n", label);
+        return 0;
+    }
+    return 1;
+}
+
+/* Invalid options one by one, then the struct size of an older host with the defaults. */
+static int run_bad_options(init_fn celeste_init, tick_fn celeste_tick, end_fn celeste_end, last_error_fn celeste_last_error, const celeste_init_options *base)
+{
+    celeste_init_options o = *base;
+    int ok = 1;
+
+    o = *base; o.internal_width = 641; o.internal_height = 360;
+    ok &= expect_init_failure(celeste_init, celeste_last_error, &o, "with 641x360 (width not a multiple of 16)");
+    o = *base; o.internal_width = 1920; o.internal_height = 1080; o.edge_line_width = 5;
+    ok &= expect_init_failure(celeste_init, celeste_last_error, &o, "with line width 5");
+    o = *base; o.internal_width = 4112; o.internal_height = 2304;
+    ok &= expect_init_failure(celeste_init, celeste_last_error, &o, "with 4112x2304 (above the maximum)");
+    o = *base; o.internal_width = 640; o.internal_height = 352;
+    ok &= expect_init_failure(celeste_init, celeste_last_error, &o, "with 640x352 (below the minimum)");
+    o = *base; o.size = 40;
+    ok &= expect_init_failure(celeste_init, celeste_last_error, &o, "with size 40");
+    if (!ok) {
+        return 0;
+    }
+
+    /* Older host: the struct ends after content_root; the game must start with 640x360 and line 1. */
+    o = *base;
+    o.size = (int32_t)offsetof(celeste_init_options, internal_width);
+    o.internal_width = 1920; o.internal_height = 1080; o.edge_line_width = 4;   /* beyond size: must be ignored */
+    int32_t rc = celeste_init(&o);
+    printf("mac-check: celeste_init with the older size %d: rc=%d%s%s\n", o.size, rc, rc ? " " : "", rc ? celeste_last_error() : "");
+    if (rc != 0) {
+        return 0;
+    }
+    int exits = 0;
+    int n = run_ticks(celeste_tick, celeste_last_error, TICKS_OLD_SIZE, "older size", &exits);
+    rc = celeste_end();
+    printf("mac-check: older size: ticks ok=%d of %d, celeste_end rc=%d\n", n, TICKS_OLD_SIZE, rc);
+    return n == TICKS_OLD_SIZE && rc == 0;
+}
+
 int main(int argc, char **argv)
 {
     if (argc < 3) {
-        fprintf(stderr, "usage: %s <path to Celeste64.VisionOS.dylib> (<content root> | --bad-content)\n", argv[0]);
+        fprintf(stderr, "usage: %s <path to Celeste64.VisionOS.dylib> (<content root> [--dump <base>] [--res <W>x<H>] [--line <N>|auto] [--bad-options] | --bad-content)\n", argv[0]);
         return 64;
     }
+    /* Options after the content root. */
+    const char *dump_base = NULL;
+    int res_w = 0, res_h = 0, line = 0, bad_options = 0, line_auto = 0;
+    for (int i = 3; i < argc; i++) {
+        if (strcmp(argv[i], "--dump") == 0 && i + 1 < argc) {
+            dump_base = argv[++i];
+        } else if (strcmp(argv[i], "--res") == 0 && i + 1 < argc) {
+            if (sscanf(argv[++i], "%dx%d", &res_w, &res_h) != 2) {
+                fprintf(stderr, "--res expects <W>x<H>\n");
+                return 64;
+            }
+        } else if (strcmp(argv[i], "--line") == 0 && i + 1 < argc) {
+            i++;
+            if (strcmp(argv[i], "auto") == 0) line_auto = 1; else line = atoi(argv[i]);
+        } else if (strcmp(argv[i], "--bad-options") == 0) {
+            bad_options = 1;
+        } else {
+            fprintf(stderr, "unknown option %s\n", argv[i]);
+            return 64;
+        }
+    }
+    if (line_auto) {
+        line = res_h > 0 ? (int)lround(res_h / 360.0) : 1;
+    }
+    /* Canvas: the internal resolution, except for the default 640x360 (letterboxed 1280x800). */
+    int canvas_w = CANVAS_W, canvas_h = CANVAS_H;
+    if (res_w > 0 && !(res_w == 640 && res_h == 360)) {
+        canvas_w = res_w;
+        canvas_h = res_h;
+    }
+    int letterboxed = canvas_w * 9 != canvas_h * 16;
     /* Line buffering keeps this program's lines in order with the game's log when stdout is a file. */
     setvbuf(stdout, NULL, _IOLBF, 0);
     void *handle = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);
@@ -177,6 +271,17 @@ int main(int argc, char **argv)
     options.metal_device = device;
     options.metal_command_queue = queue;
     options.content_root = argv[2];
+    if (bad_options) {
+        int ok = run_bad_options(celeste_init, celeste_tick, celeste_end, celeste_last_error, &options);
+        k6d_metal_release(queue);
+        k6d_metal_release(device);
+        printf("mac-check: bad options %s\n", ok ? "ok" : "FAILED");
+        return ok ? 0 : 18;
+    }
+    options.internal_width = res_w;
+    options.internal_height = res_h;
+    options.edge_line_width = line;
+    printf("mac-check: requested internal=%dx%d line=%d (0 = default), canvas=%dx%d%s\n", res_w, res_h, line, canvas_w, canvas_h, letterboxed ? " (letterboxed)" : "");
     int32_t rc = celeste_init(&options);
     if (rc != 0) {
         fprintf(stderr, "celeste_init failed: rc=%d %s\n", rc, celeste_last_error());
@@ -207,20 +312,20 @@ int main(int argc, char **argv)
     if (n < 0) failed = 1; else ticks_ok += n;
 
     /* Canvas: the game renders its output into the host texture instead of the window. */
-    void *canvas = k6d_metal_texture_2d(device, CANVAS_W, CANVAS_H, 1);
+    void *canvas = k6d_metal_texture_2d(device, (unsigned)canvas_w, (unsigned)canvas_h, 1);
     if (!canvas) {
         fprintf(stderr, "canvas texture could not be created\n");
         return 11;
     }
     /* Error case first: wrong size must be refused with a text. */
-    rc = celeste_set_canvas(canvas, CANVAS_W, CANVAS_H + 1);
+    rc = celeste_set_canvas(canvas, canvas_w, canvas_h + 1);
     printf("mac-check: celeste_set_canvas with wrong size: rc=%d last_error=\"%s\"\n", rc, celeste_last_error());
     if (rc != -1) {
         fprintf(stderr, "expected rc=-1 for a wrong size\n");
         return 12;
     }
-    rc = celeste_set_canvas(canvas, CANVAS_W, CANVAS_H);
-    printf("mac-check: celeste_set_canvas %dx%d: rc=%d%s%s\n", CANVAS_W, CANVAS_H, rc, rc ? " " : "", rc ? celeste_last_error() : "");
+    rc = celeste_set_canvas(canvas, canvas_w, canvas_h);
+    printf("mac-check: celeste_set_canvas %dx%d: rc=%d%s%s\n", canvas_w, canvas_h, rc, rc ? " " : "", rc ? celeste_last_error() : "");
     if (rc != 0) {
         return 12;
     }
@@ -229,33 +334,33 @@ int main(int argc, char **argv)
         n = run_ticks(celeste_tick, celeste_last_error, TICKS_CANVAS, "canvas", &ticks_exit);
         if (n < 0) failed = 1; else ticks_ok += n;
     }
-    if (!k6d_metal_read_pixel(queue, canvas, CANVAS_W / 2, CANVAS_H / 2, center1) ||
-        !k6d_metal_read_pixel(queue, canvas, CANVAS_W / 2, 10, edge)) {
+    if (!k6d_metal_read_pixel(queue, canvas, (unsigned)canvas_w / 2, (unsigned)canvas_h / 2, center1) ||
+        !k6d_metal_read_pixel(queue, canvas, (unsigned)canvas_w / 2, 10, edge)) {
         fprintf(stderr, "read-back failed\n");
         return 13;
     }
-    printf("mac-check: canvas after %d ticks: center=(%u,%u,%u,%u) letterbox=(%u,%u,%u,%u)\n", TICKS_CANVAS,
-           center1[0], center1[1], center1[2], center1[3], edge[0], edge[1], edge[2], edge[3]);
-    int canvas_ok = nonblack(center1) && !nonblack(edge) && edge[3] == 255;
+    printf("mac-check: canvas after %d ticks: center=(%u,%u,%u,%u) row10=(%u,%u,%u,%u)%s\n", TICKS_CANVAS,
+           center1[0], center1[1], center1[2], center1[3], edge[0], edge[1], edge[2], edge[3],
+           letterboxed ? " (row 10 is in the letterbox bar)" : " (no letterbox: canvas has the image's shape)");
+    /* The letterbox bar must be opaque black; without a bar only the centre is checked. */
+    int canvas_ok = nonblack(center1) && (!letterboxed || (!nonblack(edge) && edge[3] == 255));
     /* Reference image for the colour comparison with the device (scripts/compare-canvas.py). */
-    for (int i = 3; i + 1 < argc; i++) {
-        if (strcmp(argv[i], "--dump") == 0) {
-            char png[1024], raw[1024];
-            snprintf(png, sizeof png, "%s.png", argv[i + 1]);
-            snprintf(raw, sizeof raw, "%s.rgba", argv[i + 1]);
-            double mean[3] = {0, 0, 0};
-            int ok = k6d_metal_write_canvas(queue, canvas, png, raw, mean);
-            printf("mac-check: canvas dump ok=%d %dx%d mean(rgb)=%.1f,%.1f,%.1f -> %s / %s\n", ok, CANVAS_W, CANVAS_H, mean[0], mean[1], mean[2], png, raw);
-            if (!ok) {
-                return 17;
-            }
+    if (dump_base != NULL) {
+        char png[1024], raw[1024];
+        snprintf(png, sizeof png, "%s.png", dump_base);
+        snprintf(raw, sizeof raw, "%s.rgba", dump_base);
+        double mean[3] = {0, 0, 0};
+        int ok = k6d_metal_write_canvas(queue, canvas, png, raw, mean);
+        printf("mac-check: canvas dump ok=%d %dx%d mean(rgb)=%.1f,%.1f,%.1f -> %s / %s\n", ok, canvas_w, canvas_h, mean[0], mean[1], mean[2], png, raw);
+        if (!ok) {
+            return 17;
         }
     }
     if (!failed) {
         n = run_ticks(celeste_tick, celeste_last_error, TICKS_CANVAS_2, "canvas", &ticks_exit);
         if (n < 0) failed = 1; else ticks_ok += n;
     }
-    k6d_metal_read_pixel(queue, canvas, CANVAS_W / 2, CANVAS_H / 2, center2);
+    k6d_metal_read_pixel(queue, canvas, (unsigned)canvas_w / 2, (unsigned)canvas_h / 2, center2);
     printf("mac-check: canvas after %d more ticks: center=(%u,%u,%u,%u) %s\n", TICKS_CANVAS_2,
            center2[0], center2[1], center2[2], center2[3],
            memcmp(center1, center2, 4) ? "(changed: the game keeps rendering into the canvas)" : "(unchanged: static image or no further writes, not conclusive)");
@@ -270,7 +375,7 @@ int main(int argc, char **argv)
         n = run_ticks(celeste_tick, celeste_last_error, TICKS_AFTER, "window again", &ticks_exit);
         if (n < 0) failed = 1; else ticks_ok += n;
     }
-    k6d_metal_read_pixel(queue, canvas, CANVAS_W / 2, CANVAS_H / 2, center3);
+    k6d_metal_read_pixel(queue, canvas, (unsigned)canvas_w / 2, (unsigned)canvas_h / 2, center3);
     int detached = memcmp(center2, center3, 4) == 0;
     printf("mac-check: canvas after clear and %d ticks: center=(%u,%u,%u,%u) %s\n", TICKS_AFTER,
            center3[0], center3[1], center3[2], center3[3], detached ? "(unchanged: the game renders into the window again)" : "(CHANGED: the game still writes the canvas)");
@@ -287,7 +392,7 @@ int main(int argc, char **argv)
         return 8;
     }
     if (!canvas_ok) {
-        fprintf(stderr, "canvas check failed: center must be non-black, letterbox row must be opaque black\n");
+        fprintf(stderr, "canvas check failed: center must be non-black%s\n", letterboxed ? ", letterbox row must be opaque black" : "");
         return 15;
     }
     if (!detached) {

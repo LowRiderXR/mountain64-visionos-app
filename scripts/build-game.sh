@@ -15,7 +15,11 @@
 #                                    capabilities, init with a hidden window on a host Metal device
 #                                    and queue, ticks without presenting, the canvas (render into a
 #                                    host texture, read back), back to the window, end; then the
-#                                    error case (missing content root).
+#                                    same run at each internal resolution in MAC_CHECK_RESOLUTIONS
+#                                    with the outline width "auto" and a dump per resolution, the
+#                                    colour statistics of each dump compared with the default run
+#                                    (scripts/compare-canvas.py); then the error cases (invalid
+#                                    options, missing content root).
 #                                    The run needs a content root with Content/, the SDL3 kit dylib
 #                                    for macOS (Frameworks/macos) and the FMOD dylibs from the Celeste
 #                                    checkout; the script stages them in build/wrapper/mac-check-root.
@@ -75,6 +79,10 @@ EXPECTED_EXPORTS=(celeste_version celeste_set_log_callback celeste_capabilities_
 # 59), notes and Finder metadata.
 CONTENT_SRC="$CELESTE/Content"
 CONTENT_EXCLUDES=(--exclude '*.blend' --exclude '*.blend1' --exclude '.DS_Store' --exclude '*.md')
+
+# Internal resolutions the Mac check runs besides the default (celeste_init_options.internal_*);
+# override with MAC_CHECK_RESOLUTIONS="1280x720 2560x1440" for a different set.
+MAC_CHECK_RESOLUTIONS=(${=MAC_CHECK_RESOLUTIONS:-640x360 1280x720 1920x1080})
 
 step() { print -P "\n%F{cyan}== $1%f"; }
 
@@ -158,8 +166,25 @@ if [[ "$MODE" == "mac-check" ]]; then
     # comparison with the device (scripts/compare-canvas.py <mac.rgba> <device.rgba>).
     DYLD_LIBRARY_PATH="$STAGE" "$BUILD_DIR/mac-check" "$DYLIB" "$STAGE" --dump "$BUILD_DIR/mac-check-canvas" > "$RUN_LOG" 2>&1 || { echo "error: mac check run failed (exit $?)" >&2; tail -30 "$RUN_LOG" >&2; exit 1; }
     grep -E "^mac-check:|Foster: |SDL: |Graphics Driver|visionOS kit|celeste-visionos|Loaded Assets|Exception|rror" "$RUN_LOG" | head -40
+
+    # The same run per internal resolution, outline width auto, one dump each; the colour
+    # statistics of each dump must match the default run (same title screen, same frame).
+    for res in "${MAC_CHECK_RESOLUTIONS[@]}"; do
+        RES_LOG="$BUILD_DIR/mac-check-run-$res.log"
+        echo "-- run with --res $res --line auto (log: $RES_LOG)"
+        DYLD_LIBRARY_PATH="$STAGE" "$BUILD_DIR/mac-check" "$DYLIB" "$STAGE" --res "$res" --line auto --dump "$BUILD_DIR/mac-check-canvas-$res" > "$RES_LOG" 2>&1 || { echo "error: mac check run at $res failed (exit $?)" >&2; tail -30 "$RES_LOG" >&2; exit 1; }
+        grep -E "^mac-check: (requested|canvas after 548|canvas dump|ticks ok|run ok)|init ok|Loaded Assets|Exception|rror" "$RES_LOG" | sed -E 's/ userPath="[^"]*"//; s/ capabilities=.*$//' | head -12
+        # The canvas width comes from the dump line (at 640x360 the canvas stays 1280x800).
+        DUMP_W="$(grep -oE "canvas dump ok=1 [0-9]+" "$RES_LOG" | awk '{print $4}' | head -1 || true)"
+        python3 "$ROOT/scripts/compare-canvas.py" "$BUILD_DIR/mac-check-canvas.rgba" "$BUILD_DIR/mac-check-canvas-$res.rgba" --width 1280 --width-b "${DUMP_W:-1280}" | grep -E "^(B |mean difference|histogram intersection|verdict)" | sed 's/^/   /'
+    done
+
+    OPT_LOG="$BUILD_DIR/mac-check-options.log"
+    echo "-- error cases: invalid options, older struct size (log: $OPT_LOG)"
+    DYLD_LIBRARY_PATH="$STAGE" "$BUILD_DIR/mac-check" "$DYLIB" "$STAGE" --bad-options > "$OPT_LOG" 2>&1 || { echo "error: mac check options case failed (exit $?)" >&2; tail -30 "$OPT_LOG" >&2; exit 1; }
+    grep -E "^mac-check:|init ok" "$OPT_LOG" | sed -E 's/ userPath="[^"]*"//; s/ capabilities=.*$//'
     ERR_LOG="$BUILD_DIR/mac-check-error.log"
-    echo "-- error case (log: $ERR_LOG)"
+    echo "-- error case: missing content root (log: $ERR_LOG)"
     DYLD_LIBRARY_PATH="$STAGE" "$BUILD_DIR/mac-check" "$DYLIB" --bad-content > "$ERR_LOG" 2>&1 || { echo "error: mac check error case failed (exit $?)" >&2; tail -30 "$ERR_LOG" >&2; exit 1; }
     grep -E "^mac-check:" "$ERR_LOG"
     print -P "\n%F{green}OK: mac check passed%f"
