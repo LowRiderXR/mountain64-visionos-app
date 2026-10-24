@@ -2,8 +2,13 @@
 # build-game.sh: build Celeste64.VisionOS, the Native AOT library that wraps Celeste 64 for the
 # visionOS host app, and package it as a framework.
 #
-#   scripts/build-game.sh            Publish for ios-arm64, package Frameworks/Celeste64.VisionOS.framework,
-#                                    relabel the binary for visionOS with vtool, verify.
+#   scripts/build-game.sh            Publish for ios-arm64, package Frameworks/Celeste64.VisionOS.framework
+#                                    with the game's Content folder inside, relabel the binary for
+#                                    visionOS with vtool, verify.
+#   scripts/build-game.sh content-check
+#                                    Compare Source/Celeste64/Content with the Content inside the
+#                                    packaged framework (rsync dry run); exit 1 when the framework
+#                                    is stale and needs a new build.
 #   scripts/build-game.sh mac-check  Publish the same project for osx-arm64 as a dylib, build the small
 #                                    C program Wrapper/Celeste64.VisionOS/mac-check/main.c and drive the
 #                                    dylib through the whole C interface (celeste.h): version,
@@ -17,9 +22,14 @@
 #   1. dotnet publish -r ios-arm64 -c Release (Native AOT; .NET has no visionOS target, the iOS
 #      library is relabeled afterwards). The object directories are removed first: an incremental
 #      publish skips the C# compiler and with it the IL warnings this script reports.
-#   2. Package as a framework: install name, Info.plist, PrivacyInfo.xcprivacy.
+#   2. Package as a framework: install name, Info.plist, PrivacyInfo.xcprivacy, and the game's
+#      Content folder (Source/Celeste64/Content without the Blender sources, *.md and .DS_Store)
+#      copied into the framework. The host passes the framework's path to celeste_init as
+#      content_root; keeping the content with the wrapper needs no entry in the Xcode project,
+#      and a folder inside a framework keeps its structure (an Xcode synchronized folder would
+#      flatten the files into the app bundle and collide on duplicate names).
 #   3. vtool: set the build version to visionOS; ad hoc re-sign (Xcode re-signs when embedding).
-#   4. Verify: platform, architecture, exports, dependencies, native library names, size.
+#   4. Verify: platform, architecture, exports, dependencies, native library names, content, size.
 #
 # Requirements: .NET 10 SDK, Xcode with the visionOS SDK, the Celeste 64 checkout in Source/Celeste64
 # with the visionOS patch applied (scripts/celeste-patch.sh apply), and the Foster fork for visionOS
@@ -56,9 +66,20 @@ FW_VERSION_STRING="${GAME_VERSION:-1.0}"
 FW_BUILD_NUMBER="${GAME_BUILD:-1}"
 VISIONOS_MIN="${VISIONOS_MIN:-1.0}"
 
-EXPECTED_EXPORTS=(celeste_version celeste_capabilities_get celeste_init celeste_tick celeste_exiting celeste_end celeste_last_error)
+EXPECTED_EXPORTS=(celeste_version celeste_set_log_callback celeste_capabilities_get celeste_init celeste_tick celeste_exiting celeste_end celeste_last_error)
+
+# Content for the framework: everything Celeste reads at run time (Assets.cs loads *.glb, *.png,
+# *.map, *.json, banks, shaders, fonts), without the Blender sources next to the models (38 MB of
+# 59), notes and Finder metadata.
+CONTENT_SRC="$CELESTE/Content"
+CONTENT_EXCLUDES=(--exclude '*.blend' --exclude '*.blend1' --exclude '.DS_Store' --exclude '*.md')
 
 step() { print -P "\n%F{cyan}== $1%f"; }
+
+# Number of files the content copy should contain (same filters as the rsync excludes).
+content_source_count() {
+    find "$CONTENT_SRC" -type f ! -name '*.blend' ! -name '*.blend1' ! -name '.DS_Store' ! -name '*.md' | wc -l | tr -d ' '
+}
 
 check_exports() {
     local binary="$1" exports name
@@ -138,7 +159,23 @@ if [[ "$MODE" == "mac-check" ]]; then
     exit 0
 fi
 
-[[ "$MODE" == "visionos" ]] || { echo "usage: $0 [visionos|mac-check]" >&2; exit 64; }
+if [[ "$MODE" == "content-check" ]]; then
+    # Is the content inside the packaged framework still the content in the checkout? A dry run
+    # with --itemize-changes lists what a real sync would copy or delete; anything listed means
+    # the framework is stale (the content changes rarely, so this is a check, not a build step).
+    [[ -d "$FW/Content" ]] || { echo "error: $FW/Content missing; run $0 first" >&2; exit 1; }
+    [[ -d "$CONTENT_SRC" ]] || { echo "error: $CONTENT_SRC missing" >&2; exit 1; }
+    CHANGES="$(rsync -a --delete --dry-run --itemize-changes "${CONTENT_EXCLUDES[@]}" "$CONTENT_SRC/" "$FW/Content/" | grep -v '^\.d' || true)"
+    if [[ -z "$CHANGES" ]]; then
+        echo "content up to date: $(find "$FW/Content" -type f | wc -l | tr -d ' ') files in $FW/Content match $CONTENT_SRC"
+        exit 0
+    fi
+    echo "content STALE: the framework differs from $CONTENT_SRC in $(echo "$CHANGES" | wc -l | tr -d ' ') entries (run $0 to rebuild):"
+    echo "$CHANGES" | head -20 | sed 's/^/   /'
+    exit 1
+fi
+
+[[ "$MODE" == "visionos" ]] || { echo "usage: $0 [visionos|mac-check|content-check]" >&2; exit 64; }
 
 VISIONOS_SDK="$(xcrun --sdk xros --show-sdk-version)"
 step "Tools"
@@ -164,6 +201,20 @@ if [[ -d "$DYLIB.dSYM" ]]; then
     echo "-- dSYM: $OUT_DIR/$NAME.framework.dSYM"
 fi
 install_name_tool -id "@rpath/$NAME.framework/$NAME" "$FW/$NAME"
+
+# The game's content, with structure; celeste_init gets the framework's path as content_root.
+[[ -d "$CONTENT_SRC" ]] || { echo "error: $CONTENT_SRC missing (Celeste 64 checkout)" >&2; exit 1; }
+rsync -a --delete "${CONTENT_EXCLUDES[@]}" "$CONTENT_SRC/" "$FW/Content/"
+CONTENT_FILES="$(find "$FW/Content" -type f | wc -l | tr -d ' ')"
+CONTENT_EXPECTED="$(content_source_count)"
+echo "-- content: $CONTENT_FILES files, $(du -sh "$FW/Content" | cut -f1) (source without Blender files: $CONTENT_EXPECTED files)"
+[[ "$CONTENT_FILES" == "$CONTENT_EXPECTED" ]] || { echo "error: content file count $CONTENT_FILES differs from source $CONTENT_EXPECTED" >&2; exit 1; }
+for bank in Master.strings.bank Master.bank music.bank sfx.bank; do
+    [[ -f "$FW/Content/Audio/$bank" ]] || { echo "error: $bank missing in $FW/Content/Audio" >&2; exit 1; }
+done
+if find "$FW/Content" -name '*.blend' -o -name '*.blend1' | grep -q .; then echo "error: Blender files in the framework content" >&2; exit 1; fi
+[[ -f "$FW/Content/Levels.json" && -d "$FW/Content/Models" && -d "$FW/Content/Shaders" ]] || { echo "error: Levels.json, Models or Shaders missing in the content" >&2; exit 1; }
+
 cat > "$FW/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -242,7 +293,8 @@ plutil -lint "$FW/PrivacyInfo.xcprivacy"
 
 step "3/4 vtool: iOS -> visionOS (minos $VISIONOS_MIN, sdk $VISIONOS_SDK)"
 vtool -set-build-version visionos "$VISIONOS_MIN" "$VISIONOS_SDK" -replace -output "$FW/$NAME" "$FW/$NAME"
-codesign --force --sign - "$FW/$NAME" 2>&1 | grep -v "replacing existing signature" || true
+# Sign the bundle, not just the binary, so the seal covers the content (Xcode re-signs on embed).
+codesign --force --sign - "$FW" 2>&1 | grep -v "replacing existing signature" || true
 
 step "4/4 Verify"
 echo "-- Info.plist"
@@ -281,9 +333,15 @@ for sym in stat fstat lstat fstatat statfs fstatfs getattrlist mach_absolute_tim
 done
 echo "   (no NSUserDefaults, no active keyboard APIs expected from .NET)"
 echo "-- size"
-ls -la "$FW/$NAME" | awk '{printf "   %s bytes (%.1f MB)\n", $5, $5/1048576}'
-echo "-- codesign"
-codesign -dv "$FW/$NAME" 2>&1 | grep -E "^(Identifier|Signature|TeamIdentifier)" || true
+ls -la "$FW/$NAME" | awk '{printf "   binary    %s bytes (%.1f MB)\n", $5, $5/1048576}'
+printf "   content   %s KB (%s files)\n" "$(du -sk "$FW/Content" | cut -f1)" "$CONTENT_FILES"
+printf "   framework %s KB total\n" "$(du -sk "$FW" | cut -f1)"
+echo "-- codesign (bundle signature seals the content)"
+codesign -dv "$FW" 2>&1 | grep -E "^(Identifier|Signature|TeamIdentifier)" || true
+codesign --verify --deep --strict "$FW" && echo "   verify --deep --strict: ok" || { echo "error: codesign verify failed" >&2; exit 1; }
+SEALED="$(python3 -c "import plistlib,sys; p=plistlib.load(open(sys.argv[1],'rb')); f=p.get('files2',{}); print(sum(1 for k in f if k.startswith('Content/')))" "$FW/_CodeSignature/CodeResources")"
+echo "   sealed content entries: $SEALED"
+[[ "$SEALED" == "$CONTENT_FILES" ]] || { echo "error: $SEALED sealed content entries, expected $CONTENT_FILES" >&2; exit 1; }
 
 print -P "\n%F{green}OK: $FW%f"
 echo "   Embed it in the host app together with SDL3.framework and FMOD.framework (Embed & Sign)."

@@ -22,6 +22,14 @@
 #define HZ 90.0
 
 typedef const char *(*version_fn)(void);
+typedef int32_t (*set_log_fn)(celeste_log_fn, void *);
+
+/* Receives the game's log lines; the prefix shows that they came through the callback. */
+static void on_log(int32_t level, const char *utf8, void *userdata)
+{
+    (void)userdata;
+    printf("[log %d] %s\n", level, utf8 ? utf8 : "(null)");
+}
 typedef int32_t (*capabilities_fn)(celeste_capabilities *);
 typedef int32_t (*init_fn)(const celeste_init_options *);
 typedef int32_t (*tick_fn)(double, int32_t);
@@ -58,14 +66,19 @@ int main(int argc, char **argv)
         return 1;
     }
     version_fn celeste_version = (version_fn)require(handle, "celeste_version");
+    set_log_fn celeste_set_log_callback = (set_log_fn)require(handle, "celeste_set_log_callback");
     capabilities_fn celeste_capabilities_get = (capabilities_fn)require(handle, "celeste_capabilities_get");
     init_fn celeste_init = (init_fn)require(handle, "celeste_init");
     tick_fn celeste_tick = (tick_fn)require(handle, "celeste_tick");
     exiting_fn celeste_exiting = (exiting_fn)require(handle, "celeste_exiting");
     end_fn celeste_end = (end_fn)require(handle, "celeste_end");
     last_error_fn celeste_last_error = (last_error_fn)require(handle, "celeste_last_error");
-    if (!celeste_version || !celeste_capabilities_get || !celeste_init || !celeste_tick || !celeste_exiting || !celeste_end || !celeste_last_error) {
+    if (!celeste_version || !celeste_set_log_callback || !celeste_capabilities_get || !celeste_init || !celeste_tick || !celeste_exiting || !celeste_end || !celeste_last_error) {
         return 2;
+    }
+    if (celeste_set_log_callback(on_log, NULL) != 0) {
+        fprintf(stderr, "celeste_set_log_callback failed: %s\n", celeste_last_error());
+        return 9;
     }
 
     const char *version = celeste_version();

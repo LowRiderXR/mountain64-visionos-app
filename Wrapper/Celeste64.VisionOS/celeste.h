@@ -54,6 +54,14 @@ typedef struct celeste_capabilities {
 /* Game and runtime version, for example "Celeste 64 v.1.2.0, .NET 10.0.12". */
 const char *celeste_version(void);
 
+/* Log line from the game, Foster or SDL: level 0 info, 1 warning, 2 error; utf8 is
+ * NUL-terminated and valid only during the call. May be called from any thread. */
+typedef void (*celeste_log_fn)(int32_t level, const char *utf8, void *userdata);
+
+/* Routes the game's log to the host. Call before celeste_init to see the startup lines; NULL
+ * restores the default output (stdout). 0 or -1. */
+int32_t celeste_set_log_callback(celeste_log_fn fn, void *userdata);
+
 /* Fills the capabilities; options->size must match. 0 or -1. */
 int32_t celeste_capabilities_get(celeste_capabilities *out);
 

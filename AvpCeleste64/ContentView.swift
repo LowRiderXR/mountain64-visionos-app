@@ -44,12 +44,25 @@ struct ContentView: View {
             // M1a.2: Hülle ohne Spiel hinter C64_CELESTE=probe (Standard aus): celeste_version und
             // celeste_capabilities_get aus Celeste64.VisionOS.framework, auf dem Hauptthread, vor
             // den Kit-Modi und ohne sie zu berühren. Kein celeste_init in dieser Stufe.
-            if CelesteProbe.isRequested, !celesteProbeRan {
+            // M1a.4 hinter C64_CELESTE=init: dazu celeste_init mit verstecktem Fenster und die
+            // ersten Ticks auf dem Hauptthread; eine Sekunde später noch einmal die Fenster der
+            // Szene, weil SDLs Geometrieanfrage asynchron ist.
+            if let celesteMode = CelesteProbe.mode, !celesteProbeRan {
                 celesteProbeRan = true
-                let result = CelesteProbe.runProbe()
-                appModel.statusLine = result.ok
-                    ? "Celeste-Hülle: \(result.version); \(result.capabilitiesLine). Siehe Log [c64-celeste]."
-                    : "Celeste-Hülle: Fähigkeitsprüfung fehlgeschlagen, siehe Log [c64-celeste]."
+                switch celesteMode {
+                case .probe:
+                    let result = CelesteProbe.runProbe()
+                    appModel.statusLine = result.ok
+                        ? "Celeste-Hülle: \(result.version); \(result.capabilitiesLine). Siehe Log [c64-celeste]."
+                        : "Celeste-Hülle: Fähigkeitsprüfung fehlgeschlagen, siehe Log [c64-celeste]."
+                case .initialize:
+                    let result = CelesteProbe.runInit()
+                    appModel.statusLine = result.ok
+                        ? "Celeste gestartet (Hauptthread, Fenster versteckt): \(result.version); nach init \(result.capabilitiesLine). Siehe Log [c64-celeste]."
+                        : "Celeste-Start fehlgeschlagen: \(result.capabilitiesLine). Siehe Log [c64-celeste]."
+                    try? await Task.sleep(for: .seconds(1))
+                    CelesteProbe.windowSnapshot("after-1s")
+                }
             }
 
             // Kit-Testszene hinter C64_KIT (Standard aus), auf dem Hauptthread, sobald das Fenster

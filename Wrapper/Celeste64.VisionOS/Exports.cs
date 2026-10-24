@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Text;
 using Foster.Framework;
 using static SDL3.SDL;
 
@@ -55,6 +56,46 @@ public static unsafe class Exports
 	private static int initThreadId;
 	private static long ticks;
 	private static bool tickThreadLogged;
+	private static delegate* unmanaged<int, byte*, void*, void> logCallback;
+	private static void* logUserdata;
+
+	/// <summary>
+	/// Routes Foster's log (which the game, Foster and SDL's forwarded messages all use) to the
+	/// host: level 0 info, 1 warning, 2 error, text UTF-8 and NUL-terminated, valid only during
+	/// the call. Call before celeste_init to catch the startup lines; a null callback restores
+	/// Foster's default output. Foster may call the callback from any thread.
+	/// </summary>
+	[UnmanagedCallersOnly(EntryPoint = "celeste_set_log_callback")]
+	public static int CelesteSetLogCallback(delegate* unmanaged<int, byte*, void*, void> callback, void* userdata)
+	{
+		try
+		{
+			logCallback = callback;
+			logUserdata = userdata;
+			if (callback == null)
+				Log.SetCallbacks(null, null, null);
+			else
+				Log.SetCallbacks(text => ForwardLog(0, text), text => ForwardLog(1, text), text => ForwardLog(2, text));
+			return Ok;
+		}
+		catch (Exception e)
+		{
+			return SetError(e);
+		}
+	}
+
+	private static void ForwardLog(int level, ReadOnlySpan<char> text)
+	{
+		var callback = logCallback;
+		if (callback == null)
+			return;
+		var count = Encoding.UTF8.GetByteCount(text);
+		Span<byte> buffer = count < 1024 ? stackalloc byte[count + 1] : new byte[count + 1];
+		var written = Encoding.UTF8.GetBytes(text, buffer);
+		buffer[written] = 0;
+		fixed (byte* utf8 = buffer)
+			callback(level, utf8, logUserdata);
+	}
 
 	/// <summary>
 	/// Game and runtime version, for example "Celeste 64 v.1.2.0, .NET 10.0.12". Also registers
