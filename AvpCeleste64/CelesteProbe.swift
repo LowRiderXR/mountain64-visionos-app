@@ -32,6 +32,10 @@ nonisolated enum CelesteProbe {
     enum Mode: String {
         case probe
         case initialize = "init"
+        /// M1a.4b: Vergleichslauf ohne Celeste, nur die Fenster-Schnappschüsse der Szene zu
+        /// denselben Zeitpunkten (Start, 0,2 s, 1 s, 2 s). Zeigt, was SwiftUI allein mit dem
+        /// Fenster macht (Standardgrösse 1280×720, dann Layout auf die Inhaltsgrösse).
+        case window
     }
 
     static var mode: Mode? {
@@ -89,7 +93,7 @@ nonisolated enum CelesteProbe {
 
     /// M1a.4: Probe, dann celeste_init mit verstecktem Fenster und den nötigen Ticks auf dem
     /// Hauptthread. Liefert die Fähigkeiten nach init in der Statuszeile.
-    @MainActor static func runInit() -> Result {
+    @MainActor static func runInit(since probeStart: DispatchTime) -> Result {
         var result = runProbe()
         let start = DispatchTime.now()
 
@@ -129,7 +133,7 @@ nonisolated enum CelesteProbe {
         let logRc = celeste_set_log_callback(logLine, nil)
         c64Record("[c64-celeste] step=log-callback rc=\(logRc)")
 
-        windowSnapshot("before-init")
+        windowSnapshot("before-init", since: probeStart)
         let availableBefore = ProbeContext.availableMemoryMB
         let footprintBefore = ProbeContext.physFootprintMB
         c64Record("[c64-celeste] memory before-init availableMB=\(format(availableBefore)) footprintMB=\(format(footprintBefore))")
@@ -158,7 +162,8 @@ nonisolated enum CelesteProbe {
             result.capabilitiesLine = "celeste_init rc=\(initRc)"
             return result
         }
-        windowSnapshot("after-init")
+        windowSnapshot("after-init", since: probeStart)
+        sdlWindowInfo("after-init")
 
         // Ticks auf dem Hauptthread: Startup zählt fünf Updates, dann Assets.Load.
         var ticksOk = 0
@@ -183,7 +188,8 @@ nonisolated enum CelesteProbe {
         } else {
             result.ok = false
         }
-        windowSnapshot("after-ticks")
+        windowSnapshot("after-ticks", since: probeStart)
+        sdlWindowInfo("after-ticks")
         let availableAfter = ProbeContext.availableMemoryMB
         let footprintAfter = ProbeContext.physFootprintMB
         c64Record("[c64-celeste] memory after-ticks availableMB=\(format(availableAfter)) footprintMB=\(format(footprintAfter)) deltaFootprintMB=\(format(footprintAfter - footprintBefore))")
@@ -192,11 +198,14 @@ nonisolated enum CelesteProbe {
     }
 
     /// Fensterprüfung: alle UIKit-Fensterszenen der App mit Zustand, Grösse und Fenstern. SDL
-    /// legt sein (verstecktes) UIWindow in der aktiven Szene an und fragt dort 1280×720 an.
-    @MainActor static func windowSnapshot(_ label: String) {
+    /// legt sein (verstecktes) UIWindow in der aktiven Szene an und fragt dort seine logische
+    /// Grösse an (SDL_uikitwindow.m, requestGeometryUpdate). `since` ergänzt die Zeit seit dem
+    /// Start der Probe in Millisekunden, damit die Modi init und window vergleichbar sind.
+    @MainActor static func windowSnapshot(_ label: String, since start: DispatchTime? = nil) {
+        let timing = start.map { " tMs=\(format(elapsedMs(since: $0)))" } ?? ""
         let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
         if scenes.isEmpty {
-            c64Record("[c64-celeste] window \(label) scenes=0")
+            c64Record("[c64-celeste] window \(label)\(timing) scenes=0")
         }
         for (index, scene) in scenes.enumerated() {
             let bounds = scene.effectiveGeometry.coordinateSpace.bounds.size
@@ -204,7 +213,22 @@ nonisolated enum CelesteProbe {
                 let root = window.rootViewController.map { String(describing: type(of: $0)) } ?? "-"
                 return "\(String(describing: type(of: window))) \(Int(window.frame.width))x\(Int(window.frame.height)) hidden=\(window.isHidden) key=\(window.isKeyWindow) root=\(root)"
             }.joined(separator: " | ")
-            c64Record("[c64-celeste] window \(label) scene=\(index) role=\(scene.session.role.rawValue) state=\(scene.activationState.rawValue) bounds=\(Int(bounds.width))x\(Int(bounds.height)) windows=\(scene.windows.count) [\(windows)]")
+            c64Record("[c64-celeste] window \(label)\(timing) scene=\(index) role=\(scene.session.role.rawValue) state=\(scene.activationState.rawValue) bounds=\(Int(bounds.width))x\(Int(bounds.height)) windows=\(scene.windows.count) [\(windows)]")
+        }
+    }
+
+    /// Fosters Fenster aus SDLs Sicht: die logische Grösse ist die Grösse, die SDL beim Anlegen
+    /// per Geometrieanfrage an die Szene schickt (Punkte); Pixel und Dichte zeigen, was Foster
+    /// und Celeste als Backbuffer sehen.
+    static func sdlWindowInfo(_ label: String) {
+        var info = celeste_window_info()
+        info.size = Int32(MemoryLayout<celeste_window_info>.size)
+        let rc = celeste_window_info_get(&info)
+        if rc == 0 {
+            c64Record("[c64-celeste] sdl-window \(label) requested=\(info.width)x\(info.height) pixels=\(info.pixel_width)x\(info.pixel_height) density=\(Double(info.pixel_density_x1000) / 1000) hidden=\(info.hidden) fullscreen=\(info.fullscreen)")
+        } else {
+            let error = celeste_last_error().map { String(cString: $0) } ?? ""
+            c64Record("[c64-celeste] sdl-window \(label) rc=\(rc) error=\"\(error)\"")
         }
     }
 

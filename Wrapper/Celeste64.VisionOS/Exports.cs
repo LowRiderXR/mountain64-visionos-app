@@ -39,6 +39,22 @@ public struct CelesteCapabilities
 }
 
 /// <summary>
+/// Result of celeste_window_info_get; must match celeste_window_info in celeste.h.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+public struct CelesteWindowInfo
+{
+	public int Size;
+	public int Width;
+	public int Height;
+	public int PixelWidth;
+	public int PixelHeight;
+	public int PixelDensityX1000;
+	public int Hidden;
+	public int Fullscreen;
+}
+
+/// <summary>
 /// C entry points of the library, declared for the host in celeste.h. Every entry point catches
 /// all exceptions: an exception leaving an UnmanagedCallersOnly method would end the process, so
 /// failures become -1 and a text in celeste_last_error. Only blittable parameters and returns.
@@ -224,7 +240,7 @@ public static unsafe class Exports
 			}
 			created.Begin();
 			game = created;
-			Log.Info($"{Tag} init ok userPath=\"{created.UserPath}\" capabilities={created.GraphicsDevice.Capabilities}");
+			Log.Info($"{Tag} init ok userPath=\"{created.UserPath}\" window={created.Window.Width}x{created.Window.Height} pixels={created.Window.WidthInPixels}x{created.Window.HeightInPixels} capabilities={created.GraphicsDevice.Capabilities}");
 			return Ok;
 		}
 		catch (Exception e)
@@ -254,6 +270,47 @@ public static unsafe class Exports
 			game.Tick(TimeSpan.FromSeconds(deltaSeconds), present != 0);
 			ticks++;
 			return game.Exiting ? Exiting : Ok;
+		}
+		catch (Exception e)
+		{
+			return SetError(e);
+		}
+	}
+
+	/// <summary>
+	/// Foster's window as SDL sees it: logical size, pixel size, density and flags. The host uses
+	/// it to compare SDL's geometry request (logical size in points) with its own scene.
+	/// </summary>
+	[UnmanagedCallersOnly(EntryPoint = "celeste_window_info_get")]
+	public static int CelesteWindowInfoGet(CelesteWindowInfo* output)
+	{
+		try
+		{
+			if (output == null || output->Size != sizeof(CelesteWindowInfo))
+				return SetError($"celeste_window_info: size must be {sizeof(CelesteWindowInfo)}");
+			if (game == null)
+				return SetError("celeste_window_info: no game; call celeste_init first");
+			// Foster keeps the SDL window handle internal; the game has exactly one window, so
+			// SDL's own list gives the same handle (the MacHost does the same for its tests).
+			var windows = SDL_GetWindows();
+			if (windows.Length == 0)
+				return SetError("celeste_window_info: SDL reports no window");
+			var handle = windows[0];
+			var flags = SDL_GetWindowFlags(handle);
+			SDL_GetWindowSize(handle, out int width, out int height);
+			SDL_GetWindowSizeInPixels(handle, out int pixelWidth, out int pixelHeight);
+			*output = new CelesteWindowInfo
+			{
+				Size = sizeof(CelesteWindowInfo),
+				Width = width,
+				Height = height,
+				PixelWidth = pixelWidth,
+				PixelHeight = pixelHeight,
+				PixelDensityX1000 = (int)MathF.Round(SDL_GetWindowPixelDensity(handle) * 1000),
+				Hidden = (flags & SDL_WindowFlags.SDL_WINDOW_HIDDEN) != 0 ? 1 : 0,
+				Fullscreen = (flags & SDL_WindowFlags.SDL_WINDOW_FULLSCREEN) != 0 ? 1 : 0,
+			};
+			return Ok;
 		}
 		catch (Exception e)
 		{

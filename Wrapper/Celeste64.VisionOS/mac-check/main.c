@@ -31,6 +31,7 @@ static void on_log(int32_t level, const char *utf8, void *userdata)
     printf("[log %d] %s\n", level, utf8 ? utf8 : "(null)");
 }
 typedef int32_t (*capabilities_fn)(celeste_capabilities *);
+typedef int32_t (*window_info_fn)(celeste_window_info *);
 typedef int32_t (*init_fn)(const celeste_init_options *);
 typedef int32_t (*tick_fn)(double, int32_t);
 typedef int32_t (*exiting_fn)(void);
@@ -68,12 +69,13 @@ int main(int argc, char **argv)
     version_fn celeste_version = (version_fn)require(handle, "celeste_version");
     set_log_fn celeste_set_log_callback = (set_log_fn)require(handle, "celeste_set_log_callback");
     capabilities_fn celeste_capabilities_get = (capabilities_fn)require(handle, "celeste_capabilities_get");
+    window_info_fn celeste_window_info_get = (window_info_fn)require(handle, "celeste_window_info_get");
     init_fn celeste_init = (init_fn)require(handle, "celeste_init");
     tick_fn celeste_tick = (tick_fn)require(handle, "celeste_tick");
     exiting_fn celeste_exiting = (exiting_fn)require(handle, "celeste_exiting");
     end_fn celeste_end = (end_fn)require(handle, "celeste_end");
     last_error_fn celeste_last_error = (last_error_fn)require(handle, "celeste_last_error");
-    if (!celeste_version || !celeste_set_log_callback || !celeste_capabilities_get || !celeste_init || !celeste_tick || !celeste_exiting || !celeste_end || !celeste_last_error) {
+    if (!celeste_version || !celeste_set_log_callback || !celeste_capabilities_get || !celeste_window_info_get || !celeste_init || !celeste_tick || !celeste_exiting || !celeste_end || !celeste_last_error) {
         return 2;
     }
     if (celeste_set_log_callback(on_log, NULL) != 0) {
@@ -130,6 +132,20 @@ int main(int argc, char **argv)
         return 5;
     }
     print_capabilities("after init", &caps);
+
+    celeste_window_info win;
+    memset(&win, 0, sizeof(win));
+    win.size = sizeof(win);
+    if (celeste_window_info_get(&win) != 0) {
+        fprintf(stderr, "celeste_window_info_get failed: %s\n", celeste_last_error());
+        return 5;
+    }
+    printf("mac-check: window after init: %dx%d pixels=%dx%d density=%d/1000 hidden=%d fullscreen=%d\n",
+           win.width, win.height, win.pixel_width, win.pixel_height, win.pixel_density_x1000, win.hidden, win.fullscreen);
+    if (win.hidden != 1) {
+        fprintf(stderr, "expected a hidden window\n");
+        return 10;
+    }
 
     int ticks_ok = 0, ticks_exit = 0, ticks_failed = 0;
     for (int i = 0; i < TICKS; i++) {

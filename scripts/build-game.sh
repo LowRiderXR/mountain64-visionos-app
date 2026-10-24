@@ -66,7 +66,7 @@ FW_VERSION_STRING="${GAME_VERSION:-1.0}"
 FW_BUILD_NUMBER="${GAME_BUILD:-1}"
 VISIONOS_MIN="${VISIONOS_MIN:-1.0}"
 
-EXPECTED_EXPORTS=(celeste_version celeste_set_log_callback celeste_capabilities_get celeste_init celeste_tick celeste_exiting celeste_end celeste_last_error)
+EXPECTED_EXPORTS=(celeste_version celeste_set_log_callback celeste_capabilities_get celeste_window_info_get celeste_init celeste_tick celeste_exiting celeste_end celeste_last_error)
 
 # Content for the framework: everything Celeste reads at run time (Assets.cs loads *.glb, *.png,
 # *.map, *.json, banks, shaders, fonts), without the Blender sources next to the models (38 MB of

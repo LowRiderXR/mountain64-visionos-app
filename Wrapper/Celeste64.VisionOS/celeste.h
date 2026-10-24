@@ -51,8 +51,24 @@ typedef struct celeste_capabilities {
     int32_t depth_resolve;
 } celeste_capabilities;
 
+/* Foster's window as SDL reports it: logical size (points), size in pixels, pixel density
+ * times 1000, and the hidden and fullscreen flags. Valid after celeste_init. */
+typedef struct celeste_window_info {
+    int32_t size;                 /* sizeof(celeste_window_info) */
+    int32_t width;
+    int32_t height;
+    int32_t pixel_width;
+    int32_t pixel_height;
+    int32_t pixel_density_x1000;
+    int32_t hidden;
+    int32_t fullscreen;
+} celeste_window_info;
+
 /* Game and runtime version, for example "Celeste 64 v.1.2.0, .NET 10.0.12". */
 const char *celeste_version(void);
+
+/* Fills the window info; out->size must match. 0 or -1 (no game: -1). */
+int32_t celeste_window_info_get(celeste_window_info *out);
 
 /* Log line from the game, Foster or SDL: level 0 info, 1 warning, 2 error; utf8 is
  * NUL-terminated and valid only during the call. May be called from any thread. */

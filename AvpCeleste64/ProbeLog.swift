@@ -30,13 +30,20 @@ nonisolated final class ProgressFile: @unchecked Sendable {
     private let lock = NSLock()
     private var fd: Int32 = -1
 
+    /// Schalter C64_PROBE_TRUNCATE=1: die Datei beim Start leeren statt anzuhängen, damit sie nur
+    /// den aktuellen Lauf enthält (Standard: anhängen, alle Läufe seit dem ersten Start).
+    static var truncateOnStart: Bool {
+        ProcessInfo.processInfo.environment["C64_PROBE_TRUNCATE"] == "1"
+    }
+
     private init() {
         let path = Self.url.path
-        fd = Darwin.open(path, O_WRONLY | O_CREAT | O_APPEND, 0o644)
+        let mode: Int32 = Self.truncateOnStart ? O_TRUNC : O_APPEND
+        fd = Darwin.open(path, O_WRONLY | O_CREAT | mode, 0o644)
         if fd < 0 {
             c64Log.error("[c64-file] Fortschrittsdatei nicht geöffnet: \(path, privacy: .public) errno=\(errno)")
         }
-        write("---- Start \(ISO8601DateFormatter().string(from: Date())) pid=\(getpid())")
+        write("---- Start \(ISO8601DateFormatter().string(from: Date())) pid=\(getpid()) \(Self.truncateOnStart ? "(Datei geleert)" : "(angehängt)")")
     }
 
     /// Schreibt eine Zeile und synchronisiert sie sofort auf den Datenträger.

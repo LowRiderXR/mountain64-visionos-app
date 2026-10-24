@@ -45,10 +45,12 @@ struct ContentView: View {
             // celeste_capabilities_get aus Celeste64.VisionOS.framework, auf dem Hauptthread, vor
             // den Kit-Modi und ohne sie zu berühren. Kein celeste_init in dieser Stufe.
             // M1a.4 hinter C64_CELESTE=init: dazu celeste_init mit verstecktem Fenster und die
-            // ersten Ticks auf dem Hauptthread; eine Sekunde später noch einmal die Fenster der
-            // Szene, weil SDLs Geometrieanfrage asynchron ist.
+            // ersten Ticks auf dem Hauptthread. M1a.4b: Fenster-Schnappschüsse der Szene zu festen
+            // Zeitpunkten nach dem Start (0,2 s, 1 s, 2 s), im Modus init wie im Vergleichsmodus
+            // window ohne Celeste; so trennt sich SDLs Geometrieanfrage vom SwiftUI-Layout.
             if let celesteMode = CelesteProbe.mode, !celesteProbeRan {
                 celesteProbeRan = true
+                let probeStart = DispatchTime.now()
                 switch celesteMode {
                 case .probe:
                     let result = CelesteProbe.runProbe()
@@ -56,12 +58,16 @@ struct ContentView: View {
                         ? "Celeste-Hülle: \(result.version); \(result.capabilitiesLine). Siehe Log [c64-celeste]."
                         : "Celeste-Hülle: Fähigkeitsprüfung fehlgeschlagen, siehe Log [c64-celeste]."
                 case .initialize:
-                    let result = CelesteProbe.runInit()
+                    CelesteProbe.windowSnapshot("t0", since: probeStart)
+                    let result = CelesteProbe.runInit(since: probeStart)
                     appModel.statusLine = result.ok
                         ? "Celeste gestartet (Hauptthread, Fenster versteckt): \(result.version); nach init \(result.capabilitiesLine). Siehe Log [c64-celeste]."
                         : "Celeste-Start fehlgeschlagen: \(result.capabilitiesLine). Siehe Log [c64-celeste]."
-                    try? await Task.sleep(for: .seconds(1))
-                    CelesteProbe.windowSnapshot("after-1s")
+                    await snapshotMarks(since: probeStart)
+                case .window:
+                    CelesteProbe.windowSnapshot("t0", since: probeStart)
+                    appModel.statusLine = "Vergleichslauf Fenster ohne Celeste: Schnappschüsse bei 0, 0,2, 1 und 2 s. Siehe Log [c64-celeste]."
+                    await snapshotMarks(since: probeStart)
                 }
             }
 
@@ -101,6 +107,19 @@ struct ContentView: View {
 
     @State private var kitProbeRan = false
     @State private var celesteProbeRan = false
+
+    /// Fenster-Schnappschüsse bei 0,2 s, 1 s und 2 s nach dem Start der Probe. Ist ein Zeitpunkt
+    /// schon vorbei (celeste_init und das Laden dauern im Modus init länger), folgt der
+    /// Schnappschuss sofort; die Zeile trägt die tatsächliche Zeit (tMs).
+    private func snapshotMarks(since start: DispatchTime) async {
+        for mark in [0.2, 1.0, 2.0] {
+            let elapsed = Double(DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000_000
+            if elapsed < mark {
+                try? await Task.sleep(for: .seconds(mark - elapsed))
+            }
+            CelesteProbe.windowSnapshot("t\(mark)s", since: start)
+        }
+    }
 
     private func openSpace() async {
         appModel.immersiveState = .opening
