@@ -149,3 +149,60 @@ void k6d_metal_rate_map_physical_to_screen(void *map, unsigned layer, float px, 
     if (sx) *sx = s.x;
     if (sy) *sy = s.y;
 }
+
+/* ---- M4a.1: canvas texture and read-back for the wrapper's mac-check ---- */
+
+/* 2D RGBA8Unorm texture as the host app creates it for the canvas: render target and shader
+   read, optionally with PixelFormatView so an sRGB view can be created later (M4a.3). Private
+   storage, default (tracked) hazard tracking. */
+void *k6d_metal_texture_2d(void *device, unsigned width, unsigned height, int pixel_format_view)
+{
+    @autoreleasepool {
+        if (!device || width == 0 || height == 0) {
+            return NULL;
+        }
+        id<MTLDevice> d = (__bridge id<MTLDevice>)device;
+        MTLTextureDescriptor *desc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
+                                                                                        width:width
+                                                                                       height:height
+                                                                                    mipmapped:NO];
+        desc.storageMode = MTLStorageModePrivate;
+        desc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead | (pixel_format_view ? MTLTextureUsagePixelFormatView : 0);
+        id<MTLTexture> t = [d newTextureWithDescriptor:desc];
+        if (t == nil) {
+            return NULL;
+        }
+        t.label = @"k6d-canvas";
+        return (void *)CFBridgingRetain(t);
+    }
+}
+
+/* Reads one pixel (RGBA bytes) of a 2D texture: blit into a shared buffer on the given queue
+   and wait. On the queue the game renders with, the blit runs after the game's committed
+   command buffers, so it sees the finished image. Returns 1 on success. */
+int k6d_metal_read_pixel(void *queue, void *texture, unsigned x, unsigned y, unsigned char out[4])
+{
+    @autoreleasepool {
+        if (!queue || !texture || !out) {
+            return 0;
+        }
+        id<MTLCommandQueue> q = (__bridge id<MTLCommandQueue>)queue;
+        id<MTLTexture> t = (__bridge id<MTLTexture>)texture;
+        if (x >= t.width || y >= t.height) {
+            return 0;
+        }
+        id<MTLBuffer> buffer = [q.device newBufferWithLength:16 options:MTLResourceStorageModeShared];
+        id<MTLCommandBuffer> cb = [q commandBuffer];
+        id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
+        [blit copyFromTexture:t sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(x, y, 0) sourceSize:MTLSizeMake(1, 1, 1)
+                     toBuffer:buffer destinationOffset:0 destinationBytesPerRow:4 destinationBytesPerImage:4];
+        [blit endEncoding];
+        [cb commit];
+        [cb waitUntilCompleted];
+        if (cb.status != MTLCommandBufferStatusCompleted) {
+            return 0;
+        }
+        memcpy(out, buffer.contents, 4);
+        return 1;
+    }
+}

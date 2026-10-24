@@ -92,6 +92,21 @@ int32_t celeste_tick(double delta_seconds, int32_t present);
 /* 1 when the game asked to exit (or no game exists), else 0. */
 int32_t celeste_exiting(void);
 
+/* Canvas (M4a, variant a): the game renders its final image into a texture the host owns
+ * instead of the hidden window. mtl_texture is an id<MTLTexture> on the device the game's
+ * SDL_GPU device uses: type 2D, pixel format RGBA8Unorm (the game's output is not sRGB-encoded
+ * by Metal; sample it through an sRGB view if you need that), usage RenderTarget | ShaderRead,
+ * one mip level, one sample, hazard tracking on (the default). width and height must match the
+ * texture; any size up to the device's maximum is accepted, the game letterboxes its 16:9
+ * world image into it. The game writes the texture during celeste_tick on the ticking thread;
+ * call this and celeste_clear_canvas from that thread or while no tick runs. The host keeps
+ * the texture alive until celeste_clear_canvas returns. 0 or -1 (celeste_last_error names the
+ * mismatch). Needs the SDL_GPU kit (capability external_textures). */
+int32_t celeste_set_canvas(void *mtl_texture, int32_t width, int32_t height);
+
+/* Back to the hidden window; releases the game's reference to the canvas texture. 0 or -1. */
+int32_t celeste_clear_canvas(void);
+
 /* Shuts the game down and releases SDL. 0 or -1. */
 int32_t celeste_end(void);
 

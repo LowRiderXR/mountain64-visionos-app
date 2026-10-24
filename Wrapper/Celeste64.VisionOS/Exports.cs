@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using System.Text;
+using Celeste64;
 using Foster.Framework;
 using static SDL3.SDL;
 
@@ -72,7 +73,136 @@ public static unsafe class Exports
 	private static int initThreadId;
 	private static long ticks;
 	private static int lastTickThreadId;
+	private static IntPtr initMetalDevice;
 	private static readonly bool[] controllerConnected = new bool[InputState.MaxControllers];
+
+	// Canvas (M4a): Foster texture over the host's MTLTexture and the target that the game's
+	// output pass renders into (VisionOSKit.Outputs); null while the game renders to its window.
+	private static Texture? canvasTexture;
+	private static Target? canvasTarget;
+	private static IntPtr canvasHandle;
+
+	// Objective-C runtime, to read the MTLTexture's properties for the checks in celeste_set_canvas
+	// (Foster and SDL know nothing about Metal objects; the kit checks the same values when it
+	// wraps the texture, this gives the host a readable error before that).
+	[DllImport("libobjc.A.dylib", EntryPoint = "sel_registerName")]
+	private static extern IntPtr SelRegisterName([MarshalAs(UnmanagedType.LPStr)] string name);
+	[DllImport("libobjc.A.dylib", EntryPoint = "objc_msgSend")]
+	private static extern nuint ObjcMsgSendUInt(IntPtr receiver, IntPtr selector);
+	[DllImport("libobjc.A.dylib", EntryPoint = "objc_msgSend")]
+	private static extern IntPtr ObjcMsgSendPtr(IntPtr receiver, IntPtr selector);
+
+	private static nuint TextureProperty(IntPtr texture, string selector) => ObjcMsgSendUInt(texture, SelRegisterName(selector));
+
+	// Metal constants (MTLPixelFormat.h, MTLTexture.h, MTLResource.h)
+	private const nuint MTLPixelFormatRGBA8Unorm = 70;
+	private const nuint MTLTextureType2D = 2;
+	private const nuint MTLTextureUsageShaderRead = 0x1;
+	private const nuint MTLTextureUsageRenderTarget = 0x4;
+	private const nuint MTLHazardTrackingModeTracked = 2;
+
+	/// <summary>
+	/// Points the game's output pass at the host's texture: a Foster texture over the MTLTexture
+	/// (external texture of the kit, RenderTarget | Sampled), a Target over it (color only, the
+	/// game's output pass clears depth only where a depth attachment exists), and
+	/// VisionOSKit.Outputs. SDL never cycles an external texture (SDL_gpu_metal.m,
+	/// METAL_CreateTexture: canBeCycled = 0), so the host's texture receives every write.
+	/// </summary>
+	[UnmanagedCallersOnly(EntryPoint = "celeste_set_canvas")]
+	public static int CelesteSetCanvas(IntPtr mtlTexture, int width, int height)
+	{
+		try
+		{
+			if (game == null)
+				return SetError("celeste_set_canvas: no game; call celeste_init first");
+			if (mtlTexture == IntPtr.Zero)
+				return SetError("celeste_set_canvas: mtl_texture is null");
+			if (width <= 0 || height <= 0 || width > 16384 || height > 16384)
+				return SetError($"celeste_set_canvas: size {width}x{height} out of range");
+			if (!game.GraphicsDevice.Capabilities.ExternalTextures)
+				return SetError($"celeste_set_canvas: the loaded SDL has no external textures ({game.GraphicsDevice.Capabilities})");
+
+			var textureWidth = TextureProperty(mtlTexture, "width");
+			var textureHeight = TextureProperty(mtlTexture, "height");
+			var pixelFormat = TextureProperty(mtlTexture, "pixelFormat");
+			var textureType = TextureProperty(mtlTexture, "textureType");
+			var usage = TextureProperty(mtlTexture, "usage");
+			var sampleCount = TextureProperty(mtlTexture, "sampleCount");
+			var arrayLength = TextureProperty(mtlTexture, "arrayLength");
+			var mipLevels = TextureProperty(mtlTexture, "mipmapLevelCount");
+			var hazardTracking = TextureProperty(mtlTexture, "hazardTrackingMode");
+			var device = ObjcMsgSendPtr(mtlTexture, SelRegisterName("device"));
+			var deviceMatches = initMetalDevice == IntPtr.Zero ? -1 : (device == initMetalDevice ? 1 : 0);
+			Log.Info($"{Tag} canvas texture {textureWidth}x{textureHeight} pixelFormat={pixelFormat} type={textureType} usage=0x{usage:x} samples={sampleCount} layers={arrayLength} mips={mipLevels} hazardTracking={hazardTracking} device=0x{device:x} sameAsInit={deviceMatches}");
+
+			if (textureWidth != (nuint)width || textureHeight != (nuint)height)
+				return SetError($"celeste_set_canvas: texture is {textureWidth}x{textureHeight}, but {width}x{height} was given");
+			if (pixelFormat != MTLPixelFormatRGBA8Unorm)
+				return SetError($"celeste_set_canvas: pixel format {pixelFormat} is not RGBA8Unorm (70); Foster renders RGBA8, sample an sRGB view on the host side if needed");
+			if (textureType != MTLTextureType2D)
+				return SetError($"celeste_set_canvas: texture type {textureType} is not 2D (2)");
+			if ((usage & (MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead)) != (MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead))
+				return SetError($"celeste_set_canvas: usage 0x{usage:x} lacks RenderTarget (0x4) or ShaderRead (0x1)");
+			if (sampleCount != 1 || arrayLength != 1 || mipLevels != 1)
+				return SetError($"celeste_set_canvas: expected 1 sample, 1 layer, 1 mip level, got {sampleCount}, {arrayLength}, {mipLevels}");
+			if (deviceMatches == 0)
+				return SetError($"celeste_set_canvas: the texture's device 0x{device:x} is not the device given to celeste_init 0x{initMetalDevice:x}");
+			if (hazardTracking != MTLHazardTrackingModeTracked)
+				Log.Warning($"{Tag} canvas texture has hazardTrackingMode={hazardTracking}, not tracked (2): the host must order its reads itself");
+
+			ReleaseCanvas();
+
+			var properties = SDL_CreateProperties();
+			SDL_SetPointerProperty(properties, SDL_PROP_GPU_TEXTURE_CREATE_METAL_TEXTURE_POINTER, mtlTexture);
+			try
+			{
+				canvasTexture = new Texture(game.GraphicsDevice, width, height, TextureFormat.Color, 1, TextureFlags.RenderTarget | TextureFlags.Sampled, properties, "canvas");
+			}
+			finally
+			{
+				SDL_DestroyProperties(properties);
+			}
+			canvasTarget = new Target(game.GraphicsDevice, [canvasTexture], 0, "canvas");
+			canvasHandle = mtlTexture;
+			VisionOSKit.Outputs = [canvasTarget];
+			Log.Info($"{Tag} canvas set {width}x{height}: the game's output pass renders into the host texture instead of the window");
+			return Ok;
+		}
+		catch (Exception e)
+		{
+			ReleaseCanvas();
+			return SetError(e);
+		}
+	}
+
+	/// <summary>Back to the hidden window and release the game's reference to the texture.</summary>
+	[UnmanagedCallersOnly(EntryPoint = "celeste_clear_canvas")]
+	public static int CelesteClearCanvas()
+	{
+		try
+		{
+			if (game == null)
+				return SetError("celeste_clear_canvas: no game");
+			var had = canvasHandle;
+			ReleaseCanvas();
+			Log.Info($"{Tag} canvas cleared (was 0x{had:x}): the game's output pass renders into the window again");
+			return Ok;
+		}
+		catch (Exception e)
+		{
+			return SetError(e);
+		}
+	}
+
+	private static void ReleaseCanvas()
+	{
+		VisionOSKit.Outputs = null;
+		canvasTarget?.Dispose();
+		canvasTarget = null;
+		canvasTexture?.Dispose();
+		canvasTexture = null;
+		canvasHandle = IntPtr.Zero;
+	}
 
 	/// <summary>
 	/// Logs controller connections and button presses as Foster's input sees them after a tick,
@@ -246,6 +376,7 @@ public static unsafe class Exports
 			if (options->DepthClip != 0) flags |= AppFlags.DepthClip;
 
 			initThreadId = Environment.CurrentManagedThreadId;
+			initMetalDevice = options->MetalDevice;
 			ticks = 0;
 			lastTickThreadId = 0;
 			Array.Clear(controllerConnected);
@@ -370,6 +501,7 @@ public static unsafe class Exports
 			var ending = game;
 			game = null;
 			Log.Info($"{Tag} end ticks={ticks} frame={ending.Time.Frame} renderFrame={ending.Time.RenderFrame}");
+			ReleaseCanvas();
 			ending.End();
 			ending.Dispose();
 			return Ok;

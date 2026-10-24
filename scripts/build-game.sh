@@ -12,8 +12,10 @@
 #   scripts/build-game.sh mac-check  Publish the same project for osx-arm64 as a dylib, build the small
 #                                    C program Wrapper/Celeste64.VisionOS/mac-check/main.c and drive the
 #                                    dylib through the whole C interface (celeste.h): version,
-#                                    capabilities, init with a hidden window, 90 ticks without
-#                                    presenting, end; then the error case (missing content root).
+#                                    capabilities, init with a hidden window on a host Metal device
+#                                    and queue, ticks without presenting, the canvas (render into a
+#                                    host texture, read back), back to the window, end; then the
+#                                    error case (missing content root).
 #                                    The run needs a content root with Content/, the SDL3 kit dylib
 #                                    for macOS (Frameworks/macos) and the FMOD dylibs from the Celeste
 #                                    checkout; the script stages them in build/wrapper/mac-check-root.
@@ -66,7 +68,7 @@ FW_VERSION_STRING="${GAME_VERSION:-1.0}"
 FW_BUILD_NUMBER="${GAME_BUILD:-1}"
 VISIONOS_MIN="${VISIONOS_MIN:-1.0}"
 
-EXPECTED_EXPORTS=(celeste_version celeste_set_log_callback celeste_capabilities_get celeste_window_info_get celeste_init celeste_tick celeste_exiting celeste_end celeste_last_error)
+EXPECTED_EXPORTS=(celeste_version celeste_set_log_callback celeste_capabilities_get celeste_window_info_get celeste_init celeste_tick celeste_set_canvas celeste_clear_canvas celeste_exiting celeste_end celeste_last_error)
 
 # Content for the framework: everything Celeste reads at run time (Assets.cs loads *.glb, *.png,
 # *.map, *.json, banks, shaders, fonts), without the Blender sources next to the models (38 MB of
@@ -146,7 +148,10 @@ if [[ "$MODE" == "mac-check" ]]; then
     echo "   ${REV:-(no SDL revision string)}"
 
     step "Mac check: build and run the C program"
-    clang -std=gnu17 -Wall -Wextra -o "$BUILD_DIR/mac-check" "$PROJ_DIR/mac-check/main.c"
+    # The Metal helper of the MacHost provides device, queue, the canvas texture and the pixel
+    # read-back (Objective-C, ARC); the C program itself stays plain C.
+    clang -std=gnu17 -Wall -Wextra -fobjc-arc -framework Metal -framework Foundation \
+        -o "$BUILD_DIR/mac-check" "$PROJ_DIR/mac-check/main.c" "$ROOT/Tools/Celeste64.MacHost/native/k6d_metal.m"
     RUN_LOG="$BUILD_DIR/mac-check-run.log"
     echo "-- run (log: $RUN_LOG)"
     DYLD_LIBRARY_PATH="$STAGE" "$BUILD_DIR/mac-check" "$DYLIB" "$STAGE" > "$RUN_LOG" 2>&1 || { echo "error: mac check run failed (exit $?)" >&2; tail -30 "$RUN_LOG" >&2; exit 1; }

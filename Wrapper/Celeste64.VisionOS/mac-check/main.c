@@ -1,8 +1,10 @@
 /*
  * mac-check/main.c: drives the Celeste64.VisionOS library built for macOS the way the visionOS
  * host will drive the framework: dlopen, celeste_version, capabilities before and after
- * celeste_init, celeste_init with a hidden window, 90 ticks without presenting, celeste_end.
- * Built and run by scripts/build-game.sh mac-check.
+ * celeste_init, celeste_init with a hidden window on a host Metal device and queue, ticks
+ * without presenting, the canvas (the game renders into a host texture, read back on the same
+ * queue), back to the window, celeste_end. Built and run by scripts/build-game.sh mac-check,
+ * together with Tools/Celeste64.MacHost/native/k6d_metal.m for the Metal objects.
  *
  *   mac-check <path to Celeste64.VisionOS.dylib> <content root>
  *   mac-check <path to Celeste64.VisionOS.dylib> --bad-content
@@ -18,8 +20,21 @@
 
 #include "../celeste.h"
 
-#define TICKS 90
+/* Tools/Celeste64.MacHost/native/k6d_metal.m */
+void *k6d_metal_device(void);
+void *k6d_metal_queue(void *device);
+void *k6d_metal_texture_2d(void *device, unsigned width, unsigned height, int pixel_format_view);
+int k6d_metal_read_pixel(void *queue, void *texture, unsigned x, unsigned y, unsigned char out[4]);
+void k6d_metal_release(void *object);
+
+#define TICKS_WINDOW 60     /* ticks into the hidden window: Startup loads in tick 5, title after the wipe */
+#define TICKS_CANVAS 60     /* ticks into the canvas before the first read-back */
+#define TICKS_CANVAS_2 30   /* more canvas ticks before the second read-back (does the image change?) */
+#define TICKS_AFTER 30      /* ticks after celeste_clear_canvas (the canvas must not change any more) */
 #define HZ 90.0
+/* Canvas with a 16:10 shape, so the game's 16:9 image is letterboxed: bars of 40 rows top and bottom. */
+#define CANVAS_W 1280
+#define CANVAS_H 800
 
 typedef const char *(*version_fn)(void);
 typedef int32_t (*set_log_fn)(celeste_log_fn, void *);
@@ -36,6 +51,8 @@ typedef int32_t (*init_fn)(const celeste_init_options *);
 typedef int32_t (*tick_fn)(double, int32_t);
 typedef int32_t (*exiting_fn)(void);
 typedef int32_t (*end_fn)(void);
+typedef int32_t (*set_canvas_fn)(void *, int32_t, int32_t);
+typedef int32_t (*clear_canvas_fn)(void);
 typedef const char *(*last_error_fn)(void);
 
 static void *require(void *handle, const char *name)
@@ -51,6 +68,27 @@ static void print_capabilities(const char *when, const celeste_capabilities *c)
 {
     printf("mac-check: capabilities %s: kitSdlLoaded=%d kitExports=%d multiView=%d passProperties=%d externalTextures=%d memoryless=%d depthResolve=%d\n",
            when, c->kit_sdl_loaded, c->kit_exports, c->multi_view, c->pass_properties, c->external_textures, c->memoryless, c->depth_resolve);
+}
+
+/* Runs count ticks; returns the number of ticks with rc 0 or 1, -1 on the first failure. */
+static int run_ticks(tick_fn celeste_tick, last_error_fn celeste_last_error, int count, const char *label, int *exit_count)
+{
+    int ok = 0;
+    for (int i = 0; i < count; i++) {
+        int32_t t = celeste_tick(1.0 / HZ, 0);
+        if (t == -1) {
+            fprintf(stderr, "celeste_tick %s %d failed: %s\n", label, i, celeste_last_error());
+            return -1;
+        }
+        if (t == 1) (*exit_count)++;
+        ok++;
+    }
+    return ok;
+}
+
+static int nonblack(const unsigned char p[4])
+{
+    return p[0] != 0 || p[1] != 0 || p[2] != 0;
 }
 
 int main(int argc, char **argv)
@@ -74,8 +112,10 @@ int main(int argc, char **argv)
     tick_fn celeste_tick = (tick_fn)require(handle, "celeste_tick");
     exiting_fn celeste_exiting = (exiting_fn)require(handle, "celeste_exiting");
     end_fn celeste_end = (end_fn)require(handle, "celeste_end");
+    set_canvas_fn celeste_set_canvas = (set_canvas_fn)require(handle, "celeste_set_canvas");
+    clear_canvas_fn celeste_clear_canvas = (clear_canvas_fn)require(handle, "celeste_clear_canvas");
     last_error_fn celeste_last_error = (last_error_fn)require(handle, "celeste_last_error");
-    if (!celeste_version || !celeste_set_log_callback || !celeste_capabilities_get || !celeste_window_info_get || !celeste_init || !celeste_tick || !celeste_exiting || !celeste_end || !celeste_last_error) {
+    if (!celeste_version || !celeste_set_log_callback || !celeste_capabilities_get || !celeste_window_info_get || !celeste_init || !celeste_tick || !celeste_exiting || !celeste_end || !celeste_set_canvas || !celeste_clear_canvas || !celeste_last_error) {
         return 2;
     }
     if (celeste_set_log_callback(on_log, NULL) != 0) {
@@ -121,6 +161,16 @@ int main(int argc, char **argv)
         return 0;
     }
 
+    /* Host device and queue, as the visionOS host hands them to celeste_init (M1a.4). The canvas
+       is created on the same device, and the read-back runs on the same queue. */
+    void *device = k6d_metal_device();
+    void *queue = device ? k6d_metal_queue(device) : NULL;
+    if (!device || !queue) {
+        fprintf(stderr, "no Metal device or queue\n");
+        return 11;
+    }
+    options.metal_device = device;
+    options.metal_command_queue = queue;
     options.content_root = argv[2];
     int32_t rc = celeste_init(&options);
     if (rc != 0) {
@@ -147,19 +197,83 @@ int main(int argc, char **argv)
         return 10;
     }
 
-    int ticks_ok = 0, ticks_exit = 0, ticks_failed = 0;
-    for (int i = 0; i < TICKS; i++) {
-        int32_t t = celeste_tick(1.0 / HZ, 0);
-        if (t == 0) ticks_ok++;
-        else if (t == 1) ticks_exit++;
-        else { ticks_failed++; fprintf(stderr, "celeste_tick %d failed: %s\n", i, celeste_last_error()); break; }
+    int ticks_ok = 0, ticks_exit = 0, failed = 0;
+    int n = run_ticks(celeste_tick, celeste_last_error, TICKS_WINDOW, "window", &ticks_exit);
+    if (n < 0) failed = 1; else ticks_ok += n;
+
+    /* Canvas: the game renders its output into the host texture instead of the window. */
+    void *canvas = k6d_metal_texture_2d(device, CANVAS_W, CANVAS_H, 1);
+    if (!canvas) {
+        fprintf(stderr, "canvas texture could not be created\n");
+        return 11;
     }
-    printf("mac-check: ticks ok=%d exit=%d failed=%d exiting=%d\n", ticks_ok, ticks_exit, ticks_failed, celeste_exiting());
+    /* Error case first: wrong size must be refused with a text. */
+    rc = celeste_set_canvas(canvas, CANVAS_W, CANVAS_H + 1);
+    printf("mac-check: celeste_set_canvas with wrong size: rc=%d last_error=\"%s\"\n", rc, celeste_last_error());
+    if (rc != -1) {
+        fprintf(stderr, "expected rc=-1 for a wrong size\n");
+        return 12;
+    }
+    rc = celeste_set_canvas(canvas, CANVAS_W, CANVAS_H);
+    printf("mac-check: celeste_set_canvas %dx%d: rc=%d%s%s\n", CANVAS_W, CANVAS_H, rc, rc ? " " : "", rc ? celeste_last_error() : "");
+    if (rc != 0) {
+        return 12;
+    }
+    unsigned char center1[4] = {0}, edge[4] = {0}, center2[4] = {0}, center3[4] = {0};
+    if (!failed) {
+        n = run_ticks(celeste_tick, celeste_last_error, TICKS_CANVAS, "canvas", &ticks_exit);
+        if (n < 0) failed = 1; else ticks_ok += n;
+    }
+    if (!k6d_metal_read_pixel(queue, canvas, CANVAS_W / 2, CANVAS_H / 2, center1) ||
+        !k6d_metal_read_pixel(queue, canvas, CANVAS_W / 2, 10, edge)) {
+        fprintf(stderr, "read-back failed\n");
+        return 13;
+    }
+    printf("mac-check: canvas after %d ticks: center=(%u,%u,%u,%u) letterbox=(%u,%u,%u,%u)\n", TICKS_CANVAS,
+           center1[0], center1[1], center1[2], center1[3], edge[0], edge[1], edge[2], edge[3]);
+    int canvas_ok = nonblack(center1) && !nonblack(edge) && edge[3] == 255;
+    if (!failed) {
+        n = run_ticks(celeste_tick, celeste_last_error, TICKS_CANVAS_2, "canvas", &ticks_exit);
+        if (n < 0) failed = 1; else ticks_ok += n;
+    }
+    k6d_metal_read_pixel(queue, canvas, CANVAS_W / 2, CANVAS_H / 2, center2);
+    printf("mac-check: canvas after %d more ticks: center=(%u,%u,%u,%u) %s\n", TICKS_CANVAS_2,
+           center2[0], center2[1], center2[2], center2[3],
+           memcmp(center1, center2, 4) ? "(changed: the game keeps rendering into the canvas)" : "(unchanged: static image or no further writes, not conclusive)");
+
+    /* Back to the window: the canvas must not change any more. */
+    rc = celeste_clear_canvas();
+    printf("mac-check: celeste_clear_canvas: rc=%d\n", rc);
+    if (rc != 0) {
+        return 14;
+    }
+    if (!failed) {
+        n = run_ticks(celeste_tick, celeste_last_error, TICKS_AFTER, "window again", &ticks_exit);
+        if (n < 0) failed = 1; else ticks_ok += n;
+    }
+    k6d_metal_read_pixel(queue, canvas, CANVAS_W / 2, CANVAS_H / 2, center3);
+    int detached = memcmp(center2, center3, 4) == 0;
+    printf("mac-check: canvas after clear and %d ticks: center=(%u,%u,%u,%u) %s\n", TICKS_AFTER,
+           center3[0], center3[1], center3[2], center3[3], detached ? "(unchanged: the game renders into the window again)" : "(CHANGED: the game still writes the canvas)");
+
+    int total = TICKS_WINDOW + TICKS_CANVAS + TICKS_CANVAS_2 + TICKS_AFTER;
+    printf("mac-check: ticks ok=%d of %d exit=%d failed=%d exiting=%d\n", ticks_ok, total, ticks_exit, failed, celeste_exiting());
 
     rc = celeste_end();
     printf("mac-check: celeste_end rc=%d exiting=%d\n", rc, celeste_exiting());
-    if (rc != 0 || ticks_failed != 0 || ticks_ok != TICKS) {
+    k6d_metal_release(canvas);
+    k6d_metal_release(queue);
+    k6d_metal_release(device);
+    if (rc != 0 || failed || ticks_ok != total) {
         return 8;
+    }
+    if (!canvas_ok) {
+        fprintf(stderr, "canvas check failed: center must be non-black, letterbox row must be opaque black\n");
+        return 15;
+    }
+    if (!detached) {
+        fprintf(stderr, "canvas still changed after celeste_clear_canvas\n");
+        return 16;
     }
     printf("mac-check: run ok\n");
     return 0;
