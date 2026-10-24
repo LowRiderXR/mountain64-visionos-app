@@ -439,6 +439,10 @@ public static unsafe class Exports
 				SDL_DestroyProperties(properties);
 				properties = 0;
 			}
+			// Check against frozen values: everything derived from Game.RelativeScale is a static
+			// readonly field, initialized when its class is first touched; this line touches them
+			// after the game exists and shows what the game will draw with.
+			Log.Info($"{Tag} derived width={Game.Width} height={Game.Height} relativeScale={Game.RelativeScale:F3} fontSize={Assets.FontSize} iconSize={UI.IconSize} promptSize={UI.PromptSize} menuSpacing={Menu.Spacing} cardWidth={Overworld.CardWidth} cardHeight={Overworld.CardHeight}");
 			created.Begin();
 			game = created;
 			Log.Info($"{Tag} init ok userPath=\"{created.UserPath}\" window={created.Window.Width}x{created.Window.Height} pixels={created.Window.WidthInPixels}x{created.Window.HeightInPixels} internal={Game.Width}x{Game.Height} relativeScale={Game.RelativeScale:F3} edgeLine={VisionOSKit.EdgeLineWidth} capabilities={created.GraphicsDevice.Capabilities}");

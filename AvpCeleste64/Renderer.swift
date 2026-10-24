@@ -257,6 +257,9 @@ nonisolated final class Renderer: @unchecked Sendable {
             + " C64_KIT_MSAA=\(ProbeContext.environment("C64_KIT_MSAA"))"
             + " C64_KIT_MEMORYLESS=\(ProbeContext.environment("C64_KIT_MEMORYLESS"))"
             + " C64_KIT_DEPTH_STORE=\(ProbeContext.environment("C64_KIT_DEPTH_STORE"))"
+            + " C64_CELESTE=\(ProbeContext.environment(CelesteProbe.environmentKey))"
+            + " C64_RES=\(ProbeContext.environment("C64_RES"))"
+            + " C64_LINE=\(ProbeContext.environment("C64_LINE"))"
             + " views=\(layerRenderer.properties.viewCount)"
             + " stallSeq=\(stallPlan.isEmpty ? "-" : stallPlan.map { String(Int($0 * 1000)) }.joined(separator: ","))"
         c64Record(line)

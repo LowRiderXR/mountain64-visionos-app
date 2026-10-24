@@ -20,6 +20,10 @@
 //  Unabhängig von C64_KIT; init und ein Kit-Modus zusammen sind nicht sinnvoll (zwei SDL_GPU-
 //  Devices auf demselben MTLDevice), die Kit-Modi laufen aber unverändert danach.
 //
+//  Weitere Schalter (M4a.4, siehe GameSettings): C64_RES für die interne Auflösung des Spiels
+//  (Standard 1920x1080) und C64_LINE für die Umrissbreite (Standard auto); die Leinwand hat die
+//  interne Auflösung, C64_CANVAS_FOV ihre Winkelbreite, C64_CANVAS_FILTER den Filter.
+//
 
 import CoreGraphics
 import Foundation
@@ -168,10 +172,68 @@ nonisolated enum CelesteProbe {
                          Double(black) / pixels * 100, written, ms, base))
     }
 
+    // MARK: Auflösung und Linienbreite (M4a.4)
+
+    /// Interne Auflösung des Spiels, Umrissbreite und Leinwandgrösse aus C64_RES und C64_LINE.
+    ///   C64_RES=640x360|1280x720|1920x1080|2560x1440|native   Standard 1920x1080 (vorläufig).
+    ///       native: Tabelle je Gerät (hw.machine) aus der Map-Messung ([c64-native]); solange
+    ///       sie leer ist, 1920x1080 mit Logzeile.
+    ///   C64_LINE=1|2|3|4|auto                                  Standard auto = round(Höhe/360).
+    /// Ungültige Werte: Fehlerzeile im Log, dann der Standard. Die Leinwand hat die interne
+    /// Auflösung, ausser bei 640x360 (1280x720 wie bisher); die Winkelbreite bleibt C64_CANVAS_FOV.
+    struct GameSettings {
+        let internalWidth: Int
+        let internalHeight: Int
+        let edgeLineWidth: Int
+        var canvasWidth: Int { internalWidth == 640 && internalHeight == 360 ? 1280 : internalWidth }
+        var canvasHeight: Int { internalWidth == 640 && internalHeight == 360 ? 720 : internalHeight }
+    }
+
+    static let resolutions: [String: (Int, Int)] = [
+        "640x360": (640, 360), "1280x720": (1280, 720), "1920x1080": (1920, 1080), "2560x1440": (2560, 1440),
+    ]
+    static let defaultResolution = (1920, 1080)
+    /// «nativ» je Gerät aus der Messung [c64-native]; wird in M4a.4c gefüllt.
+    static let nativeResolutions: [String: (Int, Int)] = [:]
+
+    static let settings: GameSettings = {
+        let environment = ProcessInfo.processInfo.environment
+        let resText = environment["C64_RES"] ?? ""
+        var resolution = defaultResolution
+        var resNote = resText.isEmpty ? "unset" : resText
+        if resText.isEmpty {
+            // Standard
+        } else if resText == "native" {
+            if let native = nativeResolutions[ProbeContext.hardwareMachine] {
+                resolution = native
+                resNote = "native(\(ProbeContext.hardwareMachine))"
+            } else {
+                c64Record("[c64-res] native table empty, using \(defaultResolution.0)x\(defaultResolution.1) (hw.machine \(ProbeContext.hardwareMachine))")
+            }
+        } else if let known = resolutions[resText] {
+            resolution = known
+        } else {
+            c64Record("[c64-res] error: C64_RES=\"\(resText)\" unbekannt (640x360, 1280x720, 1920x1080, 2560x1440, native), Standard \(defaultResolution.0)x\(defaultResolution.1)")
+        }
+        let lineText = environment["C64_LINE"] ?? ""
+        let autoLine = max(1, min(4, Int((Double(resolution.1) / 360).rounded())))
+        var line = autoLine
+        if lineText.isEmpty || lineText == "auto" {
+            // Standard auto
+        } else if let value = Int(lineText), (1...4).contains(value) {
+            line = value
+        } else {
+            c64Record("[c64-res] error: C64_LINE=\"\(lineText)\" ungültig (1, 2, 3, 4, auto), Standard auto=\(autoLine)")
+        }
+        let result = GameSettings(internalWidth: resolution.0, internalHeight: resolution.1, edgeLineWidth: line)
+        c64Record("[c64-res] C64_RES=\(resNote) -> internal=\(result.internalWidth)x\(result.internalHeight) canvas=\(result.canvasWidth)x\(result.canvasHeight) C64_LINE=\(lineText.isEmpty ? "unset" : lineText) -> line=\(line) (auto=\(autoLine))")
+        return result
+    }()
+
     // MARK: Leinwand (M4a)
 
-    static let canvasWidth = 1280
-    static let canvasHeight = 720
+    static var canvasWidth: Int { settings.canvasWidth }
+    static var canvasHeight: Int { settings.canvasHeight }
 
     /// Winkelbreite der Leinwand in Grad (C64_CANVAS_FOV, Standard 50).
     static var canvasFovDegrees: Float {
@@ -206,7 +268,7 @@ nonisolated enum CelesteProbe {
     /// sie Celeste in M4a.3 beschreibt) und einmal über einen Staging-Puffer auf der gemeinsamen
     /// Queue füllen. Muster: Verlauf (rot nach rechts, grün nach unten, blau 64), weisses Gitter
     /// alle 128 Pixel, gelbe Markierung 160×90 oben links, blaue 80×45 unten rechts, schwarzer
-    /// Rand von 4 Pixeln.
+    /// Rand von 4 Pixeln. Grösse aus den Einstellungen (M4a.4: interne Auflösung des Spiels).
     @MainActor static func prepareCanvas() -> Bool {
         guard ensureHostDevice(), let device, let queue = commandQueue else { return false }
         if canvasTexture != nil { return true }
@@ -480,6 +542,10 @@ nonisolated enum CelesteProbe {
         // GPU-Zeit von Celestes Command Buffern über den Kit-Rückruf (M4a.3).
         options.completed_callback = unsafeBitCast(celesteCommandBufferCompleted, to: UnsafeMutableRawPointer.self)
         options.completed_userdata = nil
+        // Interne Auflösung und Umrissbreite (M4a.4, C64_RES und C64_LINE; der Host löst auto auf).
+        options.internal_width = Int32(settings.internalWidth)
+        options.internal_height = Int32(settings.internalHeight)
+        options.edge_line_width = Int32(settings.edgeLineWidth)
 
         let initStart = DispatchTime.now()
         let initRc: Int32 = contentRoot.withCString { cRoot in
@@ -488,7 +554,7 @@ nonisolated enum CelesteProbe {
         }
         let initMs = elapsedMs(since: initStart)
         if initRc == 0 {
-            c64Record("[c64-celeste] step=init rc=0 thread=\(Thread.isMainThread ? "main" : "other") contentRoot=\"\(contentRoot)\" ms=\(format(initMs))")
+            c64Record("[c64-celeste] step=init rc=0 thread=\(Thread.isMainThread ? "main" : "other") contentRoot=\"\(contentRoot)\" internal=\(settings.internalWidth)x\(settings.internalHeight) line=\(settings.edgeLineWidth) optionsSize=\(options.size) ms=\(format(initMs))")
         } else {
             let error = celeste_last_error().map { String(cString: $0) } ?? ""
             c64Record("[c64-celeste] step=init rc=\(initRc) error=\"\(error)\" ms=\(format(initMs))")

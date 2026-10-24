@@ -138,39 +138,79 @@ nonisolated final class CanvasScene {
     /// Einmal: Tangenten beider Augen aus computeProjection (aussermittige Projektion: Spalte 0
     /// und 1 skalieren, Spalte 2 trägt die Aussermittigkeit, Plattformwissen «Augen-Frustum ist
     /// asymmetrisch»; tanR = (1 + m20)/m00, tanL = (1 − m20)/m00, tanT = (1 + m21)/m11,
-    /// tanB = (1 − m21)/m11), daraus das Sichtfeld, dazu Drawable- und Map-Grössen und die Pixel,
-    /// die auf die Leinwandbreite fallen (Grundlage für «nativ» in M4a.4: logisch in der Mitte
-    /// 1:1 unter der Map, physisch als Mittel über die Textur). cp_view_get_tangents ist seit
-    /// visionOS 2 veraltet.
+    /// tanB = (1 − m21)/m11), daraus das Sichtfeld, dazu Drawable- und Map-Grössen; danach die
+    /// Messung «nativ» (logNativeSpan). cp_view_get_tangents ist seit visionOS 2 veraltet.
     func logEyesOnce(drawable: LayerRenderer.Drawable, views: [LayerRenderer.Drawable.View], maps: [MTLRasterizationRateMap]) {
         guard !eyesLogged, let firstView = views.first else { return }
         eyesLogged = true
         let texture = drawable.colorTextures[firstView.textureMap.textureIndex]
         var parts: [String] = []
+        var tangents: [SIMD4<Float>] = []
         for (index, view) in views.enumerated() {
             let p = drawable.computeProjection(viewIndex: index)
             let m00 = p.columns.0.x, m11 = p.columns.1.y, m20 = p.columns.2.x, m21 = p.columns.2.y
             let t = SIMD4<Float>((1 - m20) / m00, (1 + m20) / m00, (1 + m21) / m11, (1 - m21) / m11)   // l, r, t, b
+            tangents.append(t)
             let horizontal = (atan(t.x) + atan(t.y)) * 180 / .pi
             let vertical = (atan(t.z) + atan(t.w)) * 180 / .pi
             let viewport = view.textureMap.viewport
-            var native = ""
-            if let map = maps.first {
-                let layer = min(index, map.layerCount - 1)
-                let logicalWidth = Float(map.screenSize.width)
-                let physicalWidth = Float(map.physicalSize(layer: layer).width)
-                native = String(format: " nativeForCanvas{logical=%.0f physical=%.0f}", logicalWidth * fovDegrees / horizontal, physicalWidth * fovDegrees / horizontal)
-            } else {
-                native = String(format: " nativeForCanvas{texture=%.0f}", Float(viewport.width) * fovDegrees / horizontal)
-            }
-            parts.append(String(format: "view%d{tangents l=%.3f r=%.3f t=%.3f b=%.3f fov=%.1f°x%.1f° viewport=%.0fx%.0f%@}",
-                                index, t.x, t.y, t.z, t.w, horizontal, vertical, viewport.width, viewport.height, native))
+            parts.append(String(format: "view%d{tangents l=%.3f r=%.3f t=%.3f b=%.3f fov=%.1f°x%.1f° viewport=%.0fx%.0f}",
+                                index, t.x, t.y, t.z, t.w, horizontal, vertical, viewport.width, viewport.height))
         }
         let mapText = maps.enumerated().map { index, map in
             let physical = (0..<map.layerCount).map { "\(map.physicalSize(layer: $0).width)x\(map.physicalSize(layer: $0).height)" }.joined(separator: ",")
             return "map\(index){layers=\(map.layerCount) screen=\(map.screenSize.width)x\(map.screenSize.height) physical=[\(physical)]}"
         }.joined(separator: " ")
         c64Record("[c64-canvas] eyes drawable=\(texture.width)x\(texture.height)x\(texture.arrayLength) canvasFov=\(fovDegrees)° \(parts.joined(separator: " ")) \(mapText.isEmpty ? "map=none" : mapText)")
+        logNativeSpan(tangents: tangents, maps: maps)
+    }
+
+    /// Messung «nativ» (M4a.4): wie viele physische Pixel der Rate Map auf eine geradeaus
+    /// zentrierte Leinwand mit fovDegrees fallen, je Auge. Bildschirm-x der Leinwandränder aus
+    /// den Tangenten (x = (tanL ∓ tan(fov/2)) / (tanL + tanR) · screen.width, Tangens, nicht
+    /// Winkel: die Map ist im Tangens linear), dasselbe vertikal mit der 16:9-Höhe
+    /// (y = (tanT ∓ halfV) / (tanT + tanB) · screen.height), dann mapScreenToPhysicalCoordinates
+    /// (Swift: physicalCoordinates(screenCoordinates:layer:)) für beide Ränder und die Mitte ±1 px. Dichte = physische Pixel pro logischem Pixel
+    /// (Mitte etwa 1, Rand darunter). suggested: physische Spanne, 16:9, Breite auf 16 und Höhe
+    /// auf 8 gerundet, begrenzt durch die vertikale Spanne.
+    private func logNativeSpan(tangents: [SIMD4<Float>], maps: [MTLRasterizationRateMap]) {
+        guard let map = maps.first else {
+            c64Record("[c64-native] no rate map (foveation off): no measurement")
+            return
+        }
+        let half = tan(fovDegrees * .pi / 360)
+        let halfV = half * 9 / 16
+        let screenW = Float(map.screenSize.width), screenH = Float(map.screenSize.height)
+        for (index, t) in tangents.enumerated() {
+            let layer = min(index, map.layerCount - 1)
+            let tanL = t.x, tanR = t.y, tanT = t.z, tanB = t.w
+            func screenX(_ u: Float) -> Float { (tanL + u) / (tanL + tanR) * screenW }
+            func screenY(_ v: Float) -> Float { (tanT - v) / (tanT + tanB) * screenH }
+            let xLeft = screenX(-half), xRight = screenX(half), xCentre = screenX(0)
+            let yTop = screenY(halfV), yBottom = screenY(-halfV), yCentre = screenY(0)
+            func physical(_ x: Float, _ y: Float) -> MTLCoordinate2D {
+                map.physicalCoordinates(screenCoordinates: MTLCoordinate2D(x: x, y: y), layer: layer)
+            }
+            let pLeft = physical(xLeft, yCentre), pRight = physical(xRight, yCentre)
+            let pTop = physical(xCentre, yTop), pBottom = physical(xCentre, yBottom)
+            let physicalSpanX = pRight.x - pLeft.x
+            let physicalSpanY = pBottom.y - pTop.y
+            // Dichte aus ±1 logischem Pixel
+            let centreDensityX = (physical(xCentre + 1, yCentre).x - physical(xCentre - 1, yCentre).x) / 2
+            let centreDensityY = (physical(xCentre, yCentre + 1).y - physical(xCentre, yCentre - 1).y) / 2
+            let edgeDensityL = (physical(xLeft + 1, yCentre).x - physical(xLeft - 1, yCentre).x) / 2
+            let edgeDensityR = (physical(xRight + 1, yCentre).x - physical(xRight - 1, yCentre).x) / 2
+            let edgeDensityT = (physical(xCentre, yTop + 1).y - physical(xCentre, yTop - 1).y) / 2
+            let edgeDensityB = (physical(xCentre, yBottom + 1).y - physical(xCentre, yBottom - 1).y) / 2
+            let suggestedWidthRaw = min(physicalSpanX, physicalSpanY * 16 / 9)
+            let suggestedWidth = Int((suggestedWidthRaw / 16).rounded()) * 16
+            let suggestedHeight = Int((Float(suggestedWidth) * 9 / 16 / 8).rounded()) * 8
+            c64Record(String(format: "[c64-native] eye=%d layer=%d canvasFov=%.1f° screenX=[%.0f..%.0f] screenY=[%.0f..%.0f] logicalSpan=%.0fx%.0f physicalX=[%.0f..%.0f] physicalY=[%.0f..%.0f] physicalSpan=%.0fx%.0f centreDensity=%.3fx%.3f edgeDensity{l=%.3f r=%.3f t=%.3f b=%.3f} suggested=%dx%d",
+                             index, layer, fovDegrees, xLeft, xRight, yTop, yBottom, xRight - xLeft, yBottom - yTop,
+                             pLeft.x, pRight.x, pTop.y, pBottom.y, physicalSpanX, physicalSpanY,
+                             centreDensityX, centreDensityY, edgeDensityL, edgeDensityR, edgeDensityT, edgeDensityB,
+                             suggestedWidth, suggestedHeight))
+        }
     }
 
     /// Zeichnet die Leinwand in den offenen Encoder; wie TestScene.encode (Weltmodus).
