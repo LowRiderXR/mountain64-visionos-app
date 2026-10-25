@@ -20,8 +20,9 @@
  * (must succeed with the defaults). --bad-content passes a content root that does not exist:
  * celeste_init must return -1 with a text in celeste_last_error instead of crashing. --dump
  * writes the canvas after the first canvas ticks as <base>.png and <base>.rgba (reference for
- * scripts/compare-canvas.py against the dump the device writes). Exit code 0 when every check
- * passes.
+ * scripts/compare-canvas.py against the dump the device writes). Before celeste_end the run
+ * asks the game to exit (celeste_request_exit); the next tick must return 1. Exit code 0 when
+ * every check passes.
  */
 
 #include <dlfcn.h>
@@ -210,11 +211,12 @@ int main(int argc, char **argv)
     init_fn celeste_init = (init_fn)require(handle, "celeste_init");
     tick_fn celeste_tick = (tick_fn)require(handle, "celeste_tick");
     exiting_fn celeste_exiting = (exiting_fn)require(handle, "celeste_exiting");
+    exiting_fn celeste_request_exit = (exiting_fn)require(handle, "celeste_request_exit");
     end_fn celeste_end = (end_fn)require(handle, "celeste_end");
     set_canvas_fn celeste_set_canvas = (set_canvas_fn)require(handle, "celeste_set_canvas");
     clear_canvas_fn celeste_clear_canvas = (clear_canvas_fn)require(handle, "celeste_clear_canvas");
     last_error_fn celeste_last_error = (last_error_fn)require(handle, "celeste_last_error");
-    if (!celeste_version || !celeste_set_log_callback || !celeste_capabilities_get || !celeste_window_info_get || !celeste_init || !celeste_tick || !celeste_exiting || !celeste_end || !celeste_set_canvas || !celeste_clear_canvas || !celeste_last_error) {
+    if (!celeste_version || !celeste_set_log_callback || !celeste_capabilities_get || !celeste_window_info_get || !celeste_init || !celeste_tick || !celeste_exiting || !celeste_request_exit || !celeste_end || !celeste_set_canvas || !celeste_clear_canvas || !celeste_last_error) {
         return 2;
     }
     if (celeste_set_log_callback(on_log, NULL) != 0) {
@@ -383,8 +385,19 @@ int main(int argc, char **argv)
     int total = TICKS_WINDOW + TICKS_CANVAS + TICKS_CANVAS_2 + TICKS_AFTER;
     printf("mac-check: ticks ok=%d of %d exit=%d failed=%d exiting=%d\n", ticks_ok, total, ticks_exit, failed, celeste_exiting());
 
+    /* Exit probe: the game asks to exit (as if the player chose Exit), the next tick must return
+       1 and celeste_exiting 1; celeste_end must still succeed afterwards. This is the wrapper half
+       of the host's shutdown path (the host stops ticking on rc 1, then calls celeste_end). */
+    rc = celeste_request_exit();
+    int32_t exit_tick = celeste_tick(1.0 / HZ, 0);
+    int exit_probe_ok = rc == 0 && exit_tick == 1 && celeste_exiting() == 1;
+    printf("mac-check: exit probe: celeste_request_exit rc=%d, next tick rc=%d, exiting=%d %s\n", rc, exit_tick, celeste_exiting(), exit_probe_ok ? "(ok)" : "(FAILED)");
+
     rc = celeste_end();
     printf("mac-check: celeste_end rc=%d exiting=%d\n", rc, celeste_exiting());
+    if (!exit_probe_ok) {
+        return 19;
+    }
     k6d_metal_release(canvas);
     k6d_metal_release(queue);
     k6d_metal_release(device);

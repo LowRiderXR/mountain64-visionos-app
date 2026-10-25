@@ -45,8 +45,9 @@ nonisolated enum CelesteProbe {
         /// M1a.5 (Variante B, Teil 2): wie init, danach übernimmt der Render-Thread des
         /// Compositors das Ticken, ein celeste_tick pro Frame in der Update-Phase
         /// (Renderer.renderFrame, zwischen startUpdate und endUpdate), present 0, Delta aus dem
-        /// Frame-Takt begrenzt auf 1/30 s. Kein Bild in die Drawables (M4a). Beim Pausieren oder
-        /// Schliessen des ImmersiveSpace pausieren die Ticks, kein celeste_end.
+        /// Frame-Takt begrenzt auf 1/30 s. Kein Bild in die Drawables (M4a). Beim Pausieren des
+        /// Layers pausieren die Ticks; das Schliessen des ImmersiveSpace (Digital Crown) und
+        /// «Exit» im Spiel beenden die App sauber über requestExit (M4a.5a: celeste_end, exit(0)).
         case tick
         /// M4a.2: Leinwand ohne Celeste. Der Host legt Device, Queue und eine 1280×720-Textur
         /// (RGBA8Unorm, PixelFormatView) an, füllt sie einmal (Verlauf, Gitter, Markierung oben
@@ -352,11 +353,22 @@ nonisolated enum CelesteProbe {
 
         /// Ein Tick pro Compositor-Frame. frameInterval: Wanduhr-Intervall zwischen den Rückkehren
         /// von queryNextFrame (Takt des Compositors, am Render-Thread gemessen), nil beim ersten
-        /// Frame nach Start oder Pause; dann 1/90 s.
+        /// Frame nach Start oder Pause; dann 1/90 s. Meldet der Tick rc=1 («Exit» im Spiel),
+        /// läuft requestExit erst nach dem Verlassen des Locks: es ruft stop, das denselben
+        /// (nicht rekursiven) NSLock nimmt; innerhalb von tick wäre das ein Deadlock des
+        /// Render-Threads (gemessen M4a.5a auf der M5: keine Zeile nach «requested», das
+        /// System beendete die App nach dem blockierten Render-Thread).
         func tick(frameInterval: TimeInterval?) {
+            if let reason = tickLocked(frameInterval: frameInterval) {
+                CelesteProbe.requestExit(reason: reason)
+            }
+        }
+
+        /// Der Tick unter dem Lock; gibt den Grund für ein Ende zurück, sonst nil.
+        private func tickLocked(frameInterval: TimeInterval?) -> String? {
             lock.lock()
             defer { lock.unlock() }
-            guard ready, !stopped else { return }
+            guard ready, !stopped else { return nil }
             let delta = min(max(frameInterval ?? CelesteProbe.tickDelta, 0.001), 1.0 / 30.0)
             let now = CFAbsoluteTimeGetCurrent()
             if !firstLogged {
@@ -373,14 +385,16 @@ nonisolated enum CelesteProbe {
                 let error = celeste_last_error().map { String(cString: $0) } ?? ""
                 c64Record("[c64-celeste] tick rc=-1 after \(totalTicks) ticks, ticking stopped: \"\(error)\"")
                 stopped = true
-                return
+                return nil
             }
             totalTicks += 1
             windowTicks += 1
             if rc == 1 {
-                c64Record("[c64-celeste] tick rc=1: game asked to exit after \(totalTicks) ticks, ticking stopped (no celeste_end)")
+                // «Exit» im Titel: dasselbe saubere Ende wie bei der Digital Crown (M4a.5a);
+                // stopped hier unter dem Lock, requestExit danach ausserhalb (siehe tick).
+                c64Record("[c64-celeste] tick rc=1: game asked to exit after \(totalTicks) ticks, ticking stopped")
                 stopped = true
-                return
+                return "game asked to exit (tick rc=1)"
             }
             deltaSum += delta
             deltaMax = max(deltaMax, delta)
@@ -407,6 +421,7 @@ nonisolated enum CelesteProbe {
                 tickMsSum = 0
                 tickMsMax = 0
             }
+            return nil
         }
 
         /// Pause oder Ende der Renderschleife: die Ticks setzen aus, das Spiel bleibt (kein
@@ -432,9 +447,75 @@ nonisolated enum CelesteProbe {
             windowStart = CFAbsoluteTimeGetCurrent()
             c64Record("[c64-celeste] tick resumed reason=\"\(reason)\" thread=\(Thread.current.name ?? "?") totalTicks=\(totalTicks)")
         }
+
+        /// Endgültiges Ende der Ticks (M4a.5a): kein Tick mehr, auch nicht nach einem Resume; der
+        /// nächste Schritt ist celeste_end auf dem Hauptthread. Wartet, falls gerade ein Tick
+        /// läuft (dasselbe Lock), damit celeste_end nie neben celeste_tick läuft.
+        func stop(reason: String) {
+            lock.lock()
+            defer { lock.unlock() }
+            let already = stopped
+            stopped = true
+            c64Record("[c64-celeste] tick stopped reason=\"\(reason)\" alreadyStopped=\(already ? 1 : 0) totalTicks=\(totalTicks) totalFrames=\(totalFrames)")
+        }
     }
 
     static let tickState = TickState()
+
+    // MARK: Sauberes Ende (M4a.5a)
+
+    private static let exitLock = NSLock()
+    private static var exitRequested = false
+    private static var exitCalled = false
+
+    /// Beendet die App sauber: Ticks endgültig stoppen, auf dem Hauptthread (SDLs Hauptthread,
+    /// der Thread von celeste_init) celeste_end (Foster End → Celestes Shutdown → FMOD release;
+    /// Dispose → SDL_Quit), dann exit(0). Jede Logzeile ist mit fsync geschrieben, bevor der
+    /// nächste Schritt läuft (ProbeLog). Wächter: dauert das Ende länger als eine Sekunde,
+    /// beendet ein zweiter Thread trotzdem, mit Logzeile; er startet als erster Schritt, vor
+    /// allem, was blockieren kann (stop nimmt das Tick-Lock, celeste_end läuft auf dem
+    /// Hauptthread). Aufrufbar von jedem Thread, aber nicht unter dem Tick-Lock; der erste
+    /// Aufruf gewinnt. Auslöser: Layer invalidiert (Digital Crown, Raum geschlossen) und ein Tick
+    /// mit rc=1 («Exit» im Titel).
+    nonisolated static func requestExit(reason: String) {
+        let first = exitLock.withLock { () -> Bool in
+            if exitRequested { return false }
+            exitRequested = true
+            return true
+        }
+        guard first else { return }
+        let requestedAt = DispatchTime.now()
+
+        // Wächter zuerst: nach einer Sekunde ohne Ende trotzdem beenden.
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 1.0) {
+            exitOnce(line: "[c64-exit] shutdown exceeds 1 s, exiting anyway")
+        }
+
+        c64Record("[c64-exit] requested reason=\"\(reason)\" thread=\(Thread.current.name ?? "?") isMainThread=\(Thread.isMainThread)")
+        tickState.stop(reason: reason)
+
+        DispatchQueue.main.async {
+            let start = DispatchTime.now()
+            let rc = celeste_end()
+            let endMs = Double(DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000
+            let totalMs = Double(DispatchTime.now().uptimeNanoseconds - requestedAt.uptimeNanoseconds) / 1_000_000
+            let error = rc == 0 ? "" : " error=\"\(celeste_last_error().map { String(cString: $0) } ?? "")\""
+            c64Record("[c64-exit] celeste_end rc=\(rc) ms=\(format(endMs)) totalMs=\(format(totalMs)) exiting=\(celeste_exiting())\(error)")
+            exitOnce(line: "[c64-exit] exit(0)")
+        }
+    }
+
+    /// exit(0) genau einmal; die letzte Logzeile ist vor dem Aufruf mit fsync geschrieben.
+    private nonisolated static func exitOnce(line: String) {
+        let first = exitLock.withLock { () -> Bool in
+            if exitCalled { return false }
+            exitCalled = true
+            return true
+        }
+        guard first else { return }
+        c64Record(line)
+        exit(0)
+    }
 
     static var mode: Mode? {
         Mode(rawValue: ProcessInfo.processInfo.environment[environmentKey] ?? "")

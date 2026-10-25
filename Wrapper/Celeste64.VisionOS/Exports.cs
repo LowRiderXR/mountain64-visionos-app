@@ -533,6 +533,27 @@ public static unsafe class Exports
 	}
 
 	/// <summary>
+	/// Asks the game to exit as if the player chose Exit: Foster sets Exiting, the next
+	/// celeste_tick returns 1. Lets a host exercise its own shutdown path without input.
+	/// </summary>
+	[UnmanagedCallersOnly(EntryPoint = "celeste_request_exit")]
+	public static int CelesteRequestExit()
+	{
+		try
+		{
+			if (game == null)
+				return SetError("celeste_request_exit: no game");
+			game.Exit();
+			Log.Info($"{Tag} exit requested by the host; the next tick returns 1 (exiting={(game.Exiting ? 1 : 0)})");
+			return Ok;
+		}
+		catch (Exception e)
+		{
+			return SetError(e);
+		}
+	}
+
+	/// <summary>
 	/// Shuts the game down (Celeste's Shutdown, windows hidden, input closed) and disposes it,
 	/// which quits SDL.
 	/// </summary>
@@ -545,10 +566,17 @@ public static unsafe class Exports
 				return SetError("celeste_end: no game");
 			var ending = game;
 			game = null;
-			Log.Info($"{Tag} end ticks={ticks} frame={ending.Time.Frame} renderFrame={ending.Time.RenderFrame}");
+			Log.Info($"{Tag} end ticks={ticks} frame={ending.Time.Frame} renderFrame={ending.Time.RenderFrame} thread={Environment.CurrentManagedThreadId} sameAsInit={(Environment.CurrentManagedThreadId == initThreadId ? 1 : 0)}");
 			ReleaseCanvas();
+			// End runs the game's Shutdown (scenes, Audio.Shutdown with FMOD's system.release) and
+			// closes input; Dispose destroys the window and the GPU device and quits SDL. Both are
+			// timed, so a host log shows where a slow shutdown spends its time.
+			var stopwatch = System.Diagnostics.Stopwatch.StartNew();
 			ending.End();
+			var endMs = stopwatch.Elapsed.TotalMilliseconds;
+			stopwatch.Restart();
 			ending.Dispose();
+			Log.Info($"{Tag} end: End() ms={endMs:F1} Dispose() ms={stopwatch.Elapsed.TotalMilliseconds:F1}");
 			return Ok;
 		}
 		catch (Exception e)

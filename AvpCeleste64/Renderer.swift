@@ -303,10 +303,13 @@ nonisolated final class Renderer: @unchecked Sendable {
             switch layerRenderer.state {
             case .invalidated:
                 c64Record("[c64-loop] Layer invalidiert, Schleife endet nach \(totalFrames) Frames")
-                if CelesteProbe.ticksGame {
-                    CelesteProbe.tickState.pause(reason: "layer invalidated, render loop ends; game keeps running without celeste_end")
-                }
                 logLoopSummary()
+                if CelesteProbe.ticksGame {
+                    // M4a.5a: der geschlossene Raum (Digital Crown) beendet die App sauber:
+                    // Ticks stoppen, celeste_end auf dem Hauptthread, exit(0). Ohne Fensterszene
+                    // gäbe es sonst keinen sauberen Neustart, solange Celeste im Prozess lebt.
+                    CelesteProbe.requestExit(reason: "layer invalidated")
+                }
                 Task { @MainActor [appModel] in
                     appModel.immersiveState = .closed
                     appModel.statusLine = "ImmersiveSpace geschlossen."

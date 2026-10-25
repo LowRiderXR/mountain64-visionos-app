@@ -104,6 +104,10 @@ int32_t celeste_tick(double delta_seconds, int32_t present);
 /* 1 when the game asked to exit (or no game exists), else 0. */
 int32_t celeste_exiting(void);
 
+/* Asks the game to exit as if the player chose Exit: the next celeste_tick returns 1. For a
+ * host that wants to exercise its shutdown path without input. 0 or -1. */
+int32_t celeste_request_exit(void);
+
 /* Canvas (M4a, variant a): the game renders its final image into a texture the host owns
  * instead of the hidden window. mtl_texture is an id<MTLTexture> on the device the game's
  * SDL_GPU device uses: type 2D, pixel format RGBA8Unorm (the game's output is not sRGB-encoded
