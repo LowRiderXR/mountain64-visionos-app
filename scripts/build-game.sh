@@ -72,7 +72,7 @@ FW_VERSION_STRING="${GAME_VERSION:-1.0}"
 FW_BUILD_NUMBER="${GAME_BUILD:-1}"
 VISIONOS_MIN="${VISIONOS_MIN:-1.0}"
 
-EXPECTED_EXPORTS=(celeste_version celeste_set_log_callback celeste_capabilities_get celeste_window_info_get celeste_init celeste_tick celeste_set_canvas celeste_clear_canvas celeste_exiting celeste_request_exit celeste_end celeste_last_error)
+EXPECTED_EXPORTS=(celeste_version celeste_set_log_callback celeste_capabilities_get celeste_window_info_get celeste_init celeste_tick celeste_set_canvas celeste_clear_canvas celeste_exiting celeste_request_exit celeste_audio_suspend celeste_request_pause celeste_end celeste_last_error)
 
 # Content for the framework: everything Celeste reads at run time (Assets.cs loads *.glb, *.png,
 # *.map, *.json, banks, shaders, fonts), without the Blender sources next to the models (38 MB of
@@ -165,7 +165,7 @@ if [[ "$MODE" == "mac-check" ]]; then
     # --dump: the title screen on the canvas as PNG and raw RGBA, the Mac reference for the colour
     # comparison with the device (scripts/compare-canvas.py <mac.rgba> <device.rgba>).
     DYLD_LIBRARY_PATH="$STAGE" "$BUILD_DIR/mac-check" "$DYLIB" "$STAGE" --dump "$BUILD_DIR/mac-check-canvas" > "$RUN_LOG" 2>&1 || { echo "error: mac check run failed (exit $?)" >&2; tail -30 "$RUN_LOG" >&2; exit 1; }
-    grep -E "^mac-check:|Foster: |SDL: |Graphics Driver|visionOS kit|celeste-visionos|Loaded Assets|Exception|rror" "$RUN_LOG" | head -40
+    grep -E "^mac-check:|Foster: |SDL: |Graphics Driver|visionOS kit|celeste-visionos|c64-pause|Loaded Assets|Exception|rror" "$RUN_LOG" | head -40
 
     # The same run per internal resolution, outline width auto, one dump each; the colour
     # statistics of each dump must match the default run (same title screen, same frame).

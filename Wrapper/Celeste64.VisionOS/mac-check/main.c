@@ -70,6 +70,7 @@ typedef int32_t (*window_info_fn)(celeste_window_info *);
 typedef int32_t (*init_fn)(const celeste_init_options *);
 typedef int32_t (*tick_fn)(double, int32_t);
 typedef int32_t (*exiting_fn)(void);
+typedef int32_t (*audio_suspend_fn)(int32_t);
 typedef int32_t (*end_fn)(void);
 typedef int32_t (*set_canvas_fn)(void *, int32_t, int32_t);
 typedef int32_t (*clear_canvas_fn)(void);
@@ -212,11 +213,13 @@ int main(int argc, char **argv)
     tick_fn celeste_tick = (tick_fn)require(handle, "celeste_tick");
     exiting_fn celeste_exiting = (exiting_fn)require(handle, "celeste_exiting");
     exiting_fn celeste_request_exit = (exiting_fn)require(handle, "celeste_request_exit");
+    exiting_fn celeste_request_pause = (exiting_fn)require(handle, "celeste_request_pause");
+    audio_suspend_fn celeste_audio_suspend = (audio_suspend_fn)require(handle, "celeste_audio_suspend");
     end_fn celeste_end = (end_fn)require(handle, "celeste_end");
     set_canvas_fn celeste_set_canvas = (set_canvas_fn)require(handle, "celeste_set_canvas");
     clear_canvas_fn celeste_clear_canvas = (clear_canvas_fn)require(handle, "celeste_clear_canvas");
     last_error_fn celeste_last_error = (last_error_fn)require(handle, "celeste_last_error");
-    if (!celeste_version || !celeste_set_log_callback || !celeste_capabilities_get || !celeste_window_info_get || !celeste_init || !celeste_tick || !celeste_exiting || !celeste_request_exit || !celeste_end || !celeste_set_canvas || !celeste_clear_canvas || !celeste_last_error) {
+    if (!celeste_version || !celeste_set_log_callback || !celeste_capabilities_get || !celeste_window_info_get || !celeste_init || !celeste_tick || !celeste_exiting || !celeste_request_exit || !celeste_request_pause || !celeste_audio_suspend || !celeste_end || !celeste_set_canvas || !celeste_clear_canvas || !celeste_last_error) {
         return 2;
     }
     if (celeste_set_log_callback(on_log, NULL) != 0) {
@@ -385,6 +388,16 @@ int main(int argc, char **argv)
     int total = TICKS_WINDOW + TICKS_CANVAS + TICKS_CANVAS_2 + TICKS_AFTER;
     printf("mac-check: ticks ok=%d of %d exit=%d failed=%d exiting=%d\n", ticks_ok, total, ticks_exit, failed, celeste_exiting());
 
+    /* Pause probe: FMOD mixer suspend and resume back to back (no tick in between, as FMOD
+       requires), then a pause request; the next tick applies it only to a running level, on the
+       title screen the game logs applied=0. */
+    int32_t suspend_rc = celeste_audio_suspend(1);
+    int32_t resume_rc = celeste_audio_suspend(0);
+    int32_t pause_rc = celeste_request_pause();
+    int32_t pause_tick = celeste_tick(1.0 / HZ, 0);
+    int pause_probe_ok = suspend_rc == 0 && resume_rc == 0 && pause_rc == 0 && pause_tick == 0;
+    printf("mac-check: pause probe: suspend rc=%d resume rc=%d request_pause rc=%d next tick rc=%d %s\n", suspend_rc, resume_rc, pause_rc, pause_tick, pause_probe_ok ? "(ok)" : "(FAILED)");
+
     /* Exit probe: the game asks to exit (as if the player chose Exit), the next tick must return
        1 and celeste_exiting 1; celeste_end must still succeed afterwards. This is the wrapper half
        of the host's shutdown path (the host stops ticking on rc 1, then calls celeste_end). */
@@ -397,6 +410,9 @@ int main(int argc, char **argv)
     printf("mac-check: celeste_end rc=%d exiting=%d\n", rc, celeste_exiting());
     if (!exit_probe_ok) {
         return 19;
+    }
+    if (!pause_probe_ok) {
+        return 20;
     }
     k6d_metal_release(canvas);
     k6d_metal_release(queue);

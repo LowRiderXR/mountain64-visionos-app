@@ -56,6 +56,216 @@ nonisolated final class Renderer: @unchecked Sendable {
     // ARKit nach dem Schliessen des Startfensters running?).
     private var arkitPeriodicRemaining = 10
     private var arkitPeriodicNextAt: CFAbsoluteTime = 0
+    // M4a.5c-4: Frame-Abschluss nach dem Muster von Vice City. Die Pause wird nur am Schleifen-
+    // anfang entschieden; ein Frame nach queryNextFrame läuft immer bis encodePresent, commit,
+    // endSubmission (Ausstiege nur bei predictTiming nil und leerer Drawable-Liste). Ein Frame,
+    // der mittendrin verlassen wurde, blieb entweder in Arbeit (BUG IN CLIENT «more than 3 frames
+    // in flight» beim nächsten queryNextFrame, Absturz M5 2026-10-25) oder liess ein bezogenes
+    // Drawable ohne Present zurück (GPU-Timeout des nächsten Host-Buffers, rund 5 s).
+    // Diese Notiz hält fest, wo das Hintergrund-Flag im Frame zuerst gesehen wurde.
+    private struct PauseFrameNote {
+        var frameIndex: UInt64
+        var flagSeen: String      // before-tick | after-tick
+        var tickSkipped: Bool
+        var committed: Bool
+        var presented: Bool
+    }
+    private var pauseFrameNote: PauseFrameNote?
+    // Nach dem Fortsetzen: die ersten drei Frames mit dem Status ihres Command Buffers.
+    private var resumeFramesToLog = 0
+    // Frame, dessen Host-Buffer bei gesetztem Flag committet wurde (hinter cmdErrLock); dessen
+    // BackgroundExecutionNotPermitted ist erwartet und zählt nicht als Fehler.
+    private var backgroundCommitFrame: UInt64?
+    private var cmdErrExpectedTotal = 0
+    // M4a.5c-2: Ton-Zustand, nur vom Render-Thread (FMOD: Suspend und Resume paarweise auf
+    // demselben Thread, kein zweites Suspend ohne Resume).
+    private var audioSuspended = false {
+        didSet { CelesteProbe.pauseState.setMixerSuspended(audioSuspended) }
+    }
+    private var audioResumePending = false
+    private var nextAudioRetryAt: CFAbsoluteTime = 0
+    private var audioFallbackTried = false
+    private var cmdSkippedTotal = 0
+    // Ticks bleiben aus, solange der Mixer angehalten ist (Celestes Tick ruft FMOD: Audio.Update,
+    // Events; FMOD: kein Aufruf zwischen mixerSuspend und mixerResume). Die Schleife präsentiert
+    // weiter die Leinwand mit dem letzten Bild.
+    private var ticksHeldForAudio = false
+    private var ticksSkippedForAudio = 0
+
+    /// Pause gewünscht: Layer nicht running oder App im Hintergrund (Flag vom Hauptthread). Der
+    /// Layer meldet .paused erst 150 bis 200 ms nach willResignActive; bis dahin würden Ticks und
+    /// Commits im Hintergrund laufen (IOGPUMetalError in der Konsole).
+    private var shouldPause: Bool {
+        layerRenderer.state != .running || CelesteProbe.pauseState.isBackground
+    }
+
+    private var pauseReasonText: String {
+        "layer=\(Self.name(layerRenderer.state)) background=\(CelesteProbe.pauseState.isBackground ? 1 : 0)"
+    }
+
+    /// Eine Zeile je Pause: wo das Hintergrund-Flag zuerst gesehen wurde (vor dem Frame, im
+    /// Frame vor dem Tick, im Frame nach dem Tick), Tick ausgelassen, committet, präsentiert.
+    private func logPauseFrameNote() {
+        if let note = pauseFrameNote {
+            c64Record("[c64-pause-frame] tMs=\(LaunchClock.tMs) frame=\(note.frameIndex) flagSeen=\(note.flagSeen) tickSkipped=\(note.tickSkipped ? 1 : 0) committed=\(note.committed ? 1 : 0) presented=\(note.presented ? 1 : 0)")
+        } else {
+            c64Record("[c64-pause-frame] tMs=\(LaunchClock.tMs) frame=\(lastFrameIndex.map { "\($0)" } ?? "-") flagSeen=before-frame tickSkipped=0 committed=0 presented=0 (kein Frame in Arbeit, letzter abgeschlossener Frame)")
+        }
+        pauseFrameNote = nil
+    }
+
+    // MARK: Pause (M4a.5c-2)
+
+    /// Pausenzweig der Schleife. Vor dem ersten Frame (Layer startet .paused) nur warten, ohne
+    /// Suspend und ohne Pausenanfrage. Sonst: Ticks stehen, Mixer einmal suspendieren, warten,
+    /// bis der Layer running ist und die App im Vordergrund (didBecomeActive gesehen, App active,
+    /// Szene foregroundActive); dann Session aktivieren, nur bei Erfolg mixerResume, Pausenanfrage,
+    /// Ticks weiter. Kehrt bei .invalidated zurück, der Schleifenkopf beendet dann.
+    private func pauseBranch() {
+        let initial = totalFrames == 0 && !CelesteProbe.pauseState.isBackground
+        c64Record("[c64-loop] tMs=\(LaunchClock.tMs) Layer pausiert, warte; \(pauseReasonText) provider=\(Self.name(worldTracking.state)) frames=\(totalFrames) initial=\(initial ? 1 : 0)")
+        if initial {
+            layerRenderer.waitUntilRunning()
+            c64Record("[c64-loop] tMs=\(LaunchClock.tMs) Layer läuft (Start); provider=\(Self.name(worldTracking.state))")
+            lastPresentationTime = nil
+            lastQueryReturn = nil
+            return
+        }
+        logPauseFrameNote()
+
+        let game = CelesteProbe.ticksGame && CelesteProbe.tickState.isActive
+        if CelesteProbe.ticksGame {
+            CelesteProbe.tickState.pause(reason: "pause \(pauseReasonText)")
+        }
+        if game, !audioSuspended, !audioResumePending {
+            // Genau ein Suspend je Pause; ein offener Resume-Versuch (Session war nicht aktiv)
+            // lässt FMOD suspendiert, dann kein zweites Suspend.
+            if CelesteProbe.suspendAudio(true) {
+                audioSuspended = true
+            }
+        } else if game, audioSuspended {
+            c64Record("[c64-audio] tMs=\(LaunchClock.tMs) mixer bleibt suspendiert (kein zweites Suspend)")
+        }
+
+        // Warten, bis beides erfüllt ist. waitUntilRunning kehrt bei running oder invalidated
+        // zurück; das Hintergrund-Flag wird alle 20 ms geprüft.
+        var loggedRunningInBackground = false
+        while true {
+            let state = layerRenderer.state
+            if state == .invalidated {
+                c64Record("[c64-loop] tMs=\(LaunchClock.tMs) Layer invalidiert während der Pause")
+                return
+            }
+            if state == .paused {
+                layerRenderer.waitUntilRunning()
+                continue
+            }
+            if CelesteProbe.pauseState.isBackground {
+                if !loggedRunningInBackground {
+                    loggedRunningInBackground = true
+                    c64Record("[c64-loop] tMs=\(LaunchClock.tMs) Layer läuft wieder, App im Hintergrund, warte")
+                }
+                Thread.sleep(forTimeInterval: 0.02)
+                continue
+            }
+            break
+        }
+        c64Record("[c64-loop] tMs=\(LaunchClock.tMs) Fortsetzen; \(pauseReasonText) provider=\(Self.name(worldTracking.state))")
+
+        if game {
+            resumeAudioIfPossible(trigger: "resume")
+        }
+        ticksHeldForAudio = true
+        resumeTicksIfAudioRunning(reason: "resume")
+        resumeFramesToLog = 3
+        lastPresentationTime = nil
+        lastQueryReturn = nil
+    }
+
+    /// Ticks wieder zulassen, sobald der Mixer läuft: Pausenanfrage ans Spiel, dann
+    /// tickState.resume. Bei angehaltenem Mixer bleibt es bei einer Logzeile; der nächste
+    /// erfolgreiche Resume-Versuch (serviceAudioRetry) ruft erneut.
+    private func resumeTicksIfAudioRunning(reason: String) {
+        guard ticksHeldForAudio else { return }
+        if audioSuspended {
+            c64Record("[c64-celeste] tMs=\(LaunchClock.tMs) Ticks bleiben aus, Mixer angehalten (reason=\(reason))")
+            return
+        }
+        ticksHeldForAudio = false
+        if ticksSkippedForAudio > 0 {
+            c64Record("[c64-celeste] tMs=\(LaunchClock.tMs) Ticks setzen wieder ein nach \(ticksSkippedForAudio) Frames ohne Tick (reason=\(reason))")
+            ticksSkippedForAudio = 0
+        }
+        if CelesteProbe.ticksGame, CelesteProbe.tickState.isActive {
+            CelesteProbe.requestPause()
+        }
+        if CelesteProbe.ticksGame {
+            CelesteProbe.tickState.resume(reason: reason)
+        }
+        lastQueryReturn = nil
+    }
+
+    /// Ton nach einer Pause: Session aktivieren, nur bei Erfolg mixerResume (FMOD-Beispiel
+    /// common_platform.mm:211-236). Scheitert die Session, bleibt der Mixer suspendiert, die
+    /// Ticks laufen ohne Ton, und der Versuch wiederholt sich bei einem Signal (Session
+    /// didBecomeActive, resumptionRecommendation) oder spätestens nach einer Sekunde. Scheitert
+    /// mixerResume trotz aktiver Session, folgt einmal FMODs Rückfall für eine gestörte Ausgabe
+    /// (Media Services Reset, common_platform.mm:195-196): Suspend und Resume als Paar.
+    private func resumeAudioIfPossible(trigger: String, mediaServicesReset: Bool = false) {
+        let now = CFAbsoluteTimeGetCurrent()
+        if mediaServicesReset, !audioSuspended {
+            c64Record("[c64-audio] tMs=\(LaunchClock.tMs) media services reset im Vordergrund: Suspend und Resume als Paar (FMOD-Beispiel)")
+            if CelesteProbe.suspendAudio(true, context: "reset pair") {
+                audioSuspended = true
+            }
+        }
+        guard audioSuspended else { return }
+        guard CelesteProbe.reactivateAudioSession() else {
+            audioResumePending = true
+            nextAudioRetryAt = now + 1
+            c64Record("[c64-audio] tMs=\(LaunchClock.tMs) resume pending: session nicht aktiv, Mixer bleibt suspendiert, Ticks ohne Ton (trigger=\(trigger))")
+            return
+        }
+        if CelesteProbe.suspendAudio(false, context: trigger) {
+            audioSuspended = false
+            audioResumePending = false
+            audioFallbackTried = false
+            return
+        }
+        if !audioFallbackTried {
+            audioFallbackTried = true
+            c64Record("[c64-audio] tMs=\(LaunchClock.tMs) fallback pair: Suspend und Resume nochmals (FMOD-Beispiel für gestörte Ausgabe)")
+            CelesteProbe.suspendAudio(true, context: "fallback pair")
+            if CelesteProbe.suspendAudio(false, context: "fallback pair") {
+                audioSuspended = false
+                audioResumePending = false
+                audioFallbackTried = false
+                return
+            }
+        }
+        // Annahme: nach einem gescheiterten Resume ist FMOD weiterhin suspendiert.
+        audioResumePending = true
+        nextAudioRetryAt = now + 1
+        c64Record("[c64-audio] tMs=\(LaunchClock.tMs) resume pending: mixerResume gescheitert, nächster Versuch in 1 s (trigger=\(trigger))")
+    }
+
+    /// Schleifenkopf bei laufendem Spiel: offene Ton-Versuche und Bitten des Hauptthreads.
+    private func serviceAudioRetry() {
+        guard CelesteProbe.ticksGame else { return }
+        if let request = CelesteProbe.pauseState.takeAudioRetry() {
+            if audioSuspended || request.mediaServicesReset {
+                c64Record("[c64-audio] tMs=\(LaunchClock.tMs) audio retry trigger=\(request.trigger)")
+                resumeAudioIfPossible(trigger: request.trigger, mediaServicesReset: request.mediaServicesReset)
+                resumeTicksIfAudioRunning(reason: "audio retry \(request.trigger)")
+            }
+            return
+        }
+        if audioResumePending, CFAbsoluteTimeGetCurrent() >= nextAudioRetryAt {
+            c64Record("[c64-audio] tMs=\(LaunchClock.tMs) audio retry trigger=periodic")
+            resumeAudioIfPossible(trigger: "periodic")
+            resumeTicksIfAudioRunning(reason: "audio retry periodic")
+        }
+    }
 
     // Stall-Probe
     private let stallPlan: [TimeInterval]
@@ -382,22 +592,18 @@ nonisolated final class Renderer: @unchecked Sendable {
                     appModel.statusLine = "ImmersiveSpace geschlossen."
                 }
                 return
-            case .paused:
-                c64Log.notice("[c64-loop] Layer pausiert, warte")
-                if CelesteProbe.ticksGame {
-                    CelesteProbe.tickState.pause(reason: "layer paused")
-                }
-                layerRenderer.waitUntilRunning()
-                c64Log.notice("[c64-loop] Layer läuft wieder")
-                if CelesteProbe.ticksGame {
-                    CelesteProbe.tickState.resume(reason: "layer running again")
-                }
-                lastPresentationTime = nil
-                lastQueryReturn = nil
-                continue
             default:
                 break
             }
+            // M4a.5c-2: Pause, wenn der Layer nicht läuft oder die App im Hintergrund ist.
+            if shouldPause {
+                pauseBranch()
+                continue
+            }
+            // Flag war im letzten Frame kurz gesetzt, aber am Schleifenanfang schon wieder weg:
+            // Notiz verwerfen, sonst würde sie der nächsten Pause zugeschrieben.
+            pauseFrameNote = nil
+            serviceAudioRetry()
 
             // Stall-Probe: VOR queryNextFrame, also ohne angefangenen Frame.
             stallIfDue()
@@ -560,6 +766,8 @@ nonisolated final class Renderer: @unchecked Sendable {
         let footprintEnd = ProbeContext.physFootprintMB
         cmdErrLock.lock()
         let cmdErr = cmdErrTotal
+        let cmdSkipped = cmdSkippedTotal
+        let cmdErrExpected = cmdErrExpectedTotal
         cmdErrLock.unlock()
         let mode = KitProbe.mode?.rawValue ?? "-"
         // Bildrate über den Lauf: mittleres Intervall aus presentationTime und daraus Hz.
@@ -578,9 +786,9 @@ nonisolated final class Renderer: @unchecked Sendable {
                                  lastDrawableSize.width, lastDrawableSize.height,
                                  lastMapSizes.screenW, lastMapSizes.screenH, lastMapSizes.physW, lastMapSizes.physH)
         let availableEnd = ProbeContext.availableMemoryMB
-        c64Record(String(format: "[c64-loop] summary C64_KIT=%@ foveation=%d%@ frames=%llu interval(ms) mean=%.3f rate=%.1f Hz cancelled=%d cmdErr=%d footprintMB start=%.1f end=%.1f delta=%+.1f availableMB start=%.1f end=%.1f%@%@",
+        c64Record(String(format: "[c64-loop] summary C64_KIT=%@ foveation=%d%@ frames=%llu interval(ms) mean=%.3f rate=%.1f Hz cancelled=%d cmdErr=%d cmdErrExpectedInBackground=%d cmdSkipped=%d footprintMB start=%.1f end=%.1f delta=%+.1f availableMB start=%.1f end=%.1f%@%@",
                          mode, layerRenderer.configuration.isFoveationEnabled ? 1 : 0, qualityPart, totalFrames, meanInterval * 1000, hz,
-                         cancelledTotal, cmdErr, footprintStartMB, footprintEnd, footprintEnd - footprintStartMB,
+                         cancelledTotal, cmdErr, cmdErrExpected, cmdSkipped, footprintStartMB, footprintEnd, footprintEnd - footprintStartMB,
                          availableStartMB, availableEnd, kitPart, fovPart))
     }
 
@@ -671,7 +879,21 @@ nonisolated final class Renderer: @unchecked Sendable {
         // die Drawables, die kommen erst nach startSubmission (M4a verschiebt den Render-Teil
         // dorthin oder reicht die Drawable-Texturen vorher als Ausgabeziele).
         frame.startUpdate()
-        if CelesteProbe.ticksGame {
+        // M4a.5c-4: Ist die App beim Erreichen des Ticks schon im Hintergrund, entfällt nur der
+        // celeste_tick dieses Frames (SDL würde zwei Command Buffer im Hintergrund committen);
+        // der Frame wird trotzdem mit der Leinwand des letzten Bildes fertig präsentiert, die
+        // Pause folgt am Schleifenanfang.
+        let backgroundAtTick = CelesteProbe.pauseState.isBackground
+        if backgroundAtTick {
+            pauseFrameNote = PauseFrameNote(frameIndex: frame.frameIndex, flagSeen: "before-tick", tickSkipped: true, committed: false, presented: false)
+        } else if audioSuspended {
+            // M4a.5c-2: kein celeste_tick bei angehaltenem Mixer; der Frame wird trotzdem
+            // präsentiert (Leinwand mit dem letzten Bild).
+            ticksSkippedForAudio += 1
+            if ticksSkippedForAudio == 1 {
+                c64Record("[c64-celeste] tMs=\(LaunchClock.tMs) Tick ausgelassen, Mixer angehalten; Schleife präsentiert weiter")
+            }
+        } else if CelesteProbe.ticksGame {
             CelesteProbe.tickState.tick(frameInterval: frameInterval)
         }
         frame.endUpdate()
@@ -713,8 +935,11 @@ nonisolated final class Renderer: @unchecked Sendable {
         }
         commandBuffer.label = "c64-frame \(frame.frameIndex)"
         let frameIndexForHandler = frame.frameIndex
+        // M4a.5c-4: nach dem Fortsetzen die ersten drei Frames mit Buffer-Status loggen.
+        let logResume = resumeFramesToLog > 0
+        if logResume { resumeFramesToLog -= 1 }
         commandBuffer.addCompletedHandler { [weak self] buffer in
-            self?.noteCommandBufferCompletion(buffer, frameIndex: frameIndexForHandler)
+            self?.noteCommandBufferCompletion(buffer, frameIndex: frameIndexForHandler, logResume: logResume)
         }
 
         // Pose und Timing aus dem Drawable für das eingebaute Display (target builtIn,
@@ -776,8 +1001,24 @@ nonisolated final class Renderer: @unchecked Sendable {
         for drawable in drawables {
             drawable.encodePresent(commandBuffer: commandBuffer)
         }
+        // M4a.5c-4: immer committen und präsentieren, auch im Hintergrund (Vice City). Ein
+        // Present ohne Commit liess das Drawable hängen, der nächste Host-Buffer lief in den
+        // GPU-Timeout. Der eine Host-Buffer im Hintergrund darf vom System abgelehnt werden
+        // (BackgroundExecutionNotPermitted), das zählt als erwartet.
+        if CelesteProbe.pauseState.isBackground {
+            if pauseFrameNote == nil {
+                pauseFrameNote = PauseFrameNote(frameIndex: frame.frameIndex, flagSeen: "after-tick", tickSkipped: false, committed: false, presented: false)
+            }
+            cmdErrLock.lock()
+            backgroundCommitFrame = frame.frameIndex
+            cmdErrLock.unlock()
+        }
         commandBuffer.commit()
         frame.endSubmission()
+        if pauseFrameNote?.frameIndex == frame.frameIndex {
+            pauseFrameNote?.committed = true
+            pauseFrameNote?.presented = true
+        }
 
         if postStallWanted > 0 {
             postStallSamples.append((frame.frameIndex, relativeToNow, lateness))
@@ -1047,7 +1288,7 @@ nonisolated final class Renderer: @unchecked Sendable {
 
     /// Completed-Handler (Metal-Thread): Status ungleich .completed oder gesetzter Fehler zählt
     /// als Fehler; Zeile [c64-cmderr] höchstens einmal pro Sekunde, auch in die Datei.
-    private func noteCommandBufferCompletion(_ buffer: MTLCommandBuffer, frameIndex: UInt64) {
+    private func noteCommandBufferCompletion(_ buffer: MTLCommandBuffer, frameIndex: UInt64, logResume: Bool = false) {
         let status = buffer.status
         let error = buffer.error
         if status == .completed {
@@ -1060,7 +1301,36 @@ nonisolated final class Renderer: @unchecked Sendable {
                 cmdErrLock.unlock()
             }
         }
+        if logResume {
+            // M4a.5c-4: die ersten drei Frames nach dem Fortsetzen, Status und GPU-Zeit.
+            let gpuMs = (buffer.gpuEndTime - buffer.gpuStartTime) * 1000
+            let errorText = (error as NSError?).map { "\($0.domain) code=\($0.code) \($0.localizedDescription)" } ?? "-"
+            c64Record("[c64-resume-frame] tMs=\(LaunchClock.tMs) frame=\(frameIndex) status=\(Self.name(status)) gpuMs=\(String(format: "%.2f", gpuMs)) error=\(errorText)")
+        }
         guard status != .completed || error != nil else { return }
+        // M4a.5c-4: der eine Host-Buffer, der bei gesetztem Hintergrund-Flag committet wurde,
+        // darf vom System abgelehnt werden (MTLCommandBufferError.notPermitted, «Insufficient
+        // Permission (to submit GPU work from background)»). Erwartet, eigener Zähler, immer eine
+        // Zeile; Timeout und andere Fehler wie bisher.
+        if let nsError = error as NSError?, nsError.domain == MTLCommandBufferErrorDomain,
+           nsError.code == MTLCommandBufferError.notPermitted.rawValue {
+            cmdErrLock.lock()
+            let expected = backgroundCommitFrame == frameIndex
+            if expected { cmdErrExpectedTotal += 1 }
+            cmdErrLock.unlock()
+            if expected {
+                c64Record("[c64-cmderr] tMs=\(LaunchClock.tMs) frame=\(frameIndex) status=\(Self.name(status)) expectedInBackground=1 error=\(nsError.domain) code=\(nsError.code) \(nsError.localizedDescription)")
+                return
+            }
+        }
+        // M4a.5c-2: ein absichtlich nicht committeter Buffer (Pause vor dem Commit) meldet
+        // notEnqueued ohne Fehler; das ist kein GPU-Fehler.
+        if status == .notEnqueued, error == nil {
+            cmdErrLock.lock()
+            cmdSkippedTotal += 1
+            cmdErrLock.unlock()
+            return
+        }
 
         cmdErrLock.lock()
         cmdErrCount += 1
@@ -1077,7 +1347,9 @@ nonisolated final class Renderer: @unchecked Sendable {
         } else {
             errorText = "-"
         }
-        c64Record("[c64-cmderr] frame=\(frameIndex) status=\(Self.name(status)) error=\(errorText)")
+        // GPU-Timeouts um eine Pause (Host-Buffer, der beim Wechsel in den Hintergrund in der
+        // GPU lag) werden hier nur notiert: Frame, Zeit, Status.
+        c64Record("[c64-cmderr] tMs=\(LaunchClock.tMs) frame=\(frameIndex) status=\(Self.name(status)) error=\(errorText)")
     }
 
     /// GPU-Zeit der Gerüst-Buffer im Fenster lesen und nullen (Render-Thread, einmal pro Sekunde).

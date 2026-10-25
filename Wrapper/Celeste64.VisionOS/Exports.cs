@@ -533,6 +533,49 @@ public static unsafe class Exports
 	}
 
 	/// <summary>
+	/// Suspends (1) or resumes (0) FMOD's mixer for a backgrounded app (System::mixerSuspend and
+	/// mixerResume; state and playback position are kept). Call both from the same thread with
+	/// no celeste_tick in between, as FMOD requires.
+	/// </summary>
+	[UnmanagedCallersOnly(EntryPoint = "celeste_audio_suspend")]
+	public static int CelesteAudioSuspend(int suspend)
+	{
+		try
+		{
+			if (game == null)
+				return SetError("celeste_audio_suspend: no game");
+			var result = VisionOSKit.SuspendAudio(suspend != 0);
+			Log.Info($"{Tag} audio {(suspend != 0 ? "suspend" : "resume")} result={result} thread={Environment.CurrentManagedThreadId}");
+			return result == FMOD.RESULT.OK ? Ok : SetError($"celeste_audio_suspend({suspend}): FMOD {result}");
+		}
+		catch (Exception e)
+		{
+			return SetError(e);
+		}
+	}
+
+	/// <summary>
+	/// Asks the game to pause at its next update (the device was put on again): a running level
+	/// opens its pause menu, the title and the overworld do nothing. Any thread.
+	/// </summary>
+	[UnmanagedCallersOnly(EntryPoint = "celeste_request_pause")]
+	public static int CelesteRequestPause()
+	{
+		try
+		{
+			if (game == null)
+				return SetError("celeste_request_pause: no game");
+			VisionOSKit.RequestPause();
+			Log.Info($"{Tag} pause requested; the next update applies it to a running level");
+			return Ok;
+		}
+		catch (Exception e)
+		{
+			return SetError(e);
+		}
+	}
+
+	/// <summary>
 	/// Asks the game to exit as if the player chose Exit: Foster sets Exiting, the next
 	/// celeste_tick returns 1. Lets a host exercise its own shutdown path without input.
 	/// </summary>

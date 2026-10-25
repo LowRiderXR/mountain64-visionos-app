@@ -108,6 +108,15 @@ int32_t celeste_exiting(void);
  * host that wants to exercise its shutdown path without input. 0 or -1. */
 int32_t celeste_request_exit(void);
 
+/* Suspends (1) or resumes (0) FMOD's mixer while the app is in the background (the device was
+ * taken off): System::mixerSuspend / mixerResume, state and playback position are kept. Call
+ * both from the same thread and do not call celeste_tick in between (FMOD requirement). 0 or -1. */
+int32_t celeste_audio_suspend(int32_t suspend);
+
+/* Asks the game to pause at its next update (the device was put on again): a running level
+ * opens its pause menu, the title and the overworld do nothing. Any thread. 0 or -1. */
+int32_t celeste_request_pause(void);
+
 /* Canvas (M4a, variant a): the game renders its final image into a texture the host owns
  * instead of the hidden window. mtl_texture is an id<MTLTexture> on the device the game's
  * SDL_GPU device uses: type 2D, pixel format RGBA8Unorm (the game's output is not sRGB-encoded

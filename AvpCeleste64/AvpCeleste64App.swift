@@ -56,6 +56,11 @@ struct AvpCeleste64App: App {
             // Nur Logzeilen: Phase der Szenen aus Sicht von SwiftUI, dazu der App-Zustand aus
             // UIKit, um ARKit-Pausen einzuordnen.
             c64Record("[c64-scene] tMs=\(LaunchClock.tMs) scenePhase=\(phase) \(CelesteProbe.lifecycleLine)")
+            // M4a.5c-2: zweiter Weg, das Hintergrund-Flag zu löschen (falls didBecomeActive vor
+            // dem Szenenwechsel kam); löscht nur, wenn UIKit die App als active meldet.
+            if phase == .active, CelesteProbe.pauseState.isBackground {
+                CelesteProbe.pauseState.clearBackgroundIfForeground(reason: "scenePhase active")
+            }
         }
     }
 }
@@ -179,6 +184,8 @@ enum GameStartup {
             // Vor celeste_init: Audio-Session unabhängig von Fensterszenen (Vice City: ohne
             // .playback starb der Ton mit dem 2D-Fenster; FMOD überlässt die Kategorie der App).
             CelesteProbe.configureAudioSession()
+            // Lebenszyklus- und Audio-Signale ins Log (M4a.5c).
+            CelesteProbe.LifecycleMonitor.shared.start()
         }
 
         switch celesteMode {

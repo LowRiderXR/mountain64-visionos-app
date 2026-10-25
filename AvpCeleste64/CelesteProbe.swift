@@ -433,7 +433,7 @@ nonisolated enum CelesteProbe {
             lock.lock()
             defer { lock.unlock() }
             guard ready else { return }
-            c64Record("[c64-celeste] tick paused reason=\"\(reason)\" totalTicks=\(totalTicks) totalFrames=\(totalFrames)")
+            c64Record("[c64-celeste] tMs=\(LaunchClock.tMs) tick paused reason=\"\(reason)\" totalTicks=\(totalTicks) totalFrames=\(totalFrames)")
             windowStart = 0
             windowFrames = 0
             windowTicks = 0
@@ -448,7 +448,7 @@ nonisolated enum CelesteProbe {
             defer { lock.unlock() }
             guard ready else { return }
             windowStart = CFAbsoluteTimeGetCurrent()
-            c64Record("[c64-celeste] tick resumed reason=\"\(reason)\" thread=\(Thread.current.name ?? "?") totalTicks=\(totalTicks)")
+            c64Record("[c64-celeste] tMs=\(LaunchClock.tMs) tick resumed reason=\"\(reason)\" thread=\(Thread.current.name ?? "?") totalTicks=\(totalTicks)")
         }
 
         /// Endgültiges Ende der Ticks (M4a.5a): kein Tick mehr, auch nicht nach einem Resume; der
@@ -496,6 +496,18 @@ nonisolated enum CelesteProbe {
 
         c64Record("[c64-exit] requested reason=\"\(reason)\" thread=\(Thread.current.name ?? "?") isMainThread=\(Thread.isMainThread)")
         tickState.stop(reason: reason)
+
+        // M4a.5c-2: Bei angehaltenem Mixer (Crown im Hintergrund) kein celeste_end. Game.End
+        // ruft Audio.Shutdown (system.release) und World.Disposed (SetPaused, Busse), beides
+        // FMOD; FMOD verbietet jeden Aufruf nach mixerSuspend ausser mixerResume, «even if you
+        // intend to shutdown FMOD as you may cause a deadlock» (platforms-android.html; iOS-Seite:
+        // keine FMOD-APIs zwischen Suspend und Resume). mixerResume geht im Hintergrund nicht
+        // (Session nicht aktivierbar). Der Prozess endet ohnehin; gespeichert wird nur bei
+        // Save & Quit, nichts geht verloren.
+        if pauseState.isMixerSuspended {
+            exitOnce(line: "[c64-exit] mixer suspended: celeste_end skipped (no FMOD call after mixerSuspend), exit(0)")
+            return
+        }
 
         DispatchQueue.main.async {
             let start = DispatchTime.now()
@@ -728,6 +740,202 @@ nonisolated enum CelesteProbe {
             c64Record("[c64-audio] session category=\(session.category.rawValue) active route=[\(route)] sampleRate=\(session.sampleRate)")
         } catch {
             c64Record("[c64-audio] session setCategory/setActive failed: \(error)")
+        }
+    }
+
+    // MARK: Pause beim Abnehmen (M4a.5c)
+
+    /// App-Zustand für den Render-Thread (M4a.5c-2): der Hauptthread setzt das Hintergrund-Flag
+    /// bei willResignActive und didEnterBackground und löscht es bei didBecomeActive, sobald UIKit
+    /// die App als active und eine Szene als foregroundActive meldet. Der Layer meldet .paused
+    /// erst 150 bis 200 ms nach willResignActive und .running schon lange vor dem Vordergrund
+    /// (M2: 8 s vorher); das Flag schliesst beide Lücken. Dazu die Bitte um einen neuen
+    /// Ton-Versuch (Audio-Session wieder aktiv, Empfehlung zum Fortsetzen, Media Services Reset).
+    nonisolated final class PauseState: @unchecked Sendable {
+        private let lock = NSLock()
+        private var background = false
+        private var audioRetry = false
+        private var audioRetryTrigger = ""
+        private var mediaReset = false
+        private var mixerSuspended = false
+
+        var isBackground: Bool { lock.withLock { background } }
+
+        /// Mixer-Zustand für das Beenden: der Render-Thread setzt ihn nach jedem erfolgreichen
+        /// mixerSuspend und mixerResume; requestExit liest ihn (kein FMOD-Aufruf bei angehaltenem
+        /// Mixer, auch nicht zum Beenden).
+        var isMixerSuspended: Bool { lock.withLock { mixerSuspended } }
+        func setMixerSuspended(_ value: Bool) { lock.withLock { mixerSuspended = value } }
+
+        func setBackground(reason: String) {
+            let changed = lock.withLock { () -> Bool in
+                let was = background
+                background = true
+                return !was
+            }
+            c64Record("[c64-pause] tMs=\(LaunchClock.tMs) background=1 reason=\(reason)\(changed ? "" : " (schon gesetzt)")")
+        }
+
+        /// Löscht das Flag nur, wenn die App wirklich im Vordergrund ist (UIKit); sonst Logzeile.
+        @MainActor func clearBackgroundIfForeground(reason: String) {
+            let app = UIApplication.shared.applicationState
+            let foregroundScene = UIApplication.shared.connectedScenes.contains { $0.activationState == .foregroundActive }
+            guard app == .active, foregroundScene else {
+                c64Record("[c64-pause] tMs=\(LaunchClock.tMs) background bleibt 1 reason=\(reason) app=\(app == .active ? "active" : (app == .inactive ? "inactive" : "background")) foregroundScene=\(foregroundScene ? 1 : 0)")
+                return
+            }
+            let changed = lock.withLock { () -> Bool in
+                let was = background
+                background = false
+                return was
+            }
+            if changed {
+                c64Record("[c64-pause] tMs=\(LaunchClock.tMs) background=0 reason=\(reason) app=active scene=foregroundActive")
+            }
+        }
+
+        func requestAudioRetry(trigger: String, mediaServicesReset: Bool = false) {
+            lock.withLock {
+                audioRetry = true
+                audioRetryTrigger = trigger
+                if mediaServicesReset { mediaReset = true }
+            }
+        }
+
+        /// Render-Thread: Bitte um einen Ton-Versuch abholen (einmalig), dazu ob Media Services
+        /// zurückgesetzt wurden (FMOD-Beispiel: dann Suspend und Resume als Paar).
+        func takeAudioRetry() -> (trigger: String, mediaServicesReset: Bool)? {
+            lock.withLock {
+                guard audioRetry || mediaReset else { return nil }
+                let result = (audioRetry ? audioRetryTrigger : "mediaServicesReset", mediaReset)
+                audioRetry = false
+                audioRetryTrigger = ""
+                mediaReset = false
+                return result
+            }
+        }
+    }
+
+    static let pauseState = PauseState()
+
+    /// FMOD-Mixer anhalten oder weiterlaufen lassen (celeste_audio_suspend); vom Render-Thread,
+    /// beide Aufrufe auf demselben Thread ohne Tick dazwischen (FMOD-Doku iOS). Nur mit Spiel.
+    /// Liefert true bei FMOD_OK.
+    @discardableResult
+    nonisolated static func suspendAudio(_ suspend: Bool, context: String = "") -> Bool {
+        guard tickState.isActive || suspend == false else { return false }
+        let start = DispatchTime.now()
+        let rc = celeste_audio_suspend(suspend ? 1 : 0)
+        let ms = Double(DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000
+        let error = rc == 0 ? "" : " error=\"\(celeste_last_error().map { String(cString: $0) } ?? "")\""
+        c64Record("[c64-audio] tMs=\(LaunchClock.tMs) mixer \(suspend ? "suspend" : "resume") rc=\(rc) ms=\(format(ms)) thread=\(Thread.current.name ?? "?")\(context.isEmpty ? "" : " context=\(context)")\(error)")
+        return rc == 0
+    }
+
+    /// Audio-Session nach einer Pause wieder aktivieren, bevor FMODs Mixer weiterläuft (das
+    /// System deaktiviert die Session, wenn es den Prozess suspendiert). Liefert true bei Erfolg;
+    /// FMODs Beispiel (common_platform.mm:211-227) ruft bei einem Fehler nicht mixerResume,
+    /// sondern wartet auf das nächste Signal.
+    @discardableResult
+    nonisolated static func reactivateAudioSession() -> Bool {
+        do {
+            try AVAudioSession.sharedInstance().setActive(true)
+            c64Record("[c64-audio] tMs=\(LaunchClock.tMs) session setActive(true) ok")
+            return true
+        } catch {
+            c64Record("[c64-audio] tMs=\(LaunchClock.tMs) session setActive(true) failed: \(error)")
+            return false
+        }
+    }
+
+    /// Pause-Anfrage ans Spiel (celeste_request_pause); Game.Update öffnet das Pausenmenü eines
+    /// laufenden Levels und loggt [c64-pause] applied=.
+    nonisolated static func requestPause() {
+        guard tickState.isActive else { return }
+        let rc = celeste_request_pause()
+        c64Record("[c64-audio] tMs=\(LaunchClock.tMs) pause requested rc=\(rc)")
+    }
+
+    /// Beobachter für Lebenszyklus- und Audio-Signale (nur Log): UIKit-Benachrichtigungen,
+    /// AVAudioSession-Unterbrechungen mit Typ, Grund, wasSuspended und shouldResume, Media
+    /// Services Reset. Bei .ended wird die Session wieder aktiviert (geloggt).
+    nonisolated final class LifecycleMonitor: @unchecked Sendable {
+        static let shared = LifecycleMonitor()
+        private var started = false
+        private var tokens: [NSObjectProtocol] = []
+
+        @MainActor func start() {
+            guard !started else { return }
+            started = true
+            let center = NotificationCenter.default
+            let app: [(Notification.Name, String)] = [
+                (UIApplication.willResignActiveNotification, "willResignActive"),
+                (UIApplication.didEnterBackgroundNotification, "didEnterBackground"),
+                (UIApplication.willEnterForegroundNotification, "willEnterForeground"),
+                (UIApplication.didBecomeActiveNotification, "didBecomeActive"),
+            ]
+            for (name, label) in app {
+                tokens.append(center.addObserver(forName: name, object: nil, queue: .main) { _ in
+                    MainActor.assumeIsolated {
+                        c64Record("[c64-life] tMs=\(LaunchClock.tMs) \(label); \(CelesteProbe.lifecycleLine)")
+                        // M4a.5c-2: Hintergrund-Flag für den Render-Thread.
+                        switch name {
+                        case UIApplication.willResignActiveNotification, UIApplication.didEnterBackgroundNotification:
+                            CelesteProbe.pauseState.setBackground(reason: label)
+                        case UIApplication.didBecomeActiveNotification:
+                            CelesteProbe.pauseState.clearBackgroundIfForeground(reason: label)
+                        default:
+                            break
+                        }
+                    }
+                })
+            }
+            // visionOS 27 ersetzt interruptionNotification durch didBecomeInactive (mit
+            // DeactivationContext: Quelle, Unterbrechungsgrund) und resumptionRecommendation
+            // (shouldResume oder shouldNotResume); didBecomeActive meldet die Aktivierung.
+            tokens.append(center.addObserver(forName: AVAudioSession.didBecomeInactiveNotification, object: nil, queue: .main) { note in
+                let context = note.userInfo?[AVAudioSession.deactivationContextKey] as? AVAudioSession.DeactivationContext
+                let source = context.map { "\($0.source.rawValue)" } ?? "-"
+                let reason = context?.interruptionContext.map { Self.name($0.reason) } ?? "-"
+                c64Record("[c64-life] tMs=\(LaunchClock.tMs) AVAudioSession didBecomeInactive source=\(source) interruptionReason=\(reason)")
+            })
+            tokens.append(center.addObserver(forName: AVAudioSession.resumptionRecommendationNotification, object: nil, queue: .main) { note in
+                let context = note.userInfo?[AVAudioSession.resumptionContextKey] as? AVAudioSession.ResumptionContext
+                let shouldResume = context.map { $0.recommendation == .shouldResume ? "1" : "0" } ?? "-"
+                c64Record("[c64-life] tMs=\(LaunchClock.tMs) AVAudioSession resumptionRecommendation shouldResume=\(shouldResume)")
+                if shouldResume == "1" {
+                    // Der Render-Thread versucht setActive und mixerResume (gleicher Thread wie
+                    // das Suspend), sobald er läuft.
+                    CelesteProbe.pauseState.requestAudioRetry(trigger: "resumptionRecommendation")
+                }
+            })
+            tokens.append(center.addObserver(forName: AVAudioSession.didBecomeActiveNotification, object: nil, queue: .main) { _ in
+                c64Record("[c64-life] tMs=\(LaunchClock.tMs) AVAudioSession didBecomeActive")
+                CelesteProbe.pauseState.requestAudioRetry(trigger: "session didBecomeActive")
+            })
+            tokens.append(center.addObserver(forName: AVAudioSession.mediaServicesWereResetNotification, object: nil, queue: .main) { _ in
+                // FMOD-Beispiel common_platform.mm:184-197: im Vordergrund Suspend und Resume als
+                // Paar, im Hintergrund beim nächsten Fortsetzen; hier übernimmt der Render-Thread.
+                c64Record("[c64-life] tMs=\(LaunchClock.tMs) AVAudioSession mediaServicesWereReset")
+                CelesteProbe.pauseState.requestAudioRetry(trigger: "mediaServicesReset", mediaServicesReset: true)
+            })
+            tokens.append(center.addObserver(forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main) { note in
+                let reason = (note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt).map { "\($0)" } ?? "-"
+                let route = AVAudioSession.sharedInstance().currentRoute.outputs.map { $0.portType.rawValue }.joined(separator: ",")
+                c64Record("[c64-life] tMs=\(LaunchClock.tMs) AVAudioSession routeChange reason=\(reason) route=[\(route)]")
+            })
+            c64Record("[c64-life] tMs=\(LaunchClock.tMs) monitor started")
+        }
+
+        private static func name(_ reason: AVAudioSession.InterruptionReason) -> String {
+            switch reason {
+            case .default: return "default"
+            case .appWasSuspended: return "appWasSuspended"
+            case .sceneWasBackgrounded: return "sceneWasBackgrounded"
+            case .routeDisconnected: return "routeDisconnected"
+            case .builtInMicMuted: return "builtInMicMuted"
+            default: return "reason\(reason.rawValue)"
+            }
         }
     }
 
