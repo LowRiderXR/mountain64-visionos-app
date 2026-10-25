@@ -130,7 +130,7 @@ nonisolated final class CanvasScene {
                              position.x, position.y, position.z, forward.x, forward.y, forward.z,
                              halfWidth * 2, halfHeight * 2, fovDegrees, verticalDegrees, Self.distance))
         } else if placementFrames == 1 {
-            c64Record(String(format: "[c64-canvas] erste Pose: Kopf (%.2f, %.2f, %.2f) m, Blick (%.2f, %.2f, %.2f)",
+            c64Record(String(format: "[c64-canvas] tMs=\(LaunchClock.tMs) erste Pose: Kopf (%.2f, %.2f, %.2f) m, Blick (%.2f, %.2f, %.2f)",
                              position.x, position.y, position.z, forward.x, forward.y, forward.z))
         }
     }

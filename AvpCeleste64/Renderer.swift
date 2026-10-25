@@ -39,8 +39,23 @@ nonisolated final class Renderer: @unchecked Sendable {
     private let device: MTLDevice
     private let commandQueue: MTLCommandQueue
     private let appModel: AppModel
+    // ARKit: Session und Provider leben so lange wie der Renderer (Apple: «ARKit stops sessions
+    // when they're deinitialized»). Der Provider kann nach einem Fehler ersetzt werden (ein
+    // gestoppter Provider darf nicht erneut an run gehen), deshalb hinter einem Lock; der
+    // Render-Thread liest ihn pro Frame.
     private let arSession = ARKitSession()
-    private let worldTracking = WorldTrackingProvider()
+    private let arLock = NSLock()
+    private var worldTrackingStorage = WorldTrackingProvider()
+    private var worldTracking: WorldTrackingProvider {
+        arLock.withLock { worldTrackingStorage }
+    }
+    private var arRunAttempts = 0
+    private static let arMaxRunAttempts = 3
+    private var lastLoggedProviderState: DataProviderState?
+    // Zustand des Providers einmal pro Sekunde in den ersten zehn Sekunden (M4a.5b-6: bleibt
+    // ARKit nach dem Schliessen des Startfensters running?).
+    private var arkitPeriodicRemaining = 10
+    private var arkitPeriodicNextAt: CFAbsoluteTime = 0
 
     // Stall-Probe
     private let stallPlan: [TimeInterval]
@@ -200,6 +215,9 @@ nonisolated final class Renderer: @unchecked Sendable {
         self.stallPlan = StallPlan.fromEnvironment()
     }
 
+    /// Render Quality des Produkts (M4a.5b): 1,0 mit Foveation; C64_RENDERQUALITY überschreibt.
+    static let defaultRenderQuality: Float = 1.0
+
     /// Einstieg aus dem CompositorLayer-Closure (Hauptthread). Startet ARKit und dann die
     /// Renderschleife auf einem eigenen Thread.
     @MainActor
@@ -212,13 +230,62 @@ nonisolated final class Renderer: @unchecked Sendable {
         }
     }
 
+    /// Startet die Session mit dem WorldTrackingProvider und beobachtet ihre Ereignisse
+    /// (M4a.5b-2: beim Start direkt in den Raum blieb der Provider ohne sichtbaren Grund nicht
+    /// im Zustand running, der Device Anchor kam nie). Jede Zustandsänderung geht in die
+    /// Probe-Datei; endet der Provider mit Fehler, folgt ein neuer Versuch mit einem neuen
+    /// Provider (höchstens arMaxRunAttempts, 1 s Abstand).
     private func startARSession() async {
+        Task { [self] in
+            for await event in arSession.events {
+                switch event {
+                case .dataProviderStateChanged(_, let newState, let error):
+                    let lifecycle = await MainActor.run { CelesteProbe.lifecycleLine }
+                    c64Record("[c64-arkit] tMs=\(LaunchClock.tMs) provider state=\(Self.name(newState))\(error.map { " error=\"\($0)\"" } ?? "") \(lifecycle)")
+                    if newState == .stopped, error != nil {
+                        try? await Task.sleep(for: .seconds(1))
+                        await runARSession(reason: "provider stopped with error")
+                    }
+                case .authorizationChanged(let type, let status):
+                    c64Record("[c64-arkit] authorization \(type) -> \(status)")
+                default:
+                    c64Record("[c64-arkit] event \(event)")
+                }
+            }
+        }
+        await runARSession(reason: "start")
+    }
+
+    private func runARSession(reason: String) async {
+        let (attempt, provider) = arLock.withLock { () -> (Int, WorldTrackingProvider) in
+            arRunAttempts += 1
+            if arRunAttempts > 1 {
+                worldTrackingStorage = WorldTrackingProvider()
+            }
+            return (arRunAttempts, worldTrackingStorage)
+        }
+        guard attempt <= Self.arMaxRunAttempts else {
+            c64Record("[c64-arkit] run attempt \(attempt) skipped (\(reason)): limit \(Self.arMaxRunAttempts) reached, no pose")
+            return
+        }
         do {
-            try await arSession.run([worldTracking])
-            c64Log.notice("[c64-arkit] WorldTrackingProvider läuft")
+            let before = await MainActor.run { CelesteProbe.lifecycleLine }
+            c64Record("[c64-arkit] tMs=\(LaunchClock.tMs) run attempt \(attempt) (\(reason)) layer=\(Self.name(layerRenderer.state)) \(before)")
+            try await arSession.run([provider])
+            c64Record("[c64-arkit] run attempt \(attempt) returned (\(reason)) state=\(Self.name(provider.state)) supported=\(WorldTrackingProvider.isSupported)")
         } catch {
             // Ohne Pose wird trotzdem präsentiert (Schwarz ohne Anker); das Log zeigt es.
-            c64Record("[c64-arkit] ARKitSession.run fehlgeschlagen: \(error)")
+            c64Record("[c64-arkit] run attempt \(attempt) failed (\(reason)): \(error)")
+        }
+    }
+
+    private static func name(_ state: DataProviderState) -> String {
+        switch state {
+        case .initialized: return "initialized"
+        case .running: return "running"
+        case .paused: return "paused"
+        case .stopped: return "stopped"
+        @unknown default: return "state\(state)"
         }
     }
 
@@ -271,13 +338,13 @@ nonisolated final class Renderer: @unchecked Sendable {
         let start = CFAbsoluteTimeGetCurrent()
         statWindowStart = start
         nextStallAt = start + Self.stallSpacing
-        c64Record("[c64-loop] Renderschleife gestartet, thread=\(Thread.current.name ?? "?")")
+        c64Record("[c64-loop] tMs=\(LaunchClock.tMs) Renderschleife gestartet, thread=\(Thread.current.name ?? "?")")
         if CelesteProbe.ticksGame {
             CelesteProbe.tickState.resume(reason: "render loop started")
         }
 
         // Kit-Stufe K1a (C64_KIT=inject): einmal vor dem ersten Frame, mit dem Device des
-        // Layer-Renderers und der Queue dieses Gerüsts. SDL_Init lief im Hauptthread (ContentView).
+        // Layer-Renderers und der Queue dieses Gerüsts. SDL_Init lief im Hauptthread (GameStartup).
         if KitProbe.mode == .inject {
             runKitInjectProbe()
         }
@@ -334,6 +401,14 @@ nonisolated final class Renderer: @unchecked Sendable {
 
             // Stall-Probe: VOR queryNextFrame, also ohne angefangenen Frame.
             stallIfDue()
+            if arkitPeriodicRemaining > 0 {
+                let now = CFAbsoluteTimeGetCurrent()
+                if now >= arkitPeriodicNextAt {
+                    arkitPeriodicNextAt = (arkitPeriodicNextAt == 0 ? now : arkitPeriodicNextAt) + 1
+                    arkitPeriodicRemaining -= 1
+                    c64Record("[c64-arkit] tMs=\(LaunchClock.tMs) periodic provider state=\(Self.name(worldTracking.state)) layer=\(Self.name(layerRenderer.state)) frames=\(totalFrames)")
+                }
+            }
 
             autoreleasepool {
                 renderFrame()
@@ -650,7 +725,15 @@ nonisolated final class Renderer: @unchecked Sendable {
         let presentationTime = primary.frameTiming.presentationTime.timeInterval
         // presentationTime relativ zur Compositor-Uhr beim Erhalt der Drawables (gleiche Zeitbasis).
         let relativeToNow = presentationTime - LayerRenderer.Clock().now.timeInterval
-        let deviceAnchor = worldTracking.queryDeviceAnchor(atTimestamp: presentationTime)
+        // Nur ein laufender Provider liefert Anker; sonst ohne Abfrage (keine Konsolenfehler),
+        // der Frame zählt als noAnchor, und eine Zeile je Zustandswechsel zeigt den Grund.
+        let provider = worldTracking
+        let providerState = provider.state
+        if providerState != lastLoggedProviderState {
+            lastLoggedProviderState = providerState
+            c64Record("[c64-arkit] render thread sees provider state=\(Self.name(providerState)) frame=\(totalFrames)")
+        }
+        let deviceAnchor = providerState == .running ? provider.queryDeviceAnchor(atTimestamp: presentationTime) : nil
 
         for drawable in drawables {
             if let anchor = deviceAnchor {
@@ -862,7 +945,8 @@ nonisolated final class Renderer: @unchecked Sendable {
     private func applyRenderQualityIfRequested() {
         guard !renderQualityApplied else { return }
         renderQualityApplied = true
-        guard let wanted = ProcessInfo.processInfo.environment["C64_RENDERQUALITY"].flatMap({ Float($0) }) else { return }
+        // Standard 1,0 (M4a.5b), Schalter C64_RENDERQUALITY überschreibt.
+        let wanted = ProcessInfo.processInfo.environment["C64_RENDERQUALITY"].flatMap({ Float($0) }) ?? Self.defaultRenderQuality
         let config = layerRenderer.configuration
         guard config.isFoveationEnabled else {
             c64Record("[c64-rq] C64_RENDERQUALITY=\(wanted) ignoriert: Foveation aus")

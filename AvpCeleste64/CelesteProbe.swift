@@ -25,6 +25,7 @@
 //  interne Auflösung, C64_CANVAS_FOV ihre Winkelbreite, C64_CANVAS_FILTER den Filter.
 //
 
+import AVFAudio
 import CoreGraphics
 import Foundation
 import ImageIO
@@ -36,6 +37,8 @@ nonisolated enum CelesteProbe {
     static let environmentKey = "C64_CELESTE"
 
     enum Mode: String {
+        /// Celeste aus (Kit-Modi oder reines Gerüst).
+        case off
         case probe
         case initialize = "init"
         /// M1a.4b: Vergleichslauf ohne Celeste, nur die Fenster-Schnappschüsse der Szene zu
@@ -374,7 +377,7 @@ nonisolated enum CelesteProbe {
             if !firstLogged {
                 firstLogged = true
                 windowStart = now
-                c64Record("[c64-celeste] tick first-render-thread thread=\(Thread.current.name ?? "?") isMainThread=\(Thread.isMainThread) qos=\(Thread.current.qualityOfService.rawValue) delta=\(CelesteProbe.format(delta * 1000))ms")
+                c64Record("[c64-celeste] tMs=\(LaunchClock.tMs) tick first-render-thread thread=\(Thread.current.name ?? "?") isMainThread=\(Thread.isMainThread) qos=\(Thread.current.qualityOfService.rawValue) delta=\(CelesteProbe.format(delta * 1000))ms")
             }
             totalFrames += 1
             windowFrames += 1
@@ -517,11 +520,20 @@ nonisolated enum CelesteProbe {
         exit(0)
     }
 
-    static var mode: Mode? {
-        Mode(rawValue: ProcessInfo.processInfo.environment[environmentKey] ?? "")
+    /// Modus aus C64_CELESTE; ohne Schalter der Standard des Produkts, play (M4a.5b). Mit einem
+    /// Kit-Modus (C64_KIT) und ohne C64_CELESTE bleibt Celeste aus, zwei SDL_GPU-Devices auf
+    /// demselben MTLDevice sind nicht sinnvoll. Ein unbekannter Wert gibt eine Fehlerzeile und play.
+    static var mode: Mode {
+        let text = ProcessInfo.processInfo.environment[environmentKey] ?? ""
+        if text.isEmpty {
+            return KitProbe.mode == nil ? .play : .off
+        }
+        if let mode = Mode(rawValue: text) { return mode }
+        c64Record("[c64-celeste] error: C64_CELESTE=\"\(text)\" unbekannt (off, probe, init, window, tick, canvas, play), Standard play")
+        return .play
     }
 
-    static var isRequested: Bool { mode != nil }
+    static var isRequested: Bool { mode != .off }
 
     /// Anzahl Ticks auf dem Hauptthread in M1a.4: Celeste lädt im fünften Update (loadDelay 5),
     /// drei weitere zeigen, dass der Übergang zum Titel ohne Fehler beginnt.
@@ -635,7 +647,7 @@ nonisolated enum CelesteProbe {
         }
         let initMs = elapsedMs(since: initStart)
         if initRc == 0 {
-            c64Record("[c64-celeste] step=init rc=0 thread=\(Thread.isMainThread ? "main" : "other") contentRoot=\"\(contentRoot)\" internal=\(settings.internalWidth)x\(settings.internalHeight) line=\(settings.edgeLineWidth) optionsSize=\(options.size) ms=\(format(initMs))")
+            c64Record("[c64-celeste] tMs=\(LaunchClock.tMs) step=init rc=0 thread=\(Thread.isMainThread ? "main" : "other") contentRoot=\"\(contentRoot)\" internal=\(settings.internalWidth)x\(settings.internalHeight) line=\(settings.edgeLineWidth) optionsSize=\(options.size) ms=\(format(initMs))")
         } else {
             let error = celeste_last_error().map { String(cString: $0) } ?? ""
             c64Record("[c64-celeste] step=init rc=\(initRc) error=\"\(error)\" ms=\(format(initMs))")
@@ -684,11 +696,12 @@ nonisolated enum CelesteProbe {
     /// Start der Probe in Millisekunden, damit die Modi init und window vergleichbar sind.
     @MainActor static func windowSnapshot(_ label: String, since start: DispatchTime? = nil) {
         let timing = start.map { " tMs=\(format(elapsedMs(since: $0)))" } ?? ""
-        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
-        if scenes.isEmpty {
-            c64Record("[c64-celeste] window \(label)\(timing) scenes=0")
-        }
-        for (index, scene) in scenes.enumerated() {
+        // Alle verbundenen Szenen mit Klasse und Rolle (M4a.5b: ohne Fenster gibt es nur die
+        // immersive Szene, die keine UIWindowScene ist); Fenster nur bei UIWindowScene.
+        let all = Array(UIApplication.shared.connectedScenes)
+        let windowScenes = all.compactMap { $0 as? UIWindowScene }
+        c64Record("[c64-celeste] scenes \(label)\(timing) count=\(all.count) windowScenes=\(windowScenes.count) [\(all.map { "\(String(describing: type(of: $0))) role=\($0.session.role.rawValue) state=\($0.activationState.rawValue)" }.joined(separator: " | "))]")
+        for (index, scene) in windowScenes.enumerated() {
             let bounds = scene.effectiveGeometry.coordinateSpace.bounds.size
             let windows = scene.windows.map { window -> String in
                 let root = window.rootViewController.map { String(describing: type(of: $0)) } ?? "-"
@@ -698,15 +711,63 @@ nonisolated enum CelesteProbe {
         }
     }
 
+    /// Zahl der UIWindowScenes; 0 heisst, SDLs UIWindow hat keine Szene (Rückfall initWithFrame).
+    @MainActor static var windowSceneCount: Int {
+        UIApplication.shared.connectedScenes.filter { $0 is UIWindowScene }.count
+    }
+
+    /// Audio-Session der App vor celeste_init (M4a.5b-5): Kategorie .playback, aktiv. FMOD
+    /// überlässt die Session der App (FMOD-Doku iOS); .playback hängt an keiner Fensterszene,
+    /// Vice City brauchte genau das, damit der Ton das Schliessen des 2D-Fensters überlebt.
+    @MainActor static func configureAudioSession() {
+        let session = AVAudioSession.sharedInstance()
+        do {
+            try session.setCategory(.playback)
+            try session.setActive(true)
+            let route = session.currentRoute.outputs.map { $0.portType.rawValue }.joined(separator: ",")
+            c64Record("[c64-audio] session category=\(session.category.rawValue) active route=[\(route)] sampleRate=\(session.sampleRate)")
+        } catch {
+            c64Record("[c64-audio] session setCategory/setActive failed: \(error)")
+        }
+    }
+
+    /// Lebenszyklus in einer Zeile (nur Log, M4a.5b-4): App-Zustand aus UIKit und Zustand jeder
+    /// verbundenen Szene mit Rolle. Der Stil der Immersion ist für eine CompositorServices-Szene
+    /// nicht auslesbar (kein öffentliches API an UIScene, onImmersionChange nur an Views).
+    @MainActor static var lifecycleLine: String {
+        let app: String
+        switch UIApplication.shared.applicationState {
+        case .active: app = "active"
+        case .inactive: app = "inactive"
+        case .background: app = "background"
+        @unknown default: app = "unknown"
+        }
+        let scenes = UIApplication.shared.connectedScenes.map { scene -> String in
+            let state: String
+            switch scene.activationState {
+            case .unattached: state = "unattached"
+            case .foregroundActive: state = "foregroundActive"
+            case .foregroundInactive: state = "foregroundInactive"
+            case .background: state = "background"
+            @unknown default: state = "unknown"
+            }
+            return "\(String(describing: type(of: scene))) role=\(scene.session.role.rawValue) state=\(state)"
+        }
+        return "applicationState=\(app) scenes=[\(scenes.joined(separator: " | "))]"
+    }
+
     /// Fosters Fenster aus SDLs Sicht: die logische Grösse ist die Grösse, die SDL beim Anlegen
     /// per Geometrieanfrage an die Szene schickt (Punkte); Pixel und Dichte zeigen, was Foster
     /// und Celeste als Backbuffer sehen.
-    static func sdlWindowInfo(_ label: String) {
+    @MainActor static func sdlWindowInfo(_ label: String) {
         var info = celeste_window_info()
         info.size = Int32(MemoryLayout<celeste_window_info>.size)
         let rc = celeste_window_info_get(&info)
         if rc == 0 {
-            c64Record("[c64-celeste] sdl-window \(label) requested=\(info.width)x\(info.height) pixels=\(info.pixel_width)x\(info.pixel_height) density=\(Double(info.pixel_density_x1000) / 1000) hidden=\(info.hidden) fullscreen=\(info.fullscreen)")
+            // scene: 1, wenn eine UIWindowScene existiert (SDL hängt sein Fenster daran), sonst 0
+            // (SDL_uikitwindow.m: Rückfall initWithFrame ohne Szene).
+            let windowScenes = windowSceneCount
+            c64Record("[c64-celeste] sdl-window \(label) requested=\(info.width)x\(info.height) pixels=\(info.pixel_width)x\(info.pixel_height) density=\(Double(info.pixel_density_x1000) / 1000) hidden=\(info.hidden) fullscreen=\(info.fullscreen) windowScenes=\(windowScenes) scene=\(windowScenes > 0 ? 1 : 0)")
         } else {
             let error = celeste_last_error().map { String(cString: $0) } ?? ""
             c64Record("[c64-celeste] sdl-window \(label) rc=\(rc) error=\"\(error)\"")

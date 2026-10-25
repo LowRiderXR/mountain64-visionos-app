@@ -30,10 +30,10 @@ nonisolated final class ProgressFile: @unchecked Sendable {
     private let lock = NSLock()
     private var fd: Int32 = -1
 
-    /// Schalter C64_PROBE_TRUNCATE=1: die Datei beim Start leeren statt anzuhängen, damit sie nur
-    /// den aktuellen Lauf enthält (Standard: anhängen, alle Läufe seit dem ersten Start).
+    /// Standard (M4a.5b): die Datei beim Start leeren, sie enthält nur den aktuellen Lauf;
+    /// C64_PROBE_TRUNCATE=0 hängt an (alle Läufe seit dem ersten Start).
     static var truncateOnStart: Bool {
-        ProcessInfo.processInfo.environment["C64_PROBE_TRUNCATE"] == "1"
+        ProcessInfo.processInfo.environment["C64_PROBE_TRUNCATE"] != "0"
     }
 
     private init() {
