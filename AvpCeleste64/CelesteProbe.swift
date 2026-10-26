@@ -774,6 +774,9 @@ nonisolated enum CelesteProbe {
                 return !was
             }
             c64Record("[c64-pause] tMs=\(LaunchClock.tMs) background=1 reason=\(reason)\(changed ? "" : " (schon gesetzt)")")
+            if changed {
+                CelesteProbe.AliveProbe.shared.begin()
+            }
         }
 
         /// Löscht das Flag nur, wenn die App wirklich im Vordergrund ist (UIKit); sonst Logzeile.
@@ -817,6 +820,107 @@ nonisolated enum CelesteProbe {
     }
 
     static let pauseState = PauseState()
+
+    /// Lebenszeichen-Sonde (M4a.5c-6): ein eigener Thread «c64-alive», geweckt vom Hintergrund-
+    /// Flag, schreibt einmal pro Sekunde eine Zeile in die Probe, höchstens 600 je Pause; beim
+    /// Fortsetzen eine Zeile mit der Lücke seit dem letzten Lebenszeichen. Ein vom System
+    /// suspendierter Prozess zeigt beim Aufwachen eine grosse Lücke, ein wacher (Debugger
+    /// angehängt) lückenlose Sekunden. Ruft weder FMOD noch Metal noch CompositorServices;
+    /// nimmt nur den eigenen Lock. Layer- und Provider-Zustand kommen als Texte von aussen
+    /// (Renderer setzt sie), damit die Sonde keinen fremden Lock braucht.
+    nonisolated final class AliveProbe: @unchecked Sendable {
+        static let shared = AliveProbe()
+        static let maxBeatsPerPause = 600
+
+        private let condition = NSCondition()
+        private var started = false
+        private var active = false
+        private var beats = 0
+        private var lastBeatMs: Double?
+        private var layerStateText = "-"
+        private var providerStateText = "-"
+        private var readLayerState: (() -> String)?
+
+        func start() {
+            condition.lock()
+            let first = !started
+            started = true
+            condition.unlock()
+            guard first else { return }
+            let thread = Thread { [self] in loop() }
+            thread.name = "c64-alive"
+            thread.qualityOfService = .utility
+            thread.start()
+        }
+
+        /// Renderer: Lesefunktion für den Layer-Zustand (cp_layer_renderer_get_state, ohne Lock).
+        func setLayerStateReader(_ reader: @escaping () -> String) {
+            condition.lock(); readLayerState = reader; condition.unlock()
+        }
+
+        /// Renderer, bei jeder Zustandsänderung des WorldTrackingProviders.
+        func setProviderState(_ text: String) {
+            condition.lock(); providerStateText = text; condition.unlock()
+        }
+
+        /// Hauptthread, beim Setzen des Hintergrund-Flags.
+        func begin() {
+            condition.lock()
+            if !active {
+                active = true
+                beats = 0
+                lastBeatMs = nil
+            }
+            condition.signal()
+            condition.unlock()
+        }
+
+        /// Render-Thread, bei «Fortsetzen»: Lücke seit dem letzten Lebenszeichen.
+        func end(resumeMs: Double) {
+            condition.lock()
+            let wasActive = active
+            active = false
+            let last = lastBeatMs
+            let count = beats
+            condition.signal()
+            condition.unlock()
+            guard wasActive else { return }
+            if let last {
+                c64Record(String(format: "[c64-alive] tMs=%.1f gap=%.0f ms beats=%d", resumeMs, resumeMs - last, count))
+            } else {
+                c64Record(String(format: "[c64-alive] tMs=%.1f gap=- beats=0 (kein Lebenszeichen in dieser Pause)", resumeMs))
+            }
+        }
+
+        private func loop() {
+            while true {
+                condition.lock()
+                while !active { condition.wait() }
+                let reader = readLayerState
+                let provider = providerStateText
+                let count = beats
+                condition.unlock()
+                if count >= Self.maxBeatsPerPause {
+                    // Grenze erreicht: bis zum Ende der Pause schlafen (kein weiteres Zeichen).
+                    condition.lock()
+                    while active { condition.wait() }
+                    condition.unlock()
+                    continue
+                }
+                let now = LaunchClock.elapsedMs
+                let layer = reader?() ?? "-"
+                c64Record(String(format: "[c64-alive] tMs=%.1f n=%d background=%d layer=%@ provider=%@", now, count + 1,
+                                 CelesteProbe.pauseState.isBackground ? 1 : 0, layer, provider))
+                condition.lock()
+                beats += 1
+                lastBeatMs = now
+                if active {
+                    _ = condition.wait(until: Date(timeIntervalSinceNow: 1.0))
+                }
+                condition.unlock()
+            }
+        }
+    }
 
     /// FMOD-Mixer anhalten oder weiterlaufen lassen (celeste_audio_suspend); vom Render-Thread,
     /// beide Aufrufe auf demselben Thread ohne Tick dazwischen (FMOD-Doku iOS). Nur mit Spiel.
@@ -925,6 +1029,7 @@ nonisolated enum CelesteProbe {
                 c64Record("[c64-life] tMs=\(LaunchClock.tMs) AVAudioSession routeChange reason=\(reason) route=[\(route)]")
             })
             c64Record("[c64-life] tMs=\(LaunchClock.tMs) monitor started")
+            CelesteProbe.AliveProbe.shared.start()
         }
 
         private static func name(_ reason: AVAudioSession.InterruptionReason) -> String {

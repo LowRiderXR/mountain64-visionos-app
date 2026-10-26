@@ -171,6 +171,7 @@ nonisolated final class Renderer: @unchecked Sendable {
             break
         }
         c64Record("[c64-loop] tMs=\(LaunchClock.tMs) Fortsetzen; \(pauseReasonText) provider=\(Self.name(worldTracking.state))")
+        CelesteProbe.AliveProbe.shared.end(resumeMs: LaunchClock.elapsedMs)
 
         if game {
             resumeAudioIfPossible(trigger: "resume")
@@ -452,6 +453,7 @@ nonisolated final class Renderer: @unchecked Sendable {
                 case .dataProviderStateChanged(_, let newState, let error):
                     let lifecycle = await MainActor.run { CelesteProbe.lifecycleLine }
                     c64Record("[c64-arkit] tMs=\(LaunchClock.tMs) provider state=\(Self.name(newState))\(error.map { " error=\"\($0)\"" } ?? "") \(lifecycle)")
+                    CelesteProbe.AliveProbe.shared.setProviderState(Self.name(newState))
                     if newState == .stopped, error != nil {
                         try? await Task.sleep(for: .seconds(1))
                         await runARSession(reason: "provider stopped with error")
@@ -483,6 +485,7 @@ nonisolated final class Renderer: @unchecked Sendable {
             c64Record("[c64-arkit] tMs=\(LaunchClock.tMs) run attempt \(attempt) (\(reason)) layer=\(Self.name(layerRenderer.state)) \(before)")
             try await arSession.run([provider])
             c64Record("[c64-arkit] run attempt \(attempt) returned (\(reason)) state=\(Self.name(provider.state)) supported=\(WorldTrackingProvider.isSupported)")
+            CelesteProbe.AliveProbe.shared.setProviderState(Self.name(provider.state))
         } catch {
             // Ohne Pose wird trotzdem präsentiert (Schwarz ohne Anker); das Log zeigt es.
             c64Record("[c64-arkit] run attempt \(attempt) failed (\(reason)): \(error)")
@@ -515,6 +518,8 @@ nonisolated final class Renderer: @unchecked Sendable {
         let config = layerRenderer.configuration
         let layout = ProbeLayerConfiguration.name(config.layout)
         let line = "[c64-ctx] build=\(ProbeContext.buildConfiguration)"
+            + " debugger=\(ProbeContext.debuggerAttached ? 1 : 0)"
+            + " truncated=\(ProgressFile.truncateOnStart ? 1 : 0)"
             + " MTL_DEBUG_LAYER=\(ProbeContext.environment("MTL_DEBUG_LAYER"))"
             + " METAL_DEVICE_WRAPPER_TYPE=\(ProbeContext.environment("METAL_DEVICE_WRAPPER_TYPE"))"
             + " hw.machine=\(ProbeContext.hardwareMachine)"
@@ -549,6 +554,8 @@ nonisolated final class Renderer: @unchecked Sendable {
         statWindowStart = start
         nextStallAt = start + Self.stallSpacing
         c64Record("[c64-loop] tMs=\(LaunchClock.tMs) Renderschleife gestartet, thread=\(Thread.current.name ?? "?")")
+        // M4a.5c-6: Layer-Zustand für die Lebenszeichen-Sonde (cp_layer_renderer_get_state, ohne Lock).
+        CelesteProbe.AliveProbe.shared.setLayerStateReader { [layerRenderer] in Self.name(layerRenderer.state) }
         if CelesteProbe.ticksGame {
             CelesteProbe.tickState.resume(reason: "render loop started")
         }

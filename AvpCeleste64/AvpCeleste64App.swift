@@ -25,8 +25,13 @@ import SwiftUI
 /// Uhr seit dem Prozessstart für die Startzeilen (tMs), von jedem Thread lesbar.
 nonisolated enum LaunchClock {
     static let reference = DispatchTime.now()
+    /// Millisekunden seit dem Start (mach-Zeit: läuft während einer Prozess-Suspendierung weiter,
+    /// steht im Geräteschlaf).
+    static var elapsedMs: Double {
+        Double(DispatchTime.now().uptimeNanoseconds - reference.uptimeNanoseconds) / 1_000_000
+    }
     static var tMs: String {
-        String(format: "%.1f", Double(DispatchTime.now().uptimeNanoseconds - reference.uptimeNanoseconds) / 1_000_000)
+        String(format: "%.1f", elapsedMs)
     }
 }
 

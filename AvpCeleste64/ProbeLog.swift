@@ -43,7 +43,9 @@ nonisolated final class ProgressFile: @unchecked Sendable {
         if fd < 0 {
             c64Log.error("[c64-file] Fortschrittsdatei nicht geöffnet: \(path, privacy: .public) errno=\(errno)")
         }
-        write("---- Start \(ISO8601DateFormatter().string(from: Date())) pid=\(getpid()) \(Self.truncateOnStart ? "(Datei geleert)" : "(angehängt)")")
+        // M4a.5c-6: debugger= zeigt, ob der Lauf aus Xcode kam (der Debugger hält den Prozess im
+        // Hintergrund wach, Quinn, Apple DTS, Forum 796528); truncated= ob die Datei geleert wurde.
+        write("---- Start \(ISO8601DateFormatter().string(from: Date())) pid=\(getpid()) debugger=\(ProbeContext.debuggerAttached ? 1 : 0) truncated=\(Self.truncateOnStart ? 1 : 0) \(Self.truncateOnStart ? "(Datei geleert)" : "(angehängt)")")
     }
 
     /// Schreibt eine Zeile und synchronisiert sie sofort auf den Datenträger.
@@ -96,6 +98,20 @@ nonisolated enum ProbeContext {
 
     static var osVersion: String {
         ProcessInfo.processInfo.operatingSystemVersionString
+    }
+
+    /// Hängt ein Debugger am Prozess? sysctl kern.proc.pid, Flag P_TRACED (Apple TN QA1361).
+    /// Gelesen, nicht angenommen: beim M2-Lauf von M4a.5c-4 war nicht erkennbar, ob er aus Xcode
+    /// oder vom Home-Bildschirm kam.
+    static var debuggerAttached: Bool {
+        var info = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.stride
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, getpid()]
+        let result = mib.withUnsafeMutableBufferPointer { pointer in
+            sysctl(pointer.baseAddress, u_int(pointer.count), &info, &size, nil, 0)
+        }
+        guard result == 0 else { return false }
+        return (info.kp_proc.p_flag & P_TRACED) != 0
     }
 
     static func name(_ format: MTLPixelFormat) -> String {
