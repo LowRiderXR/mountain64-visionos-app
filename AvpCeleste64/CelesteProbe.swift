@@ -31,6 +31,7 @@ import Foundation
 import ImageIO
 import Metal
 import os
+import simd
 import UIKit
 
 nonisolated enum CelesteProbe {
@@ -867,6 +868,37 @@ nonisolated enum CelesteProbe {
     }
 
     static let pauseState = PauseState()
+
+    /// Letzte Kopfpose aus dem Device Anchor (Render-Thread schreibt je Frame, Hauptthread liest
+    /// bei onWorldRecenter): Position in Metern, Gieren in Grad (positiv nach rechts, 0 = −Z).
+    nonisolated final class HeadPose: @unchecked Sendable {
+        private let lock = NSLock()
+        private var position = SIMD3<Float>(0, 0, 0)
+        private var yawDegrees: Float = 0
+        private var ageMs: Double = -1
+        private var frames = 0
+
+        func set(anchor: simd_float4x4) {
+            let p = SIMD3<Float>(anchor.columns.3.x, anchor.columns.3.y, anchor.columns.3.z)
+            let forward = -SIMD3<Float>(anchor.columns.2.x, anchor.columns.2.y, anchor.columns.2.z)
+            let yaw = atan2(forward.x, -forward.z) * 180 / .pi
+            lock.withLock {
+                position = p
+                yawDegrees = yaw
+                ageMs = LaunchClock.elapsedMs
+                frames += 1
+            }
+        }
+
+        var line: String {
+            lock.withLock {
+                guard ageMs >= 0 else { return "head=- yaw=- (noch keine Pose)" }
+                return String(format: "head=(%.2f, %.2f, %.2f) yaw=%.1f° poseTMs=%.1f frames=%d", position.x, position.y, position.z, yawDegrees, ageMs, frames)
+            }
+        }
+    }
+
+    static let headPose = HeadPose()
 
     /// Lebenszeichen-Sonde (M4a.5c-6): ein eigener Thread «c64-alive», geweckt vom Hintergrund-
     /// Flag, schreibt einmal pro Sekunde eine Zeile in die Probe, höchstens 600 je Pause; beim

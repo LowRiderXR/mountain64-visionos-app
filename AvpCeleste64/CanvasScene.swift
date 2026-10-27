@@ -108,30 +108,35 @@ nonisolated final class CanvasScene {
                          descriptor.maxVertexAmplificationCount))
     }
 
-    /// Wie die Testszene: in den ersten settleFrames jeden Frame aus der Pose setzen, dann einfrieren.
+    /// M4b.1b: in den ersten settleFrames jeden Frame setzen, dann einfrieren; die Lage hängt
+    /// nicht mehr an der Blickrichtung, sondern an −Z des Ursprungs (Gieren 0, x = z = 0), nur die
+    /// Höhe kommt aus der Kopfhöhe. Das System-Recenter (Crown lang) legt −Z des Ursprungs auf die
+    /// Blickrichtung; so steht die Leinwand danach wieder vor dem Spieler. Vorher lag sie entlang
+    /// der Blickrichtung im 90. Frame und blieb nach dem Recenter um diesen Winkel seitlich.
     private func place(anchor: simd_float4x4) {
         guard !frozen else { return }
         let position = SIMD3<Float>(anchor.columns.3.x, anchor.columns.3.y, anchor.columns.3.z)
-        var forward = -SIMD3<Float>(anchor.columns.2.x, anchor.columns.2.y, anchor.columns.2.z)
-        forward.y = 0
-        if simd_length(forward) < 1e-3 { forward = SIMD3<Float>(0, 0, -1) }
-        forward = simd_normalize(forward)
+        var gaze = -SIMD3<Float>(anchor.columns.2.x, anchor.columns.2.y, anchor.columns.2.z)
+        gaze.y = 0
+        if simd_length(gaze) < 1e-3 { gaze = SIMD3<Float>(0, 0, -1) }
+        gaze = simd_normalize(gaze)
+        let forward = SIMD3<Float>(0, 0, -1)
         let worldUp = SIMD3<Float>(0, 1, 0)
-        let rightDir = simd_normalize(simd_cross(forward, worldUp))
-        center = position + forward * Self.distance
-        right = rightDir * halfWidth
+        center = SIMD3<Float>(0, position.y, 0) + forward * Self.distance
+        right = SIMD3<Float>(1, 0, 0) * halfWidth
         up = worldUp * halfHeight
         placementFrames += 1
         if placementFrames >= Self.settleFrames {
             frozen = true
             let verticalDegrees = 2 * atan(halfHeight / Self.distance) * 180 / .pi
-            c64Record(String(format: "[c64-canvas] eingefroren nach %d Frames: Mitte (%.1f, %.1f, %.1f) m, Kopf (%.2f, %.2f, %.2f) m, Blick (%.2f, %.2f, %.2f), Leinwand %.1fx%.1f m = %.1f°x%.1f° in %.0f m",
+            let gazeYaw = atan2(gaze.x, -gaze.z) * 180 / .pi
+            c64Record(String(format: "[c64-canvas] eingefroren nach %d Frames auf -Z des Ursprungs (Gieren 0): Mitte (%.1f, %.1f, %.1f) m, Kopf (%.2f, %.2f, %.2f) m, Blick (%.2f, %.2f, %.2f) = %.1f°, Leinwand %.1fx%.1f m = %.1f°x%.1f° in %.0f m",
                              placementFrames, center!.x, center!.y, center!.z,
-                             position.x, position.y, position.z, forward.x, forward.y, forward.z,
+                             position.x, position.y, position.z, gaze.x, gaze.y, gaze.z, gazeYaw,
                              halfWidth * 2, halfHeight * 2, fovDegrees, verticalDegrees, Self.distance))
         } else if placementFrames == 1 {
             c64Record(String(format: "[c64-canvas] tMs=\(LaunchClock.tMs) erste Pose: Kopf (%.2f, %.2f, %.2f) m, Blick (%.2f, %.2f, %.2f)",
-                             position.x, position.y, position.z, forward.x, forward.y, forward.z))
+                             position.x, position.y, position.z, gaze.x, gaze.y, gaze.z))
         }
     }
 

@@ -969,6 +969,10 @@ nonisolated final class Renderer: @unchecked Sendable {
             c64Record("[c64-arkit] render thread sees provider state=\(Self.name(providerState)) frame=\(totalFrames)")
         }
         let deviceAnchor = providerState == .running ? provider.queryDeviceAnchor(atTimestamp: presentationTime) : nil
+        if let deviceAnchor {
+            // M4b.1b: letzte Kopfpose für die [c64-recenter]-Zeile (Diagnose, Vorbereitung M4b.4).
+            CelesteProbe.headPose.set(anchor: deviceAnchor.originFromAnchorTransform)
+        }
 
         // M4b.1: Celestes Render-Hälfte nach dem Device Anchor, unmittelbar vor dem Encodieren;
         // SDL committet seine Buffer auf der gemeinsamen Queue vor dem Host-Buffer. Kein Render
