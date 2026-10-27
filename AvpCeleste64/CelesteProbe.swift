@@ -335,8 +335,13 @@ nonisolated enum CelesteProbe {
         private var windowTicks = 0
         private var deltaSum = 0.0
         private var deltaMax = 0.0
-        private var tickMsSum = 0.0
-        private var tickMsMax = 0.0
+        // M4b.1: Update und Render getrennt gemessen (CPU, Render-Thread).
+        private var updateMsSum = 0.0
+        private var updateMsMax = 0.0
+        private var renderMsSum = 0.0
+        private var renderMsMax = 0.0
+        private var windowRenders = 0
+        private var updatePending = false
         // M4a.3: Leinwand und Queue für das einmalige Rücklesen nach snapshotAtTicks Ticks.
         private var snapshotQueue: MTLCommandQueue?
         private var snapshotTexture: MTLTexture?
@@ -361,17 +366,22 @@ nonisolated enum CelesteProbe {
         /// (nicht rekursiven) NSLock nimmt; innerhalb von tick wäre das ein Deadlock des
         /// Render-Threads (gemessen M4a.5a auf der M5: keine Zeile nach «requested», das
         /// System beendete die App nach dem blockierten Render-Thread).
-        func tick(frameInterval: TimeInterval?) {
-            if let reason = tickLocked(frameInterval: frameInterval) {
+        /// M4b.1: die Update-Hälfte (celeste_update) in der Update-Phase des Frames; liefert
+        /// true, wenn das Update lief (dann folgt render() im selben Frame).
+        @discardableResult
+        func update(frameInterval: TimeInterval?) -> Bool {
+            let (ran, reason) = updateLocked(frameInterval: frameInterval)
+            if let reason {
                 CelesteProbe.requestExit(reason: reason)
             }
+            return ran
         }
 
-        /// Der Tick unter dem Lock; gibt den Grund für ein Ende zurück, sonst nil.
-        private func tickLocked(frameInterval: TimeInterval?) -> String? {
+        /// Das Update unter dem Lock; gibt zurück, ob es lief, und den Grund für ein Ende.
+        private func updateLocked(frameInterval: TimeInterval?) -> (Bool, String?) {
             lock.lock()
             defer { lock.unlock() }
-            guard ready, !stopped else { return nil }
+            guard ready, !stopped else { return (false, nil) }
             let delta = min(max(frameInterval ?? CelesteProbe.tickDelta, 0.001), 1.0 / 30.0)
             let now = CFAbsoluteTimeGetCurrent()
             if !firstLogged {
@@ -382,49 +392,82 @@ nonisolated enum CelesteProbe {
             totalFrames += 1
             windowFrames += 1
             let start = DispatchTime.now()
-            let rc = celeste_tick(delta, 0)
-            let tickMs = Double(DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000
+            let rc = celeste_update(delta)
+            let updateMs = Double(DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000
             if rc == -1 {
                 let error = celeste_last_error().map { String(cString: $0) } ?? ""
-                c64Record("[c64-celeste] tick rc=-1 after \(totalTicks) ticks, ticking stopped: \"\(error)\"")
+                c64Record("[c64-celeste] update rc=-1 after \(totalTicks) ticks, ticking stopped: \"\(error)\"")
                 stopped = true
-                return nil
+                return (false, nil)
             }
             totalTicks += 1
             windowTicks += 1
             if rc == 1 {
                 // «Exit» im Titel: dasselbe saubere Ende wie bei der Digital Crown (M4a.5a);
-                // stopped hier unter dem Lock, requestExit danach ausserhalb (siehe tick).
-                c64Record("[c64-celeste] tick rc=1: game asked to exit after \(totalTicks) ticks, ticking stopped")
+                // stopped hier unter dem Lock, requestExit danach ausserhalb (siehe update).
+                c64Record("[c64-celeste] update rc=1: game asked to exit after \(totalTicks) ticks, ticking stopped")
                 stopped = true
-                return "game asked to exit (tick rc=1)"
+                return (false, "game asked to exit (tick rc=1)")
             }
             deltaSum += delta
             deltaMax = max(deltaMax, delta)
-            tickMsSum += tickMs
-            tickMsMax = max(tickMsMax, tickMs)
+            updateMsSum += updateMs
+            updateMsMax = max(updateMsMax, updateMs)
+            updatePending = true
+            logStatsIfDue(now: now)
+            return (true, nil)
+        }
+
+        /// M4b.1: die Render-Hälfte (celeste_render_frame, present 0) nach dem Device Anchor,
+        /// unmittelbar vor dem Encodieren des Host-Buffers; Celestes SDL-Buffer committen so
+        /// vor dem Host-Buffer auf derselben Queue. Nur nach einem Update im selben Frame.
+        func render() {
+            lock.lock()
+            defer { lock.unlock() }
+            guard ready, !stopped, updatePending else { return }
+            updatePending = false
+            let start = DispatchTime.now()
+            let rc = celeste_render_frame(0)
+            let renderMs = Double(DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000
+            if rc == -1 {
+                let error = celeste_last_error().map { String(cString: $0) } ?? ""
+                c64Record("[c64-celeste] render rc=-1 after \(totalTicks) ticks, ticking stopped: \"\(error)\"")
+                stopped = true
+                return
+            }
+            windowRenders += 1
+            renderMsSum += renderMs
+            renderMsMax = max(renderMsMax, renderMs)
             if !snapshotDone, totalTicks >= Self.snapshotAtTicks, let queue = snapshotQueue, let texture = snapshotTexture {
                 snapshotDone = true
                 CelesteProbe.writeCanvasSnapshot(queue: queue, texture: texture, label: "tick\(totalTicks)")
             }
+        }
+
+        /// Statistik einmal pro Sekunde (unter dem Lock): Frames, Updates, Renders, Delta,
+        /// Update- und Render-CPU-Zeit, GPU-Zeit von Celestes Buffern.
+        private func logStatsIfDue(now: CFAbsoluteTime) {
             let elapsed = now - windowStart
-            if elapsed >= 1.0, windowFrames > 0 {
-                let updatesPerFrame = Double(windowTicks) / Double(windowFrames)
-                let gpu = CelesteProbe.celesteGpu.take()
-                c64Record(String(format: "[c64-celeste] tick-stats frames=%d ticks=%d updatesPerFrame=%.2f compositor=%.1f Hz delta(ms) mean=%.2f max=%.2f tick(ms) mean=%.2f max=%.2f celesteGpu(ms) mean=%.3f max=%.3f n=%d total=%d",
-                                 windowFrames, windowTicks, updatesPerFrame, Double(windowFrames) / elapsed,
-                                 deltaSum / Double(windowTicks) * 1000, deltaMax * 1000,
-                                 tickMsSum / Double(windowTicks), tickMsMax,
-                                 gpu.mean * 1000, gpu.max * 1000, gpu.count, totalTicks))
-                windowStart = now
-                windowFrames = 0
-                windowTicks = 0
-                deltaSum = 0
-                deltaMax = 0
-                tickMsSum = 0
-                tickMsMax = 0
-            }
-            return nil
+            guard elapsed >= 1.0, windowFrames > 0 else { return }
+            let updatesPerFrame = Double(windowTicks) / Double(windowFrames)
+            let gpu = CelesteProbe.celesteGpu.take()
+            let renders = max(windowRenders, 1)
+            c64Record(String(format: "[c64-celeste] tick-stats frames=%d ticks=%d renders=%d updatesPerFrame=%.2f compositor=%.1f Hz delta(ms) mean=%.2f max=%.2f update(ms) mean=%.2f max=%.2f render(ms) mean=%.2f max=%.2f celesteGpu(ms) mean=%.3f max=%.3f n=%d total=%d",
+                             windowFrames, windowTicks, windowRenders, updatesPerFrame, Double(windowFrames) / elapsed,
+                             deltaSum / Double(windowTicks) * 1000, deltaMax * 1000,
+                             updateMsSum / Double(windowTicks), updateMsMax,
+                             renderMsSum / Double(renders), renderMsMax,
+                             gpu.mean * 1000, gpu.max * 1000, gpu.count, totalTicks))
+            windowStart = now
+            windowFrames = 0
+            windowTicks = 0
+            windowRenders = 0
+            deltaSum = 0
+            deltaMax = 0
+            updateMsSum = 0
+            updateMsMax = 0
+            renderMsSum = 0
+            renderMsMax = 0
         }
 
         /// Pause oder Ende der Renderschleife: die Ticks setzen aus, das Spiel bleibt (kein
@@ -437,10 +480,14 @@ nonisolated enum CelesteProbe {
             windowStart = 0
             windowFrames = 0
             windowTicks = 0
+            windowRenders = 0
             deltaSum = 0
             deltaMax = 0
-            tickMsSum = 0
-            tickMsMax = 0
+            updateMsSum = 0
+            updateMsMax = 0
+            renderMsSum = 0
+            renderMsMax = 0
+            updatePending = false
         }
 
         func resume(reason: String) {

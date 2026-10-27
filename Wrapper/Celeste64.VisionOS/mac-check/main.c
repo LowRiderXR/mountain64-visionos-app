@@ -69,7 +69,15 @@ typedef int32_t (*capabilities_fn)(celeste_capabilities *);
 typedef int32_t (*window_info_fn)(celeste_window_info *);
 typedef int32_t (*init_fn)(const celeste_init_options *);
 typedef int32_t (*tick_fn)(double, int32_t);
+typedef int32_t (*update_fn)(double);
+typedef int32_t (*render_fn)(int32_t);
 typedef int32_t (*exiting_fn)(void);
+
+/* --split: run_ticks drives the frame as celeste_update plus celeste_render_frame instead of
+   celeste_tick (the host's order on the device, the update early and the render late). */
+static int g_split = 0;
+static update_fn g_update = NULL;
+static render_fn g_render = NULL;
 typedef int32_t (*audio_suspend_fn)(int32_t);
 typedef int32_t (*end_fn)(void);
 typedef int32_t (*set_canvas_fn)(void *, int32_t, int32_t);
@@ -96,10 +104,23 @@ static int run_ticks(tick_fn celeste_tick, last_error_fn celeste_last_error, int
 {
     int ok = 0;
     for (int i = 0; i < count; i++) {
-        int32_t t = celeste_tick(1.0 / HZ, 0);
-        if (t == -1) {
-            fprintf(stderr, "celeste_tick %s %d failed: %s\n", label, i, celeste_last_error());
-            return -1;
+        int32_t t;
+        if (g_split) {
+            t = g_update(1.0 / HZ);
+            if (t == -1) {
+                fprintf(stderr, "celeste_update %s %d failed: %s\n", label, i, celeste_last_error());
+                return -1;
+            }
+            if (g_render(0) == -1) {
+                fprintf(stderr, "celeste_render_frame %s %d failed: %s\n", label, i, celeste_last_error());
+                return -1;
+            }
+        } else {
+            t = celeste_tick(1.0 / HZ, 0);
+            if (t == -1) {
+                fprintf(stderr, "celeste_tick %s %d failed: %s\n", label, i, celeste_last_error());
+                return -1;
+            }
         }
         if (t == 1) (*exit_count)++;
         ok++;
@@ -183,6 +204,8 @@ int main(int argc, char **argv)
             if (strcmp(argv[i], "auto") == 0) line_auto = 1; else line = atoi(argv[i]);
         } else if (strcmp(argv[i], "--bad-options") == 0) {
             bad_options = 1;
+        } else if (strcmp(argv[i], "--split") == 0) {
+            g_split = 1;
         } else {
             fprintf(stderr, "unknown option %s\n", argv[i]);
             return 64;
@@ -211,6 +234,8 @@ int main(int argc, char **argv)
     window_info_fn celeste_window_info_get = (window_info_fn)require(handle, "celeste_window_info_get");
     init_fn celeste_init = (init_fn)require(handle, "celeste_init");
     tick_fn celeste_tick = (tick_fn)require(handle, "celeste_tick");
+    g_update = (update_fn)require(handle, "celeste_update");
+    g_render = (render_fn)require(handle, "celeste_render_frame");
     exiting_fn celeste_exiting = (exiting_fn)require(handle, "celeste_exiting");
     exiting_fn celeste_request_exit = (exiting_fn)require(handle, "celeste_request_exit");
     exiting_fn celeste_request_pause = (exiting_fn)require(handle, "celeste_request_pause");
@@ -219,7 +244,7 @@ int main(int argc, char **argv)
     set_canvas_fn celeste_set_canvas = (set_canvas_fn)require(handle, "celeste_set_canvas");
     clear_canvas_fn celeste_clear_canvas = (clear_canvas_fn)require(handle, "celeste_clear_canvas");
     last_error_fn celeste_last_error = (last_error_fn)require(handle, "celeste_last_error");
-    if (!celeste_version || !celeste_set_log_callback || !celeste_capabilities_get || !celeste_window_info_get || !celeste_init || !celeste_tick || !celeste_exiting || !celeste_request_exit || !celeste_request_pause || !celeste_audio_suspend || !celeste_end || !celeste_set_canvas || !celeste_clear_canvas || !celeste_last_error) {
+    if (!celeste_version || !celeste_set_log_callback || !celeste_capabilities_get || !celeste_window_info_get || !celeste_init || !celeste_tick || !g_update || !g_render || !celeste_exiting || !celeste_request_exit || !celeste_request_pause || !celeste_audio_suspend || !celeste_end || !celeste_set_canvas || !celeste_clear_canvas || !celeste_last_error) {
         return 2;
     }
     if (celeste_set_log_callback(on_log, NULL) != 0) {
@@ -233,6 +258,8 @@ int main(int argc, char **argv)
         return 3;
     }
     printf("mac-check: celeste_version: %s\n", version);
+    if (g_split)
+        printf("mac-check: split mode: frames run as celeste_update + celeste_render_frame\n");
     if (celeste_version() != version) {
         fprintf(stderr, "celeste_version is not stable across calls\n");
         return 4;

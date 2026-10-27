@@ -101,6 +101,13 @@ int32_t celeste_init(const celeste_init_options *options);
  * the GPU work, 1 also presents to the window. 0, 1 when the game wants to exit, -1 on failure. */
 int32_t celeste_tick(double delta_seconds, int32_t present);
 
+/* The same frame in two halves, for a host whose render input (the tracked pose) is only known
+ * after the update: celeste_update polls events and runs one update (0, 1 when the game wants to
+ * exit, -1); celeste_render_frame renders the state of the last update and submits (present 0)
+ * or presents (1) (0 or -1). Call both once per frame, update first, on the same thread. */
+int32_t celeste_update(double delta_seconds);
+int32_t celeste_render_frame(int32_t present);
+
 /* 1 when the game asked to exit (or no game exists), else 0. */
 int32_t celeste_exiting(void);
 

@@ -486,6 +486,56 @@ public static unsafe class Exports
 	}
 
 	/// <summary>
+	/// The update half of a frame (events, input, game logic) without rendering; the host calls
+	/// it early in its frame, before the tracked pose is known. Returns 1 once the game asked to
+	/// exit. celeste_render_frame completes the frame.
+	/// </summary>
+	[UnmanagedCallersOnly(EntryPoint = "celeste_update")]
+	public static int CelesteUpdate(double deltaSeconds)
+	{
+		try
+		{
+			if (game == null)
+				return SetError("celeste_update: no game; call celeste_init first");
+			var threadId = Environment.CurrentManagedThreadId;
+			if (threadId != lastTickThreadId)
+			{
+				lastTickThreadId = threadId;
+				Log.Info($"{Tag} update thread={threadId} name=\"{Thread.CurrentThread.Name}\" sameAsInit={(threadId == initThreadId ? 1 : 0)} sdlMainThread={(SDL_IsMainThread() ? 1 : 0)} delta={deltaSeconds * 1000:F3}ms tick={ticks}");
+			}
+			game.Update(TimeSpan.FromSeconds(deltaSeconds));
+			ticks++;
+			LogControllerChanges(game);
+			return game.Exiting ? Exiting : Ok;
+		}
+		catch (Exception e)
+		{
+			return SetError(e);
+		}
+	}
+
+	/// <summary>
+	/// The render half of a frame: renders the state of the last celeste_update and submits the
+	/// GPU work (present 0) or presents to the window (present 1). The host calls it late in its
+	/// frame, once the pose for this frame is known. 0 or -1.
+	/// </summary>
+	[UnmanagedCallersOnly(EntryPoint = "celeste_render_frame")]
+	public static int CelesteRenderFrame(int present)
+	{
+		try
+		{
+			if (game == null)
+				return SetError("celeste_render_frame: no game; call celeste_init first");
+			game.RenderFrame(present != 0);
+			return Ok;
+		}
+		catch (Exception e)
+		{
+			return SetError(e);
+		}
+	}
+
+	/// <summary>
 	/// Foster's window as SDL sees it: logical size, pixel size, density and flags. The host uses
 	/// it to compare SDL's geometry request (logical size in points) with its own scene.
 	/// </summary>

@@ -65,8 +65,9 @@ nonisolated final class Renderer: @unchecked Sendable {
     // Diese Notiz hält fest, wo das Hintergrund-Flag im Frame zuerst gesehen wurde.
     private struct PauseFrameNote {
         var frameIndex: UInt64
-        var flagSeen: String      // before-tick | after-tick
-        var tickSkipped: Bool
+        var flagSeen: String      // before-update | after-update | after-render
+        var tickSkipped: Bool     // kein celeste_update in diesem Frame
+        var renderSkipped: Bool   // Update lief, celeste_render_frame entfiel (M4b.1)
         var committed: Bool
         var presented: Bool
     }
@@ -107,9 +108,9 @@ nonisolated final class Renderer: @unchecked Sendable {
     /// Frame vor dem Tick, im Frame nach dem Tick), Tick ausgelassen, committet, präsentiert.
     private func logPauseFrameNote() {
         if let note = pauseFrameNote {
-            c64Record("[c64-pause-frame] tMs=\(LaunchClock.tMs) frame=\(note.frameIndex) flagSeen=\(note.flagSeen) tickSkipped=\(note.tickSkipped ? 1 : 0) committed=\(note.committed ? 1 : 0) presented=\(note.presented ? 1 : 0)")
+            c64Record("[c64-pause-frame] tMs=\(LaunchClock.tMs) frame=\(note.frameIndex) flagSeen=\(note.flagSeen) tickSkipped=\(note.tickSkipped ? 1 : 0) renderSkipped=\(note.renderSkipped ? 1 : 0) committed=\(note.committed ? 1 : 0) presented=\(note.presented ? 1 : 0)")
         } else {
-            c64Record("[c64-pause-frame] tMs=\(LaunchClock.tMs) frame=\(lastFrameIndex.map { "\($0)" } ?? "-") flagSeen=before-frame tickSkipped=0 committed=0 presented=0 (kein Frame in Arbeit, letzter abgeschlossener Frame)")
+            c64Record("[c64-pause-frame] tMs=\(LaunchClock.tMs) frame=\(lastFrameIndex.map { "\($0)" } ?? "-") flagSeen=before-frame tickSkipped=0 renderSkipped=0 committed=0 presented=0 (kein Frame in Arbeit, letzter abgeschlossener Frame)")
         }
         pauseFrameNote = nil
     }
@@ -886,13 +887,15 @@ nonisolated final class Renderer: @unchecked Sendable {
         // die Drawables, die kommen erst nach startSubmission (M4a verschiebt den Render-Teil
         // dorthin oder reicht die Drawable-Texturen vorher als Ausgabeziele).
         frame.startUpdate()
-        // M4a.5c-4: Ist die App beim Erreichen des Ticks schon im Hintergrund, entfällt nur der
-        // celeste_tick dieses Frames (SDL würde zwei Command Buffer im Hintergrund committen);
-        // der Frame wird trotzdem mit der Leinwand des letzten Bildes fertig präsentiert, die
-        // Pause folgt am Schleifenanfang.
+        // M4b.1: nur die Update-Hälfte (celeste_update); die Render-Hälfte folgt nach dem Device
+        // Anchor (renderCelesteThisFrame). M4a.5c-4: Ist die App beim Erreichen des Updates schon
+        // im Hintergrund, entfällt der Tick dieses Frames (SDL würde zwei Command Buffer im
+        // Hintergrund committen); der Frame wird trotzdem mit der Leinwand des letzten Bildes
+        // fertig präsentiert, die Pause folgt am Schleifenanfang.
+        var renderCelesteThisFrame = false
         let backgroundAtTick = CelesteProbe.pauseState.isBackground
         if backgroundAtTick {
-            pauseFrameNote = PauseFrameNote(frameIndex: frame.frameIndex, flagSeen: "before-tick", tickSkipped: true, committed: false, presented: false)
+            pauseFrameNote = PauseFrameNote(frameIndex: frame.frameIndex, flagSeen: "before-update", tickSkipped: true, renderSkipped: true, committed: false, presented: false)
         } else if audioSuspended {
             // M4a.5c-2: kein celeste_tick bei angehaltenem Mixer; der Frame wird trotzdem
             // präsentiert (Leinwand mit dem letzten Bild).
@@ -901,7 +904,7 @@ nonisolated final class Renderer: @unchecked Sendable {
                 c64Record("[c64-celeste] tMs=\(LaunchClock.tMs) Tick ausgelassen, Mixer angehalten; Schleife präsentiert weiter")
             }
         } else if CelesteProbe.ticksGame {
-            CelesteProbe.tickState.tick(frameInterval: frameInterval)
+            renderCelesteThisFrame = CelesteProbe.tickState.update(frameInterval: frameInterval)
         }
         frame.endUpdate()
 
@@ -967,6 +970,20 @@ nonisolated final class Renderer: @unchecked Sendable {
         }
         let deviceAnchor = providerState == .running ? provider.queryDeviceAnchor(atTimestamp: presentationTime) : nil
 
+        // M4b.1: Celestes Render-Hälfte nach dem Device Anchor, unmittelbar vor dem Encodieren;
+        // SDL committet seine Buffer auf der gemeinsamen Queue vor dem Host-Buffer. Kein Render
+        // ohne Update in diesem Frame (Pause, Mixer angehalten, Flag gesetzt).
+        if renderCelesteThisFrame {
+            if CelesteProbe.pauseState.isBackground {
+                // Flag kam zwischen Update und Render: Celestes Render entfällt (keine
+                // SDL-Buffer im Hintergrund), die Leinwand zeigt das letzte Bild, der Frame
+                // wird fertig präsentiert.
+                pauseFrameNote = PauseFrameNote(frameIndex: frame.frameIndex, flagSeen: "after-update", tickSkipped: false, renderSkipped: true, committed: false, presented: false)
+            } else {
+                CelesteProbe.tickState.render()
+            }
+        }
+
         for drawable in drawables {
             if let anchor = deviceAnchor {
                 drawable.deviceAnchor = anchor
@@ -1014,7 +1031,7 @@ nonisolated final class Renderer: @unchecked Sendable {
         // (BackgroundExecutionNotPermitted), das zählt als erwartet.
         if CelesteProbe.pauseState.isBackground {
             if pauseFrameNote == nil {
-                pauseFrameNote = PauseFrameNote(frameIndex: frame.frameIndex, flagSeen: "after-tick", tickSkipped: false, committed: false, presented: false)
+                pauseFrameNote = PauseFrameNote(frameIndex: frame.frameIndex, flagSeen: "after-render", tickSkipped: false, renderSkipped: false, committed: false, presented: false)
             }
             cmdErrLock.lock()
             backgroundCommitFrame = frame.frameIndex
