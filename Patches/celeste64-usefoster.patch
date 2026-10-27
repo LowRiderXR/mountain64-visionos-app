@@ -171,6 +171,25 @@ index 300dab1..4d0b815 100644
  
  		if (!prompts.TryGetValue(deviceTypeName, out var list))
  			prompts[deviceTypeName] = list = [];
+diff --git a/Source/Data/Save.cs b/Source/Data/Save.cs
+index f2ba5d0..9814c98 100644
+--- a/Source/Data/Save.cs
++++ b/Source/Data/Save.cs
+@@ -178,7 +178,14 @@ public class Save
+ 
+ 	public void ApplySettings(App app)
+ 	{
++#if VISIONOS_KIT
++		// visionOS port: the window stays hidden, and setting fullscreen is a main-thread API on
++		// visionOS that the options menu would call from the host's render thread
++		if (!OperatingSystem.IsIOS())
++			app.Window.Fullscreen = Fullscreen;
++#else
+ 		app.Window.Fullscreen = Fullscreen;
++#endif
+ 		Audio.SetVCAVolume("vca:/music", Calc.Clamp(MusicVolume / 10.0f, 0, 1));
+ 		Audio.SetVCAVolume("vca:/sfx", Calc.Clamp(SfxVolume / 10.0f, 0, 1));
+ 	}
 diff --git a/Source/Game.cs b/Source/Game.cs
 index 312df59..7f78135 100644
 --- a/Source/Game.cs
@@ -392,10 +411,24 @@ index 697d6fe..7cb8e77 100644
  			Target.Clear(Color.Transparent);
  			batch.PushSampler(new(TextureFilter.Linear, TextureWrap.Clamp, TextureWrap.Clamp));
 diff --git a/Source/Scenes/World.cs b/Source/Scenes/World.cs
-index bdfb740..abcdafb 100644
+index bdfb740..b2d4a49 100644
 --- a/Source/Scenes/World.cs
 +++ b/Source/Scenes/World.cs
-@@ -872,9 +872,15 @@ public class World : Scene
+@@ -70,7 +70,13 @@ public class World : Scene
+ 		var stopwatch = Stopwatch.StartNew();
+ 		var map = Assets.Maps[entry.Map];
+ 
++#if VISIONOS_KIT
++		// visionOS port: the camera targets the game's own target from the start; the window's
++		// pixel size is a main-thread API on visionOS and the host updates on another thread
++		Camera.Target = (IDrawableTarget?)VisionOSKit.MainTarget ?? Game.Window;
++#else
+ 		Camera.Target = Game.Window;
++#endif
+ 		Camera.NearPlane = 20;
+ 		Camera.FarPlane = 800;
+ 		Camera.FOVMultiplier = 1;
+@@ -872,9 +878,15 @@ public class World : Scene
  			// apply post fx
  			postMaterial.CopyFrom(Assets.Materials["Edge"]);
  			postMaterial.Fragment.Samplers[1] = new(target.Attachments[1], new(TextureFilter.Nearest, TextureWrap.Clamp, TextureWrap.Clamp));
@@ -427,10 +460,10 @@ index 650a35e..68b1c05 100644
  	private const float EaseClosePercent = 0.3f; // how long (in percent) it eases the entire screen
 diff --git a/Source/VisionOSKit.cs b/Source/VisionOSKit.cs
 new file mode 100644
-index 0000000..2e651e6
+index 0000000..ce388ed
 --- /dev/null
 +++ b/Source/VisionOSKit.cs
-@@ -0,0 +1,145 @@
+@@ -0,0 +1,153 @@
 +#if VISIONOS_KIT
 +// VisionOSKit.cs — Schalter des visionOS-Ports für Mac-Läufe (K6b, nur mit UseLocalFoster gebaut).
 +//
@@ -546,9 +579,17 @@ index 0000000..2e651e6
 +		// Celeste rendert in Standard-Z (nah = klein): Tiefenauflösung mit Min, damit Kantenpixel am
 +		// Vordergrund hängen; die Samples bleiben gespeichert (MultiSampleStore), weil spätere
 +		// Pässe (Rückkopie, Sprites, Erdbeere) das Ziel laden
-+		return new Target(device, width, height, [(TextureFormat.Color, TextureFlags.None, samples), (TextureFormat.Depth16, TextureFlags.None, samples)],
++		MainTarget = new Target(device, width, height, [(TextureFormat.Color, TextureFlags.None, samples), (TextureFormat.Depth16, TextureFlags.None, samples)],
 +			name: "world", multiSampleStore: true, depthResolve: DepthResolveFilter.Min);
++		return MainTarget;
 +	}
++
++	/// <summary>
++	/// The game's main target; World binds its camera to it from the start, so that the camera
++	/// never reads the window's pixel size (a main-thread API in SDL's UIKit backend) from the
++	/// host's render thread before the first render.
++	/// </summary>
++	public static Target? MainTarget { get; private set; }
 +
 +	// Pause request from the host (the device was taken off and put on again); Game.Update
 +	// consumes it on the game's thread and opens the pause menu of a running level.
