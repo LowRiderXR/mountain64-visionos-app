@@ -102,7 +102,9 @@ nonisolated enum CelesteProbe {
         guard let raw else { return }
         let buffer = Unmanaged<AnyObject>.fromOpaque(raw).takeUnretainedValue()
         guard let commandBuffer = buffer as? MTLCommandBuffer else { return }
-        CelesteProbe.celesteGpu.add(commandBuffer.gpuEndTime - commandBuffer.gpuStartTime)
+        let seconds = commandBuffer.gpuEndTime - commandBuffer.gpuStartTime
+        CelesteProbe.celesteGpu.add(seconds)
+        CelesteProbe.celesteGpuPasses.record(max(seconds, 0))
     }
 
     /// M4a.3: Celestes Endbild in die Leinwand (celeste_set_canvas), auf dem Hauptthread nach
@@ -258,6 +260,44 @@ nonisolated enum CelesteProbe {
         ProcessInfo.processInfo.environment["C64_REVERSE_Z"] != "0"
     }
 
+    /// M4b.3a: Celestes Welt-Pässe direkt in die Drawable-Schichten (celeste_render_frame_vr);
+    /// Standard an, C64_VR_WORLD=0 schaltet zurück auf die Leinwand für alles. Braucht den
+    /// Reverse-Z-Pfad.
+    static var stereoWorld: Bool {
+        reverseZ && ProcessInfo.processInfo.environment["C64_VR_WORLD"] != "0"
+    }
+
+    /// M4b.3a: GPU-Zeit je Pass. Celestes Command Buffer kommen in Commit-Reihenfolge beim
+    /// Rückruf an; renderVR legt nach jedem Aufruf die Etiketten der erwarteten Buffer in eine
+    /// Warteschlange (je Abschicken zwei Buffer: Upload und Render, GraphicsDeviceSDL.cs:464-465),
+    /// der Rückruf ordnet die Zeit dem vordersten Etikett zu.
+    nonisolated final class GpuPassStats: @unchecked Sendable {
+        private let lock = NSLock()
+        private var pending: [String] = []
+        private var sums: [String: Double] = [:]
+        private var unlabelled = 0
+        func expect(_ labels: [String]) { lock.withLock { pending.append(contentsOf: labels) } }
+        func record(_ seconds: Double) {
+            lock.withLock {
+                if pending.isEmpty {
+                    unlabelled += 1
+                    sums["unlabelled", default: 0] += seconds
+                } else {
+                    sums[pending.removeFirst(), default: 0] += seconds
+                }
+            }
+        }
+        func take() -> (sums: [String: Double], unlabelled: Int, pending: Int) {
+            lock.withLock {
+                let result = (sums, unlabelled, pending.count)
+                sums = [:]
+                unlabelled = 0
+                return result
+            }
+        }
+    }
+    static let celesteGpuPasses = GpuPassStats()
+
     /// Die Leinwandtextur des Hosts; der Renderer übernimmt sie beim Start des ImmersiveSpace.
     @MainActor static var canvasTexture: MTLTexture?
 
@@ -350,6 +390,8 @@ nonisolated enum CelesteProbe {
         private var renderMsSum = 0.0
         private var renderMsMax = 0.0
         private var windowRenders = 0
+        // M4b.3a: Frames, in denen Celeste die Welt ins Drawable schrieb (rc 1)
+        private var windowWorldFrames = 0
         private var updatePending = false
         // M4a.3: Leinwand und Queue für das einmalige Rücklesen nach snapshotAtTicks Ticks.
         private var snapshotQueue: MTLCommandQueue?
@@ -447,10 +489,55 @@ nonisolated enum CelesteProbe {
             windowRenders += 1
             renderMsSum += renderMs
             renderMsMax = max(renderMsMax, renderMs)
+            // ein Abschicken am Frame-Ende (RenderFrame → Flush): zwei Buffer
+            CelesteProbe.celesteGpuPasses.expect(["canvas", "canvas"])
             if !snapshotDone, totalTicks >= Self.snapshotAtTicks, let queue = snapshotQueue, let texture = snapshotTexture {
                 snapshotDone = true
                 CelesteProbe.writeCanvasSnapshot(queue: queue, texture: texture, label: "tick\(totalTicks)")
             }
+        }
+
+        /// M4b.3a: die Render-Hälfte mit dem Stereo-Weltpass (celeste_render_frame_vr). Rückgabe
+        /// 1: Welt im Drawable, 0: Leinwand (Titel, Overworld, Blende), -1: Fehler (Ticks gestoppt),
+        /// -2: kein Render in diesem Frame (nicht bereit oder kein Update).
+        func renderVR(_ frame: UnsafeMutablePointer<celeste_vr_frame>) -> Int32 {
+            lock.lock()
+            defer { lock.unlock() }
+            guard ready, !stopped, updatePending else { return -2 }
+            updatePending = false
+            let start = DispatchTime.now()
+            let rc = celeste_render_frame_vr(frame)
+            let renderMs = Double(DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000
+            if rc == -1 {
+                let error = celeste_last_error().map { String(cString: $0) } ?? ""
+                c64Record("[c64-celeste] render_vr rc=-1 after \(totalTicks) ticks, ticking stopped: \"\(error)\"")
+                stopped = true
+                return rc
+            }
+            windowRenders += 1
+            renderMsSum += renderMs
+            renderMsMax = max(renderMsMax, renderMs)
+            // Etiketten der Buffer dieses Frames: je FlushPass (Welt, Kante, Sprites) und das
+            // Abschicken am Frame-Ende zwei Buffer; Leinwand-Frames nur das Frame-Ende
+            let flushes = Int(frame.pointee.flushes)
+            var labels: [String] = []
+            if rc == 1 {
+                windowWorldFrames += 1
+                if flushes == 3 {
+                    labels = ["world", "world", "edge", "edge", "sprites", "sprites", "rest", "rest"]
+                }
+            } else if rc == 0, flushes == 0 {
+                labels = ["canvas", "canvas"]
+            }
+            if labels.isEmpty {
+                for index in 0...flushes { labels += ["pass\(index)", "pass\(index)"] }
+            }
+            CelesteProbe.celesteGpuPasses.expect(labels)
+            if !snapshotDone, totalTicks >= Self.snapshotAtTicks, let queue = snapshotQueue, let texture = snapshotTexture {
+                snapshotDone = true
+                CelesteProbe.writeCanvasSnapshot(queue: queue, texture: texture, label: "tick\(totalTicks)")
+            }
+            return rc
         }
 
         /// Statistik einmal pro Sekunde (unter dem Lock): Frames, Updates, Renders, Delta,
@@ -461,16 +548,25 @@ nonisolated enum CelesteProbe {
             let updatesPerFrame = Double(windowTicks) / Double(windowFrames)
             let gpu = CelesteProbe.celesteGpu.take()
             let renders = max(windowRenders, 1)
+            // M4b.3a: GPU-Zeit je Pass pro Welt-Frame (Welt, Kante, Sprites, Rest) und pro Leinwand-Frame
+            let passes = CelesteProbe.celesteGpuPasses.take()
+            let worldFrames = Double(max(windowWorldFrames, 1))
+            let canvasFrames = Double(max(windowRenders - windowWorldFrames, 1))
+            func perWorld(_ key: String) -> Double { (passes.sums[key] ?? 0) / worldFrames * 1000 }
+            let passText = String(format: " worldFrames=%d gpuPass(ms/frame) world=%.3f edge=%.3f sprites=%.3f rest=%.3f canvas=%.3f unlabelled=%d pending=%d",
+                                  windowWorldFrames, perWorld("world"), perWorld("edge"), perWorld("sprites"), perWorld("rest"),
+                                  (passes.sums["canvas"] ?? 0) / canvasFrames * 1000, passes.unlabelled, passes.pending)
             c64Record(String(format: "[c64-celeste] tick-stats frames=%d ticks=%d renders=%d updatesPerFrame=%.2f compositor=%.1f Hz delta(ms) mean=%.2f max=%.2f update(ms) mean=%.2f max=%.2f render(ms) mean=%.2f max=%.2f celesteGpu(ms) mean=%.3f max=%.3f n=%d total=%d",
                              windowFrames, windowTicks, windowRenders, updatesPerFrame, Double(windowFrames) / elapsed,
                              deltaSum / Double(windowTicks) * 1000, deltaMax * 1000,
                              updateMsSum / Double(windowTicks), updateMsMax,
                              renderMsSum / Double(renders), renderMsMax,
-                             gpu.mean * 1000, gpu.max * 1000, gpu.count, totalTicks))
+                             gpu.mean * 1000, gpu.max * 1000, gpu.count, totalTicks) + passText)
             windowStart = now
             windowFrames = 0
             windowTicks = 0
             windowRenders = 0
+            windowWorldFrames = 0
             deltaSum = 0
             deltaMax = 0
             updateMsSum = 0

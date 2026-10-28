@@ -55,27 +55,14 @@ index 0000000..de41677
 +{ "samplers": 1, "storage_textures": 0, "storage_buffers": 0, "uniform_buffers": 1, "inputs": [{ "name": "in.var.TEXCOORD0", "type": "float2", "location": 0 }, { "name": "in.var.TEXCOORD2", "type": "float3", "location": 2 }, { "name": "in.var.TEXCOORD3", "type": "float3", "location": 3 }], "outputs": [{ "name": "out.var.SV_Target0", "type": "float4", "location": 0 }] }
 diff --git a/Content/Shaders/Compiled/DefaultVR.fragment.msl b/Content/Shaders/Compiled/DefaultVR.fragment.msl
 new file mode 100644
-index 0000000..0c38f88
+index 0000000..08beb04
 --- /dev/null
 +++ b/Content/Shaders/Compiled/DefaultVR.fragment.msl
-@@ -0,0 +1,60 @@
+@@ -0,0 +1,50 @@
 +#include <metal_stdlib>
 +#include <simd/simd.h>
 +
 +using namespace metal;
-+
-+struct type_VertexUniforms
-+{
-+    float4x4 u_mvp;
-+    float4x4 u_model;
-+    float4x4 u_model_inverse;
-+    float u_jointMult;
-+};
-+
-+struct type_JointUniforms
-+{
-+    float4x4 u_jointMat[32];
-+};
 +
 +struct type_FragmentUniforms
 +{
@@ -89,6 +76,7 @@ index 0000000..0c38f88
 +    float u_silhouette;
 +    float u_time;
 +    float u_cutout;
++    float u_srgb_out;
 +};
 +
 +struct fragment_main_out
@@ -106,16 +94,18 @@ index 0000000..0c38f88
 +fragment fragment_main_out fragment_main(fragment_main_in in [[stage_in]], constant type_FragmentUniforms& FragmentUniforms [[buffer(0)]], texture2d<float> Texture [[texture(0)]], sampler Sampler [[sampler(0)]], float4 gl_FragCoord [[position]])
 +{
 +    fragment_main_out out = {};
-+    float4 _72 = Texture.sample(Sampler, in.in_var_TEXCOORD0);
-+    float4 _75 = _72 * FragmentUniforms.u_color;
-+    float _94 = (fast::clamp((((FragmentUniforms.u_near / precise::max(gl_FragCoord.z, 1.0000000116860974230803549289703e-07)) / FragmentUniforms.u_far) - 0.89999997615814208984375) * 9.9999980926513671875, 0.0, 1.0) * (-1.0)) + 1.0;
-+    if (_94 <= 0.0)
++    float4 _73 = Texture.sample(Sampler, in.in_var_TEXCOORD0);
++    float4 _76 = _73 * FragmentUniforms.u_color;
++    float _95 = (fast::clamp((((FragmentUniforms.u_near / precise::max(gl_FragCoord.z, 1.0000000116860974230803549289703e-07)) / FragmentUniforms.u_far) - 0.89999997615814208984375) * 9.9999980926513671875, 0.0, 1.0) * (-1.0)) + 1.0;
++    if (_95 <= 0.0)
 +    {
 +        discard_fragment();
 +    }
-+    float _105 = dot(in.in_var_TEXCOORD2, float3(FragmentUniforms.u_sun.xyz));
-+    float _129 = _75.w;
-+    out.out_var_SV_Target0 = float4(mix(mix(mix(mix(_75.xyz, float3(1.0), float3((precise::max(0.0, -_105) * 0.100000001490116119384765625) * FragmentUniforms.u_effects)), float3(0.01568627543747425079345703125, 0.105882354080677032470703125, 0.17254902422428131103515625), float3((precise::max(0.0, _105) * 0.800000011920928955078125) * FragmentUniforms.u_effects)), FragmentUniforms.u_silhouette_color.xyz, float3(FragmentUniforms.u_silhouette)), FragmentUniforms.u_vertical_fog_color.xyz * _129, float3(fast::clamp((in.in_var_TEXCOORD3.z - 50.0) * (-0.0199999995529651641845703125), 0.0, 1.0))), _129) * _94;
++    float _106 = dot(in.in_var_TEXCOORD2, float3(FragmentUniforms.u_sun.xyz));
++    float _130 = _76.w;
++    float4 _138 = float4(mix(mix(mix(mix(_76.xyz, float3(1.0), float3((precise::max(0.0, -_106) * 0.100000001490116119384765625) * FragmentUniforms.u_effects)), float3(0.01568627543747425079345703125, 0.105882354080677032470703125, 0.17254902422428131103515625), float3((precise::max(0.0, _106) * 0.800000011920928955078125) * FragmentUniforms.u_effects)), FragmentUniforms.u_silhouette_color.xyz, float3(FragmentUniforms.u_silhouette)), FragmentUniforms.u_vertical_fog_color.xyz * _130, float3(fast::clamp((in.in_var_TEXCOORD3.z - 50.0) * (-0.0199999995529651641845703125), 0.0, 1.0))), _130) * _95;
++    float3 _149 = mix(_138.xyz, mix(_138.xyz * float3(0.077399380505084991455078125), powr((_138.xyz + float3(0.054999999701976776123046875)) * float3(0.947867333889007568359375), float3(2.400000095367431640625)), step(float3(0.040449999272823333740234375), _138.xyz)), float3(FragmentUniforms.u_srgb_out));
++    out.out_var_SV_Target0 = float4(_149.x, _149.y, _149.z, _138.w);
 +    return out;
 +}
 +
@@ -128,10 +118,10 @@ index 0000000..4852634
 +{ "samplers": 0, "storage_textures": 0, "storage_buffers": 0, "uniform_buffers": 2, "inputs": [{ "name": "in.var.TEXCOORD0", "type": "float3", "location": 0 }, { "name": "in.var.TEXCOORD1", "type": "float2", "location": 1 }, { "name": "in.var.TEXCOORD2", "type": "float3", "location": 2 }, { "name": "in.var.TEXCOORD3", "type": "float3", "location": 3 }, { "name": "in.var.TEXCOORD4", "type": "float4", "location": 4 }, { "name": "in.var.TEXCOORD5", "type": "float4", "location": 5 }], "outputs": [{ "name": "out.var.TEXCOORD0", "type": "float2", "location": 0 }, { "name": "out.var.TEXCOORD1", "type": "float3", "location": 1 }, { "name": "out.var.TEXCOORD2", "type": "float3", "location": 2 }, { "name": "out.var.TEXCOORD3", "type": "float3", "location": 3 }] }
 diff --git a/Content/Shaders/Compiled/DefaultVR.vertex.msl b/Content/Shaders/Compiled/DefaultVR.vertex.msl
 new file mode 100644
-index 0000000..31ca2e9
+index 0000000..6351339
 --- /dev/null
 +++ b/Content/Shaders/Compiled/DefaultVR.vertex.msl
-@@ -0,0 +1,69 @@
+@@ -0,0 +1,66 @@
 +#include <metal_stdlib>
 +#include <simd/simd.h>
 +
@@ -143,25 +133,13 @@ index 0000000..31ca2e9
 +    float4x4 u_model;
 +    float4x4 u_model_inverse;
 +    float u_jointMult;
++    packed_float3 u_pad;
++    float4x4 u_mvp_eye1;
 +};
 +
 +struct type_JointUniforms
 +{
 +    float4x4 u_jointMat[32];
-+};
-+
-+struct type_FragmentUniforms
-+{
-+    float4 u_color;
-+    float4 u_sun;
-+    float4 u_silhouette_color;
-+    float4 u_vertical_fog_color;
-+    float u_near;
-+    float u_far;
-+    float u_effects;
-+    float u_silhouette;
-+    float u_time;
-+    float u_cutout;
 +};
 +
 +struct vertex_main_out
@@ -183,21 +161,30 @@ index 0000000..31ca2e9
 +    float4 in_var_TEXCOORD5 [[attribute(5)]];
 +};
 +
-+vertex vertex_main_out vertex_main(vertex_main_in in [[stage_in]], constant type_VertexUniforms& VertexUniforms [[buffer(0)]], constant type_JointUniforms& JointUniforms [[buffer(1)]])
++vertex vertex_main_out vertex_main(vertex_main_in in [[stage_in]], constant type_VertexUniforms& VertexUniforms [[buffer(0)]], constant type_JointUniforms& JointUniforms [[buffer(1)]], uint gl_InstanceIndex [[instance_id]], uint gl_BaseInstance [[base_instance]], uint gl_ViewIndex [[amplification_id]])
 +{
 +    vertex_main_out out = {};
-+    float4x4 _73 = JointUniforms.u_jointMat[int(in.in_var_TEXCOORD4.x)] * in.in_var_TEXCOORD5.x;
-+    float4x4 _81 = JointUniforms.u_jointMat[int(in.in_var_TEXCOORD4.y)] * in.in_var_TEXCOORD5.y;
-+    float4x4 _101 = JointUniforms.u_jointMat[int(in.in_var_TEXCOORD4.z)] * in.in_var_TEXCOORD5.z;
-+    float4x4 _117 = JointUniforms.u_jointMat[int(in.in_var_TEXCOORD4.w)] * in.in_var_TEXCOORD5.w;
-+    float4x4 _130 = float4x4(float4(1.0, 0.0, 0.0, 0.0), float4(0.0, 1.0, 0.0, 0.0), float4(0.0, 0.0, 1.0, 0.0), float4(0.0, 0.0, 0.0, 1.0)) * (1.0 - VertexUniforms.u_jointMult);
-+    float4x4 _131 = float4x4(((float4(_73[0][0], _73[1][0], _73[2][0], _73[3][0]) + float4(_81[0][0], _81[1][0], _81[2][0], _81[3][0])) + float4(_101[0][0], _101[1][0], _101[2][0], _101[3][0])) + float4(_117[0][0], _117[1][0], _117[2][0], _117[3][0]), ((float4(_73[0][1], _73[1][1], _73[2][1], _73[3][1]) + float4(_81[0][1], _81[1][1], _81[2][1], _81[3][1])) + float4(_101[0][1], _101[1][1], _101[2][1], _101[3][1])) + float4(_117[0][1], _117[1][1], _117[2][1], _117[3][1]), ((float4(_73[0][2], _73[1][2], _73[2][2], _73[3][2]) + float4(_81[0][2], _81[1][2], _81[2][2], _81[3][2])) + float4(_101[0][2], _101[1][2], _101[2][2], _101[3][2])) + float4(_117[0][2], _117[1][2], _117[2][2], _117[3][2]), ((float4(_73[0][3], _73[1][3], _73[2][3], _73[3][3]) + float4(_81[0][3], _81[1][3], _81[2][3], _81[3][3])) + float4(_101[0][3], _101[1][3], _101[2][3], _101[3][3])) + float4(_117[0][3], _117[1][3], _117[2][3], _117[3][3])) * VertexUniforms.u_jointMult;
-+    float4 _162 = float4(in.in_var_TEXCOORD0, 1.0);
++    float4x4 _71;
++    if (gl_ViewIndex == 0u)
++    {
++        _71 = transpose(VertexUniforms.u_mvp);
++    }
++    else
++    {
++        _71 = transpose(VertexUniforms.u_mvp_eye1);
++    }
++    float4x4 _79 = JointUniforms.u_jointMat[int(in.in_var_TEXCOORD4.x)] * in.in_var_TEXCOORD5.x;
++    float4x4 _87 = JointUniforms.u_jointMat[int(in.in_var_TEXCOORD4.y)] * in.in_var_TEXCOORD5.y;
++    float4x4 _107 = JointUniforms.u_jointMat[int(in.in_var_TEXCOORD4.z)] * in.in_var_TEXCOORD5.z;
++    float4x4 _123 = JointUniforms.u_jointMat[int(in.in_var_TEXCOORD4.w)] * in.in_var_TEXCOORD5.w;
++    float4x4 _136 = float4x4(float4(1.0, 0.0, 0.0, 0.0), float4(0.0, 1.0, 0.0, 0.0), float4(0.0, 0.0, 1.0, 0.0), float4(0.0, 0.0, 0.0, 1.0)) * (1.0 - VertexUniforms.u_jointMult);
++    float4x4 _137 = float4x4(((float4(_79[0][0], _79[1][0], _79[2][0], _79[3][0]) + float4(_87[0][0], _87[1][0], _87[2][0], _87[3][0])) + float4(_107[0][0], _107[1][0], _107[2][0], _107[3][0])) + float4(_123[0][0], _123[1][0], _123[2][0], _123[3][0]), ((float4(_79[0][1], _79[1][1], _79[2][1], _79[3][1]) + float4(_87[0][1], _87[1][1], _87[2][1], _87[3][1])) + float4(_107[0][1], _107[1][1], _107[2][1], _107[3][1])) + float4(_123[0][1], _123[1][1], _123[2][1], _123[3][1]), ((float4(_79[0][2], _79[1][2], _79[2][2], _79[3][2]) + float4(_87[0][2], _87[1][2], _87[2][2], _87[3][2])) + float4(_107[0][2], _107[1][2], _107[2][2], _107[3][2])) + float4(_123[0][2], _123[1][2], _123[2][2], _123[3][2]), ((float4(_79[0][3], _79[1][3], _79[2][3], _79[3][3]) + float4(_87[0][3], _87[1][3], _87[2][3], _87[3][3])) + float4(_107[0][3], _107[1][3], _107[2][3], _107[3][3])) + float4(_123[0][3], _123[1][3], _123[2][3], _123[3][3])) * VertexUniforms.u_jointMult;
++    float4 _168 = float4(in.in_var_TEXCOORD0, 1.0);
 +    out.out_var_TEXCOORD0 = in.in_var_TEXCOORD1;
 +    out.out_var_TEXCOORD1 = in.in_var_TEXCOORD2;
 +    out.out_var_TEXCOORD2 = fast::normalize(in.in_var_TEXCOORD3 * transpose(float3x3(float4(VertexUniforms.u_model_inverse[0][0], VertexUniforms.u_model_inverse[1][0], VertexUniforms.u_model_inverse[2][0], VertexUniforms.u_model_inverse[3][0]).xyz, float4(VertexUniforms.u_model_inverse[0][1], VertexUniforms.u_model_inverse[1][1], VertexUniforms.u_model_inverse[2][1], VertexUniforms.u_model_inverse[3][1]).xyz, float4(VertexUniforms.u_model_inverse[0][2], VertexUniforms.u_model_inverse[1][2], VertexUniforms.u_model_inverse[2][2], VertexUniforms.u_model_inverse[3][2]).xyz)));
-+    out.out_var_TEXCOORD3 = float3((VertexUniforms.u_model * _162).xyz);
-+    out.gl_Position = _162 * (float4x4(_130[0] + _131[0], _130[1] + _131[1], _130[2] + _131[2], _130[3] + _131[3]) * transpose(VertexUniforms.u_mvp));
++    out.out_var_TEXCOORD3 = float3((VertexUniforms.u_model * _168).xyz);
++    out.gl_Position = _168 * (float4x4(_136[0] + _137[0], _136[1] + _137[1], _136[2] + _137[2], _136[3] + _137[3]) * _71);
 +    return out;
 +}
 +
@@ -210,19 +197,14 @@ index 0000000..f77834d
 +{ "samplers": 2, "storage_textures": 0, "storage_buffers": 0, "uniform_buffers": 1, "inputs": [{ "name": "in.var.TEXCOORD0", "type": "float2", "location": 0 }], "outputs": [{ "name": "out.var.SV_Target0", "type": "float4", "location": 0 }] }
 diff --git a/Content/Shaders/Compiled/EdgeVR.fragment.msl b/Content/Shaders/Compiled/EdgeVR.fragment.msl
 new file mode 100644
-index 0000000..c5f648c
+index 0000000..2c7c067
 --- /dev/null
 +++ b/Content/Shaders/Compiled/EdgeVR.fragment.msl
-@@ -0,0 +1,36 @@
+@@ -0,0 +1,37 @@
 +#include <metal_stdlib>
 +#include <simd/simd.h>
 +
 +using namespace metal;
-+
-+struct type_VertexUniforms
-+{
-+    float4x4 Matrix;
-+};
 +
 +struct type_FragmentUniforms
 +{
@@ -230,6 +212,11 @@ index 0000000..c5f648c
 +    float2 Pixel;
 +    float Near;
 +    float Far;
++    float2 PhysicalSize;
++    float Threshold;
++    float SrgbOut;
++    float TestFill;
++    packed_float3 Pad;
 +};
 +
 +struct fragment_main_out
@@ -245,24 +232,25 @@ index 0000000..c5f648c
 +fragment fragment_main_out fragment_main(fragment_main_in in [[stage_in]], constant type_FragmentUniforms& FragmentUniforms [[buffer(0)]], texture2d<float> Texture [[texture(0)]], texture2d<float> Depth [[texture(1)]], sampler TextureSampler [[sampler(0)]], sampler DepthSampler [[sampler(1)]])
 +{
 +    fragment_main_out out = {};
-+    float4 _111 = Texture.sample(TextureSampler, in.in_var_TEXCOORD0);
-+    out.out_var_SV_Target0 = float4(mix(_111.xyz, FragmentUniforms.EdgeColor.xyz, float3(step(0.001000000047497451305389404296875 * FragmentUniforms.Far, (0.25 * (((precise::min(FragmentUniforms.Near / precise::max(Depth.sample(DepthSampler, (in.in_var_TEXCOORD0 + float2(FragmentUniforms.Pixel.x, 0.0))).x, 1.0000000116860974230803549289703e-07), FragmentUniforms.Far) + precise::min(FragmentUniforms.Near / precise::max(Depth.sample(DepthSampler, (in.in_var_TEXCOORD0 + float2(-FragmentUniforms.Pixel.x, 0.0))).x, 1.0000000116860974230803549289703e-07), FragmentUniforms.Far)) + precise::min(FragmentUniforms.Near / precise::max(Depth.sample(DepthSampler, (in.in_var_TEXCOORD0 + float2(0.0, FragmentUniforms.Pixel.y))).x, 1.0000000116860974230803549289703e-07), FragmentUniforms.Far)) + precise::min(FragmentUniforms.Near / precise::max(Depth.sample(DepthSampler, (in.in_var_TEXCOORD0 + float2(0.0, -FragmentUniforms.Pixel.y))).x, 1.0000000116860974230803549289703e-07), FragmentUniforms.Far))) - precise::min(FragmentUniforms.Near / precise::max(Depth.sample(DepthSampler, in.in_var_TEXCOORD0).x, 1.0000000116860974230803549289703e-07), FragmentUniforms.Far)) * 0.699999988079071044921875)), _111.w);
++    float4 _119 = Texture.sample(TextureSampler, in.in_var_TEXCOORD0);
++    float3 _126 = mix(_119.xyz, FragmentUniforms.EdgeColor.xyz, float3(step(FragmentUniforms.Threshold, (0.25 * (((precise::min(FragmentUniforms.Near / precise::max(Depth.sample(DepthSampler, (in.in_var_TEXCOORD0 + float2(FragmentUniforms.Pixel.x, 0.0))).x, 1.0000000116860974230803549289703e-07), FragmentUniforms.Far) + precise::min(FragmentUniforms.Near / precise::max(Depth.sample(DepthSampler, (in.in_var_TEXCOORD0 + float2(-FragmentUniforms.Pixel.x, 0.0))).x, 1.0000000116860974230803549289703e-07), FragmentUniforms.Far)) + precise::min(FragmentUniforms.Near / precise::max(Depth.sample(DepthSampler, (in.in_var_TEXCOORD0 + float2(0.0, FragmentUniforms.Pixel.y))).x, 1.0000000116860974230803549289703e-07), FragmentUniforms.Far)) + precise::min(FragmentUniforms.Near / precise::max(Depth.sample(DepthSampler, (in.in_var_TEXCOORD0 + float2(0.0, -FragmentUniforms.Pixel.y))).x, 1.0000000116860974230803549289703e-07), FragmentUniforms.Far))) - precise::min(FragmentUniforms.Near / precise::max(Depth.sample(DepthSampler, in.in_var_TEXCOORD0).x, 1.0000000116860974230803549289703e-07), FragmentUniforms.Far)) * 0.699999988079071044921875));
++    out.out_var_SV_Target0 = float4(mix(_126, mix(_126 * float3(0.077399380505084991455078125), powr((_126 + float3(0.054999999701976776123046875)) * float3(0.947867333889007568359375), float3(2.400000095367431640625)), step(float3(0.040449999272823333740234375), _126)), float3(FragmentUniforms.SrgbOut)), _119.w);
 +    return out;
 +}
 +
 diff --git a/Content/Shaders/Compiled/EdgeVR.vertex.json b/Content/Shaders/Compiled/EdgeVR.vertex.json
 new file mode 100644
-index 0000000..d3c33c7
+index 0000000..07a09cb
 --- /dev/null
 +++ b/Content/Shaders/Compiled/EdgeVR.vertex.json
 @@ -0,0 +1 @@
-+{ "samplers": 0, "storage_textures": 0, "storage_buffers": 0, "uniform_buffers": 1, "inputs": [{ "name": "in.var.TEXCOORD0", "type": "float2", "location": 0 }, { "name": "in.var.TEXCOORD1", "type": "float2", "location": 1 }, { "name": "in.var.TEXCOORD2", "type": "float4", "location": 2 }, { "name": "in.var.TEXCOORD4", "type": "float4", "location": 3 }], "outputs": [{ "name": "out.var.TEXCOORD0", "type": "float2", "location": 0 }, { "name": "out.var.TEXCOORD1", "type": "float4", "location": 1 }, { "name": "out.var.TEXCOORD4", "type": "float4", "location": 2 }] }
++{ "samplers": 0, "storage_textures": 0, "storage_buffers": 0, "uniform_buffers": 1, "inputs": [{ "name": "in.var.TEXCOORD0", "type": "float2", "location": 0 }, { "name": "in.var.TEXCOORD1", "type": "float2", "location": 1 }, { "name": "in.var.TEXCOORD2", "type": "float4", "location": 2 }, { "name": "in.var.TEXCOORD4", "type": "float4", "location": 3 }], "outputs": [{ "name": "out.var.TEXCOORD0", "type": "float2", "location": 0 }, { "name": "out.var.TEXCOORD1", "type": "float4", "location": 1 }, { "name": "out.var.TEXCOORD4", "type": "float4", "location": 2 }, { "name": "out.var.TEXCOORD5", "type": "uint", "location": 3 }] }
 diff --git a/Content/Shaders/Compiled/EdgeVR.vertex.msl b/Content/Shaders/Compiled/EdgeVR.vertex.msl
 new file mode 100644
-index 0000000..ca0f5eb
+index 0000000..a62474e
 --- /dev/null
 +++ b/Content/Shaders/Compiled/EdgeVR.vertex.msl
-@@ -0,0 +1,44 @@
+@@ -0,0 +1,38 @@
 +#include <metal_stdlib>
 +#include <simd/simd.h>
 +
@@ -273,19 +261,12 @@ index 0000000..ca0f5eb
 +    float4x4 Matrix;
 +};
 +
-+struct type_FragmentUniforms
-+{
-+    float4 EdgeColor;
-+    float2 Pixel;
-+    float Near;
-+    float Far;
-+};
-+
 +struct vertex_main_out
 +{
 +    float2 out_var_TEXCOORD0 [[user(locn0)]];
 +    float4 out_var_TEXCOORD1 [[user(locn1)]];
 +    float4 out_var_TEXCOORD4 [[user(locn2)]];
++    uint out_var_TEXCOORD5 [[user(locn3)]];
 +    float4 gl_Position [[position]];
 +};
 +
@@ -297,12 +278,124 @@ index 0000000..ca0f5eb
 +    float4 in_var_TEXCOORD4 [[attribute(3)]];
 +};
 +
-+vertex vertex_main_out vertex_main(vertex_main_in in [[stage_in]], constant type_VertexUniforms& VertexUniforms [[buffer(0)]])
++vertex vertex_main_out vertex_main(vertex_main_in in [[stage_in]], constant type_VertexUniforms& VertexUniforms [[buffer(0)]], uint gl_InstanceIndex [[instance_id]], uint gl_BaseInstance [[base_instance]], uint gl_ViewIndex [[amplification_id]])
 +{
 +    vertex_main_out out = {};
 +    out.out_var_TEXCOORD0 = in.in_var_TEXCOORD1;
 +    out.out_var_TEXCOORD1 = in.in_var_TEXCOORD2;
 +    out.out_var_TEXCOORD4 = in.in_var_TEXCOORD4;
++    out.out_var_TEXCOORD5 = gl_ViewIndex;
++    out.gl_Position = VertexUniforms.Matrix * float4(in.in_var_TEXCOORD0, 0.0, 1.0);
++    return out;
++}
++
+diff --git a/Content/Shaders/Compiled/EdgeVRArray.fragment.json b/Content/Shaders/Compiled/EdgeVRArray.fragment.json
+new file mode 100644
+index 0000000..03673e6
+--- /dev/null
++++ b/Content/Shaders/Compiled/EdgeVRArray.fragment.json
+@@ -0,0 +1 @@
++{ "samplers": 2, "storage_textures": 0, "storage_buffers": 0, "uniform_buffers": 1, "inputs": [{ "name": "in.var.TEXCOORD5", "type": "uint", "location": 3 }], "outputs": [{ "name": "out.var.SV_Target0", "type": "float4", "location": 0 }] }
+diff --git a/Content/Shaders/Compiled/EdgeVRArray.fragment.msl b/Content/Shaders/Compiled/EdgeVRArray.fragment.msl
+new file mode 100644
+index 0000000..6f8f639
+--- /dev/null
++++ b/Content/Shaders/Compiled/EdgeVRArray.fragment.msl
+@@ -0,0 +1,47 @@
++#include <metal_stdlib>
++#include <simd/simd.h>
++
++using namespace metal;
++
++struct type_FragmentUniforms
++{
++    float4 EdgeColor;
++    float2 Pixel;
++    float Near;
++    float Far;
++    float2 PhysicalSize;
++    float Threshold;
++    float SrgbOut;
++    float TestFill;
++    packed_float3 Pad;
++};
++
++struct fragment_main_out
++{
++    float4 out_var_SV_Target0 [[color(0)]];
++    float gl_FragDepth [[depth(any)]];
++};
++
++struct fragment_main_in
++{
++    uint in_var_TEXCOORD5 [[user(locn3)]];
++};
++
++fragment fragment_main_out fragment_main(fragment_main_in in [[stage_in]], constant type_FragmentUniforms& FragmentUniforms [[buffer(0)]], texture2d_array<float> Texture [[texture(0)]], texture2d_array<float> Depth [[texture(1)]], sampler TextureSampler [[sampler(0)]], sampler DepthSampler [[sampler(1)]], float4 gl_FragCoord [[position]])
++{
++    fragment_main_out out = {};
++    float3 _72 = float3(gl_FragCoord.xy / FragmentUniforms.PhysicalSize, float(in.in_var_TEXCOORD5));
++    float4 _76 = Depth.sample(DepthSampler, _72.xy, uint(rint(_72.z)));
++    float _77 = _76.x;
++    float3 _88 = _72 + float3(FragmentUniforms.Pixel.x, 0.0, 0.0);
++    float3 _99 = _72 + float3(-FragmentUniforms.Pixel.x, 0.0, 0.0);
++    float3 _112 = _72 + float3(0.0, FragmentUniforms.Pixel.y, 0.0);
++    float3 _124 = _72 + float3(0.0, -FragmentUniforms.Pixel.y, 0.0);
++    float4 _142 = Texture.sample(TextureSampler, _72.xy, uint(rint(_72.z)));
++    float3 _156 = mix(mix(_142.xyz, FragmentUniforms.EdgeColor.xyz, float3(step(FragmentUniforms.Threshold, (0.25 * (((precise::min(FragmentUniforms.Near / precise::max(Depth.sample(DepthSampler, _88.xy, uint(rint(_88.z))).x, 1.0000000116860974230803549289703e-07), FragmentUniforms.Far) + precise::min(FragmentUniforms.Near / precise::max(Depth.sample(DepthSampler, _99.xy, uint(rint(_99.z))).x, 1.0000000116860974230803549289703e-07), FragmentUniforms.Far)) + precise::min(FragmentUniforms.Near / precise::max(Depth.sample(DepthSampler, _112.xy, uint(rint(_112.z))).x, 1.0000000116860974230803549289703e-07), FragmentUniforms.Far)) + precise::min(FragmentUniforms.Near / precise::max(Depth.sample(DepthSampler, _124.xy, uint(rint(_124.z))).x, 1.0000000116860974230803549289703e-07), FragmentUniforms.Far))) - precise::min(FragmentUniforms.Near / precise::max(_77, 1.0000000116860974230803549289703e-07), FragmentUniforms.Far)) * 0.699999988079071044921875)), select(float3(0.0, 1.0, 0.0), float3(1.0, 0.0, 0.0), bool3(in.in_var_TEXCOORD5 == 0u)), float3(FragmentUniforms.TestFill));
++    float3 _166 = mix(_156, mix(_156 * float3(0.077399380505084991455078125), powr((_156 + float3(0.054999999701976776123046875)) * float3(0.947867333889007568359375), float3(2.400000095367431640625)), step(float3(0.040449999272823333740234375), _156)), float3(FragmentUniforms.SrgbOut));
++    out.out_var_SV_Target0 = float4(_166, mix(_142.w, 1.0, FragmentUniforms.TestFill));
++    out.gl_FragDepth = _77;
++    return out;
++}
++
+diff --git a/Content/Shaders/Compiled/EdgeVRArray.vertex.json b/Content/Shaders/Compiled/EdgeVRArray.vertex.json
+new file mode 100644
+index 0000000..07a09cb
+--- /dev/null
++++ b/Content/Shaders/Compiled/EdgeVRArray.vertex.json
+@@ -0,0 +1 @@
++{ "samplers": 0, "storage_textures": 0, "storage_buffers": 0, "uniform_buffers": 1, "inputs": [{ "name": "in.var.TEXCOORD0", "type": "float2", "location": 0 }, { "name": "in.var.TEXCOORD1", "type": "float2", "location": 1 }, { "name": "in.var.TEXCOORD2", "type": "float4", "location": 2 }, { "name": "in.var.TEXCOORD4", "type": "float4", "location": 3 }], "outputs": [{ "name": "out.var.TEXCOORD0", "type": "float2", "location": 0 }, { "name": "out.var.TEXCOORD1", "type": "float4", "location": 1 }, { "name": "out.var.TEXCOORD4", "type": "float4", "location": 2 }, { "name": "out.var.TEXCOORD5", "type": "uint", "location": 3 }] }
+diff --git a/Content/Shaders/Compiled/EdgeVRArray.vertex.msl b/Content/Shaders/Compiled/EdgeVRArray.vertex.msl
+new file mode 100644
+index 0000000..a62474e
+--- /dev/null
++++ b/Content/Shaders/Compiled/EdgeVRArray.vertex.msl
+@@ -0,0 +1,38 @@
++#include <metal_stdlib>
++#include <simd/simd.h>
++
++using namespace metal;
++
++struct type_VertexUniforms
++{
++    float4x4 Matrix;
++};
++
++struct vertex_main_out
++{
++    float2 out_var_TEXCOORD0 [[user(locn0)]];
++    float4 out_var_TEXCOORD1 [[user(locn1)]];
++    float4 out_var_TEXCOORD4 [[user(locn2)]];
++    uint out_var_TEXCOORD5 [[user(locn3)]];
++    float4 gl_Position [[position]];
++};
++
++struct vertex_main_in
++{
++    float2 in_var_TEXCOORD0 [[attribute(0)]];
++    float2 in_var_TEXCOORD1 [[attribute(1)]];
++    float4 in_var_TEXCOORD2 [[attribute(2)]];
++    float4 in_var_TEXCOORD4 [[attribute(3)]];
++};
++
++vertex vertex_main_out vertex_main(vertex_main_in in [[stage_in]], constant type_VertexUniforms& VertexUniforms [[buffer(0)]], uint gl_InstanceIndex [[instance_id]], uint gl_BaseInstance [[base_instance]], uint gl_ViewIndex [[amplification_id]])
++{
++    vertex_main_out out = {};
++    out.out_var_TEXCOORD0 = in.in_var_TEXCOORD1;
++    out.out_var_TEXCOORD1 = in.in_var_TEXCOORD2;
++    out.out_var_TEXCOORD4 = in.in_var_TEXCOORD4;
++    out.out_var_TEXCOORD5 = gl_ViewIndex;
 +    out.gl_Position = VertexUniforms.Matrix * float4(in.in_var_TEXCOORD0, 0.0, 1.0);
 +    return out;
 +}
@@ -316,24 +409,20 @@ index 0000000..34f0f2e
 +{ "samplers": 1, "storage_textures": 0, "storage_buffers": 0, "uniform_buffers": 1, "inputs": [{ "name": "in.var.TEXCOORD0", "type": "float2", "location": 0 }, { "name": "in.var.TEXCOORD1", "type": "float4", "location": 1 }], "outputs": [{ "name": "out.var.SV_Target0", "type": "float4", "location": 0 }] }
 diff --git a/Content/Shaders/Compiled/SpriteVR.fragment.msl b/Content/Shaders/Compiled/SpriteVR.fragment.msl
 new file mode 100644
-index 0000000..dea1680
+index 0000000..5e28416
 --- /dev/null
 +++ b/Content/Shaders/Compiled/SpriteVR.fragment.msl
-@@ -0,0 +1,34 @@
+@@ -0,0 +1,33 @@
 +#include <metal_stdlib>
 +#include <simd/simd.h>
 +
 +using namespace metal;
 +
-+struct type_VertexUniforms
-+{
-+    float4x4 u_matrix;
-+};
-+
 +struct type_FragmentUniforms
 +{
 +    float u_near;
 +    float u_far;
++    float u_srgb_out;
 +};
 +
 +struct fragment_main_out
@@ -350,7 +439,10 @@ index 0000000..dea1680
 +fragment fragment_main_out fragment_main(fragment_main_in in [[stage_in]], constant type_FragmentUniforms& FragmentUniforms [[buffer(0)]], texture2d<float> Texture [[texture(0)]], sampler Sampler [[sampler(0)]])
 +{
 +    fragment_main_out out = {};
-+    out.out_var_SV_Target0 = (Texture.sample(Sampler, in.in_var_TEXCOORD0) * in.in_var_TEXCOORD1) * step(0.0, FragmentUniforms.u_far);
++    float4 _45 = Texture.sample(Sampler, in.in_var_TEXCOORD0) * in.in_var_TEXCOORD1;
++    float3 _46 = _45.xyz;
++    float3 _56 = mix(_46, mix(_46 * float3(0.077399380505084991455078125), powr((_46 + float3(0.054999999701976776123046875)) * float3(0.947867333889007568359375), float3(2.400000095367431640625)), step(float3(0.040449999272823333740234375), _46)), float3(FragmentUniforms.u_srgb_out));
++    out.out_var_SV_Target0 = float4(_56.x, _56.y, _56.z, _45.w);
 +    return out;
 +}
 +
@@ -363,10 +455,10 @@ index 0000000..397af50
 +{ "samplers": 0, "storage_textures": 0, "storage_buffers": 0, "uniform_buffers": 1, "inputs": [{ "name": "in.var.TEXCOORD0", "type": "float3", "location": 0 }, { "name": "in.var.TEXCOORD1", "type": "float2", "location": 1 }, { "name": "in.var.TEXCOORD2", "type": "float4", "location": 2 }], "outputs": [{ "name": "out.var.TEXCOORD0", "type": "float2", "location": 0 }, { "name": "out.var.TEXCOORD1", "type": "float4", "location": 1 }] }
 diff --git a/Content/Shaders/Compiled/SpriteVR.vertex.msl b/Content/Shaders/Compiled/SpriteVR.vertex.msl
 new file mode 100644
-index 0000000..0e2dbd3
+index 0000000..29d8c9b
 --- /dev/null
 +++ b/Content/Shaders/Compiled/SpriteVR.vertex.msl
-@@ -0,0 +1,39 @@
+@@ -0,0 +1,43 @@
 +#include <metal_stdlib>
 +#include <simd/simd.h>
 +
@@ -375,12 +467,7 @@ index 0000000..0e2dbd3
 +struct type_VertexUniforms
 +{
 +    float4x4 u_matrix;
-+};
-+
-+struct type_FragmentUniforms
-+{
-+    float u_near;
-+    float u_far;
++    float4x4 u_matrix_eye1;
 +};
 +
 +struct vertex_main_out
@@ -397,20 +484,83 @@ index 0000000..0e2dbd3
 +    float4 in_var_TEXCOORD2 [[attribute(2)]];
 +};
 +
-+vertex vertex_main_out vertex_main(vertex_main_in in [[stage_in]], constant type_VertexUniforms& VertexUniforms [[buffer(0)]])
++vertex vertex_main_out vertex_main(vertex_main_in in [[stage_in]], constant type_VertexUniforms& VertexUniforms [[buffer(0)]], uint gl_InstanceIndex [[instance_id]], uint gl_BaseInstance [[base_instance]], uint gl_ViewIndex [[amplification_id]])
 +{
 +    vertex_main_out out = {};
-+    out.gl_Position = VertexUniforms.u_matrix * float4(in.in_var_TEXCOORD0, 1.0);
++    float4x4 _46;
++    if (gl_ViewIndex == 0u)
++    {
++        _46 = transpose(VertexUniforms.u_matrix);
++    }
++    else
++    {
++        _46 = transpose(VertexUniforms.u_matrix_eye1);
++    }
++    out.gl_Position = float4(in.in_var_TEXCOORD0, 1.0) * _46;
 +    out.out_var_TEXCOORD0 = in.in_var_TEXCOORD1;
 +    out.out_var_TEXCOORD1 = in.in_var_TEXCOORD2;
 +    return out;
 +}
 +
 diff --git a/Content/Shaders/Default.hlsl b/Content/Shaders/Default.hlsl
-index a06d347..89a4797 100644
+index a06d347..ddff1ca 100644
 --- a/Content/Shaders/Default.hlsl
 +++ b/Content/Shaders/Default.hlsl
-@@ -79,7 +79,9 @@ SamplerState Sampler : register(s0, space2);
+@@ -10,6 +10,13 @@ cbuffer VertexUniforms : register(b0, space1)
+ 	float4x4 u_model;
+ 	float4x4 u_model_inverse;
+ 	float    u_jointMult;
++#ifdef VISIONOS_VR
++	// visionOS VR variant: second model-view-projection for the right eye; the view index
++	// (SV_ViewID, vertex amplification) selects between them. Appended, so the layout of the
++	// original stays a prefix.
++	float3   u_pad;
++	float4x4 u_mvp_eye1;
++#endif
+ };
+ 
+ cbuffer JointUniforms : register(b1, space1)
+@@ -36,8 +43,17 @@ struct VertexOutput
+ 	float4 position : SV_Position;
+ };
+ 
++#ifdef VISIONOS_VR
++VertexOutput vertex_main(VertexInput input, uint viewID : SV_ViewID)
++#else
+ VertexOutput vertex_main(VertexInput input)
++#endif
+ {
++#ifdef VISIONOS_VR
++	float4x4 u_mvp_view = viewID == 0 ? u_mvp : u_mvp_eye1;
++#else
++	float4x4 u_mvp_view = u_mvp;
++#endif
+     float4x4 skinMat =
+         input.weight.x * u_jointMat[int(input.joint.x)] +
+         input.weight.y * u_jointMat[int(input.joint.y)] +
+@@ -53,7 +69,7 @@ VertexOutput vertex_main(VertexInput input)
+     output.color = input.color;
+ 	output.normal = TransformNormal(input.normal, u_model_inverse);
+ 	output.world = (float3)mul(u_model, float4(input.position, 1.0));
+-	output.position = mul(mul(u_mvp, skinRes), float4(input.position, 1.0));
++	output.position = mul(mul(u_mvp_view, skinRes), float4(input.position, 1.0));
+ 	return output;
+ }
+ 
+@@ -71,6 +87,12 @@ cbuffer FragmentUniforms : register(b0, space3)
+ 	float   u_silhouette;
+ 	float   u_time;
+ 	float   u_cutout;
++#ifdef VISIONOS_VR
++	// visionOS VR variant: 1 when the pass writes an sRGB-encoded target (the compositor's
++	// drawable): the colour is converted to linear so that the GPU's encoding restores the
++	// game's gamma value. 0 for the game's own targets.
++	float   u_srgb_out;
++#endif
+ };
+ 
+ Texture2D<float4> Texture : register(t0, space2);
+@@ -79,7 +101,9 @@ SamplerState Sampler : register(s0, space2);
  struct FragmentOutput
  {
      float4 color : SV_Target0;
@@ -420,7 +570,7 @@ index a06d347..89a4797 100644
  };
  
  FragmentOutput fragment_main(VertexOutput input)
-@@ -91,9 +93,23 @@ FragmentOutput fragment_main(VertexOutput input)
+@@ -91,9 +115,23 @@ FragmentOutput fragment_main(VertexOutput input)
  	//if (src.a < u_cutout)
  	//	discard;
  
@@ -444,14 +594,17 @@ index a06d347..89a4797 100644
  	float3  col = src.rgb;
  
  	// lighten texture color based on normal
-@@ -111,7 +127,9 @@ FragmentOutput fragment_main(VertexOutput input)
+@@ -111,7 +149,12 @@ FragmentOutput fragment_main(VertexOutput input)
  	col = lerp(col, u_vertical_fog_color.rgb * src.a, fall);
  
  	FragmentOutput output;
-+#ifndef VISIONOS_VR
++#ifdef VISIONOS_VR
++	output.color = float4(col, src.a) * fade;
++	output.color.rgb = lerp(output.color.rgb, SrgbToLinear(output.color.rgb), u_srgb_out);
++#else
  	output.depth = depth;
-+#endif
  	output.color = float4(col, src.a) * fade;
++#endif
  	return output;
  }
 \ No newline at end of file
@@ -466,7 +619,7 @@ index 0000000..22bc376
 +#define VISIONOS_VR 1
 +#include "Default.hlsl"
 diff --git a/Content/Shaders/Edge.hlsl b/Content/Shaders/Edge.hlsl
-index 428d06b..50f8088 100644
+index 428d06b..2454f7c 100644
 --- a/Content/Shaders/Edge.hlsl
 +++ b/Content/Shaders/Edge.hlsl
 @@ -1,3 +1,7 @@
@@ -477,20 +630,119 @@ index 428d06b..50f8088 100644
  // Vertex Shader
  
  cbuffer VertexUniforms : register(b0, space1)
-@@ -37,6 +41,12 @@ cbuffer FragmentUniforms : register(b0, space3)
+@@ -18,9 +22,26 @@ struct VsOutput
+     float2 TexCoord : TEXCOORD0;
+     float4 Color : TEXCOORD1;
+     float4 Type : TEXCOORD4;
++#ifdef VISIONOS_VR
++    // visionOS VR variant: view index (SV_ViewID, vertex amplification) for the fragment stage,
++    // which has no view index of its own; selects the layer of the intermediate array
++    nointerpolation uint View : TEXCOORD5;
++#endif
+     float4 Position : SV_Position;
+ };
+ 
++#ifdef VISIONOS_VR
++VsOutput vertex_main(VsInput input, uint viewID : SV_ViewID)
++{
++    VsOutput output;
++    output.TexCoord = input.TexCoord;
++    output.Color = input.Color;
++    output.Type = input.Type;
++    output.View = viewID;
++    output.Position = mul(Matrix, float4(input.Position, 0.0, 1.0));
++    return output;
++}
++#else
+ VsOutput vertex_main(VsInput input)
+ {
+     VsOutput output;
+@@ -30,6 +51,7 @@ VsOutput vertex_main(VsInput input)
+     output.Position = mul(Matrix, float4(input.Position, 0.0, 1.0));
+     return output;
+ }
++#endif
+ 
+ // Fragment Shader
+ 
+@@ -37,8 +59,76 @@ cbuffer FragmentUniforms : register(b0, space3)
  {
      float4 EdgeColor;
  	float2 Pixel;
 +#ifdef VISIONOS_VR
-+	// visionOS VR variant: near plane and far normalisation in world units, to turn the
-+	// reverse-Z hardware depth back into the linear distance the edge threshold expects
++	// visionOS VR variant: near plane in world units for the linearised depth; Far clamps the
++	// linearised distance (sky and everything beyond read as "far", like the cleared depth of
++	// the reference); Threshold is the edge threshold in world units (0.001 of the reference far)
 +	float Near;
 +	float Far;
++	// Array variant (stereo world pass): size of the physical texture, so that the fragment
++	// position selects the texel (the pass runs under a rasterization rate map, interpolated
++	// texture coordinates would be in the logical space); SrgbOut converts the output to linear
++	// for the sRGB drawable; TestFill 1 paints view 0 red and view 1 green (diagnostics)
++	float2 PhysicalSize;
++	float Threshold;
++	float SrgbOut;
++	float TestFill;
++	float3 Pad;
 +#endif
++};
++
++#ifdef VISIONOS_VR_ARRAY
++Texture2DArray Texture : register(t0, space2);
++SamplerState TextureSampler : register(s0, space2);
++
++Texture2DArray Depth : register(t1, space2);
++SamplerState DepthSampler : register(s1, space2);
++
++float rawDepth(float3 uvw)
++{
++	return Depth.Sample(DepthSampler, uvw).r;
++}
++
++float depth(float3 uvw)
++{
++	return min(ViewDistanceReverseZ(rawDepth(uvw), Near), Far);
++}
++
++struct EdgeOutput
++{
++	float4 color : SV_Target0;
++	// the only depth the VR path writes from a shader: a copy of the depth read from the
++	// intermediate, so that the sprites and transparent passes test against the world and the
++	// compositor gets the world depth
++	float depthOut : SV_Depth;
  };
  
++EdgeOutput fragment_main(VsOutput input)
++{
++	// the physical pixel of this fragment; the intermediate has the same physical layout
++	float2 uv = input.Position.xy / PhysicalSize;
++	float3 at = float3(uv, input.View);
++	float raw = rawDepth(at);
++	float it = min(ViewDistanceReverseZ(raw, Near), Far);
++	float other =
++		depth(at + float3(Pixel.x, 0, 0)) * 0.25 +
++		depth(at + float3(-Pixel.x, 0, 0)) * 0.25 +
++		depth(at + float3(0, Pixel.y, 0)) * 0.25 +
++		depth(at + float3(0, -Pixel.y, 0)) * 0.25;
++	float edge = step(Threshold, other - it);
++
++	float4 col = Texture.Sample(TextureSampler, at);
++	float3 res = lerp(col.rgb, EdgeColor.rgb, edge * 0.70);
++	// diagnostics: solid colour per view
++	res = lerp(res, input.View == 0 ? float3(1, 0, 0) : float3(0, 1, 0), TestFill);
++	res = lerp(res, SrgbToLinear(res), SrgbOut);
++
++	EdgeOutput output;
++	output.color = float4(res, lerp(col.a, 1.0, TestFill));
++	output.depthOut = raw;
++	return output;
++}
++#else
  Texture2D Texture : register(t0, space2);
-@@ -47,21 +57,35 @@ SamplerState DepthSampler : register(s1, space2);
+ SamplerState TextureSampler : register(s0, space2);
+ 
+@@ -47,25 +137,42 @@ SamplerState DepthSampler : register(s1, space2);
  
  float depth(float2 uv)
  {
@@ -521,13 +773,22 @@ index 428d06b..50f8088 100644
 +#ifdef VISIONOS_VR
 +	// same threshold as the reference (0.001 of far) but in world units: the distances
 +	// above are linear, so the sign of the difference stays as in the reference
-+	float edge = step(0.001 * Far, other - it);
++	float edge = step(Threshold, other - it);
 +#else
  	float edge = step(0.001, other - it);
 +#endif
  
  	// calculate edge color mixed with default color
  	float4 col = Texture.Sample(TextureSampler, input.TexCoord);
+ 	float3 res = lerp(col.rgb, EdgeColor.rgb, edge * 0.70);
++#ifdef VISIONOS_VR
++	res = lerp(res, SrgbToLinear(res), SrgbOut);
++#endif
+ 	return float4(res, col.a);
+ }
+-        
+\ No newline at end of file
++#endif
 diff --git a/Content/Shaders/EdgeVR.hlsl b/Content/Shaders/EdgeVR.hlsl
 new file mode 100644
 index 0000000..9485097
@@ -538,11 +799,23 @@ index 0000000..9485097
 +// in Edge.hlsl). Compiled by scripts/compile-vr-shaders.sh.
 +#define VISIONOS_VR 1
 +#include "Edge.hlsl"
+diff --git a/Content/Shaders/EdgeVRArray.hlsl b/Content/Shaders/EdgeVRArray.hlsl
+new file mode 100644
+index 0000000..d3ad995
+--- /dev/null
++++ b/Content/Shaders/EdgeVRArray.hlsl
+@@ -0,0 +1,6 @@
++// visionOS VR variant of Edge.hlsl for the stereo world pass: reads the intermediate 2D array
++// (layer = view index) at the physical pixel position, copies its depth (see VISIONOS_VR_ARRAY in
++// Edge.hlsl). Compiled by scripts/compile-vr-shaders.sh.
++#define VISIONOS_VR 1
++#define VISIONOS_VR_ARRAY 1
++#include "Edge.hlsl"
 diff --git a/Content/Shaders/Partials/Methods.hlsl b/Content/Shaders/Partials/Methods.hlsl
-index 18bf955..6f16734 100644
+index 18bf955..3b3bd23 100644
 --- a/Content/Shaders/Partials/Methods.hlsl
 +++ b/Content/Shaders/Partials/Methods.hlsl
-@@ -13,4 +13,11 @@ float Map(float value, float min1, float max1, float min2, float max2)
+@@ -13,4 +13,20 @@ float Map(float value, float min1, float max1, float min2, float max2)
  float3 TransformNormal(float3 normal, float4x4 transform)
  {
  	return normalize(mul(transpose((float3x3)transform), normal));
@@ -556,11 +829,67 @@ index 18bf955..6f16734 100644
 +{
 +	return near / max(depth, 1e-7);
 +}
++
++// sRGB-encoded colour (the game's gamma values) to linear, the piecewise transfer function
++// the GPU inverts when it writes an sRGB target.
++float3 SrgbToLinear(float3 c)
++{
++	float3 low = c / 12.92;
++	float3 high = pow((c + 0.055) / 1.055, 2.4);
++	return lerp(low, high, step(0.04045, c));
++}
 diff --git a/Content/Shaders/Sprite.hlsl b/Content/Shaders/Sprite.hlsl
-index ae89d7f..b6b0de0 100644
+index ae89d7f..a6d13dc 100644
 --- a/Content/Shaders/Sprite.hlsl
 +++ b/Content/Shaders/Sprite.hlsl
-@@ -44,13 +44,23 @@ SamplerState Sampler : register(s0, space2);
+@@ -5,6 +5,10 @@
+ cbuffer VertexUniforms : register(b0, space1)
+ {
+ 	float4x4 u_matrix;
++#ifdef VISIONOS_VR
++	// visionOS VR variant: matrix of the right eye, selected by the view index (SV_ViewID)
++	float4x4 u_matrix_eye1;
++#endif
+ };
+ 
+ struct VertexInput
+@@ -21,6 +25,16 @@ struct VertexOutput
+ 	float4 color : TEXCOORD1;
+ };
+ 
++#ifdef VISIONOS_VR
++VertexOutput vertex_main(VertexInput input, uint viewID : SV_ViewID)
++{
++	VertexOutput output;
++	output.position = mul(viewID == 0 ? u_matrix : u_matrix_eye1, float4(input.position, 1.0));
++	output.tex = input.tex;
++	output.color = input.color;
++	return output;
++}
++#else
+ VertexOutput vertex_main(VertexInput input)
+ {
+ 	VertexOutput output;
+@@ -29,6 +43,7 @@ VertexOutput vertex_main(VertexInput input)
+     output.color = input.color;
+ 	return output;
+ }
++#endif
+ 
+ // Fragment Shader:
+ 
+@@ -36,6 +51,10 @@ cbuffer FragmentUniforms : register(b0, space3)
+ {
+ 	float   u_near;
+ 	float   u_far;
++#ifdef VISIONOS_VR
++	// 1 when writing an sRGB-encoded target (see Default.hlsl)
++	float   u_srgb_out;
++#endif
+ };
+ 
+ Texture2D<float4> Texture : register(t0, space2);
+@@ -44,13 +63,21 @@ SamplerState Sampler : register(s0, space2);
  struct FragmentOutput
  {
      float4 color : SV_Target0;
@@ -575,11 +904,9 @@ index ae89d7f..b6b0de0 100644
 -	output.depth = LinearizeDepth(input.position.z, u_near, u_far);
  	output.color = Texture.Sample(Sampler, input.tex) * input.color;
 +#ifdef VISIONOS_VR
-+	// visionOS VR variant: hardware depth from the reverse-Z projection, no depth output. The
-+	// factor is 1 for any far plane; it only keeps the uniform buffer referenced, so the compiled
-+	// variant declares the same one fragment uniform buffer as the original (Foster's material
-+	// layout and the game's SetUniformBuffer calls stay unchanged).
-+	output.color *= step(0.0, u_far);
++	// visionOS VR variant: hardware depth from the reverse-Z projection, no depth output;
++	// linear output for an sRGB target (the uniform buffer stays declared through u_srgb_out)
++	output.color.rgb = lerp(output.color.rgb, SrgbToLinear(output.color.rgb), u_srgb_out);
 +#else
 +	output.depth = LinearizeDepth(input.position.z, u_near, u_far);
 +#endif
@@ -752,7 +1079,7 @@ index f2ba5d0..9814c98 100644
  		Audio.SetVCAVolume("vca:/sfx", Calc.Clamp(SfxVolume / 10.0f, 0, 1));
  	}
 diff --git a/Source/Game.cs b/Source/Game.cs
-index 312df59..409e444 100644
+index 312df59..6c9dbde 100644
 --- a/Source/Game.cs
 +++ b/Source/Game.cs
 @@ -37,15 +37,29 @@ public class Game : App
@@ -849,21 +1176,28 @@ index 312df59..409e444 100644
  		{
  			// draw the world to the target
  			if (scenes.TryPeek(out var scene))
-@@ -332,16 +382,35 @@ public class Game : App
+@@ -332,16 +382,42 @@ public class Game : App
  				batcher.Clear();
  			}
  
 -			// draw the target to the window
 +#if VISIONOS_KIT
 +			VisionOSKit.AfterSceneRender?.Invoke(target);
++			if (VisionOSKit.FrameRendered)
+ 			{
+-				var scale = Math.Min(Window.WidthInPixels / (float)target.Width, Window.HeightInPixels / (float)target.Height);
++				// stereo frame (M4b.3a): World wrote the host's drawable; the host shows it, not the
++				// canvas, so the output pass is skipped (the wipe over the 2D target is not shown)
++				VisionOSKit.AfterRender?.Invoke();
++				return;
++			}
 +#endif
 +
 +			// draw the target to the window (or to each output of the host): one pass per
 +			// output, clear of color and depth and the final image in the same pass, so that
 +			// memoryless targets (K6d.3) never have to load
 +			foreach (var output in outputs)
- 			{
--				var scale = Math.Min(Window.WidthInPixels / (float)target.Width, Window.HeightInPixels / (float)target.Height);
++			{
 +#if VISIONOS_KIT
 +				output.Clear(Color.Black, VisionOSKit.DepthClearValue, 0, ClearMask.Color | ClearMask.Depth);
 +#else
@@ -890,10 +1224,20 @@ index 312df59..409e444 100644
  
  	private FMOD.RESULT MusicTimelineCallback(FMOD.Studio.EVENT_CALLBACK_TYPE type, IntPtr _event, IntPtr parameters)
 diff --git a/Source/Graphics/Camera.cs b/Source/Graphics/Camera.cs
-index e184bbf..43e35bf 100644
+index e184bbf..cf00f2f 100644
 --- a/Source/Graphics/Camera.cs
 +++ b/Source/Graphics/Camera.cs
-@@ -117,6 +117,18 @@ public struct Camera()
+@@ -14,6 +14,9 @@ public struct Camera()
+ 	private Matrix? view;
+ 	private Matrix? projection;
+ 	private Matrix? viewProjection;
++#if VISIONOS_KIT
++	private Matrix? viewProjectionEye1;
++#endif
+ 	private Quaternion? rotation;
+ 	private Vec3? upwards;
+ 	private Vec3? leftwards;
+@@ -117,6 +120,18 @@ public struct Camera()
  		}
  	}
  
@@ -912,7 +1256,7 @@ index e184bbf..43e35bf 100644
  	public Matrix Projection
  	{
  		get
-@@ -125,6 +137,17 @@ public struct Camera()
+@@ -125,6 +140,17 @@ public struct Camera()
  			{
  				var width = target.WidthInPixels;
  				var height = target.HeightInPixels;
@@ -920,9 +1264,9 @@ index e184bbf..43e35bf 100644
 +				if (VisionOSKit.ReverseZ)
 +				{
 +					// visionOS port: reverse-Z with an infinite far plane (depth = near / distance),
-+					// or the host's projection; FarPlane only normalises edge and fade and bounds the
-+					// culling frustum
-+					projection = VisionOSKit.ProjectionOverride ?? VisionOSKit.ReverseZInfinite(
++					// the host's projection of the left eye during a stereo frame, or the test
++					// projection; FarPlane only normalises edge and fade and bounds the culling frustum
++					projection = VisionOSKit.Frame?.Projection0 ?? VisionOSKit.ProjectionOverride ?? VisionOSKit.ReverseZInfinite(
 +						Matrix.CreatePerspectiveFieldOfView(MathF.PI / 4.0f * fovMultiplier, width / (float)height, ProjectionNearPlane, farPlane), ProjectionNearPlane);
 +					return projection.Value;
 +				}
@@ -930,16 +1274,51 @@ index e184bbf..43e35bf 100644
  				projection = Matrix.CreatePerspectiveFieldOfView(MathF.PI / 4.0f * fovMultiplier, width / (float)height, nearPlane, farPlane);
  			}
  			return projection.Value;
-@@ -156,7 +179,16 @@ public struct Camera()
+@@ -141,6 +167,30 @@ public struct Camera()
+ 		}
+ 	}
+ 
++#if VISIONOS_KIT
++	/// <summary>
++	/// visionOS port: projection of one eye during a stereo frame (the host's matrices, both
++	/// with this camera's view); without a stereo frame both eyes use <see cref="Projection"/>.
++	/// </summary>
++	public Matrix ProjectionFor(int eye)
++	{
++		var frame = VisionOSKit.Frame;
++		if (frame != null && eye == 1)
++			return frame.Projection1;
++		return Projection;
++	}
++
++	/// <summary>visionOS port: view times the projection of one eye, see <see cref="ProjectionFor"/>.</summary>
++	public Matrix ViewProjectionFor(int eye)
++	{
++		if (eye == 0 || VisionOSKit.Frame == null)
++			return ViewProjection;
++		if (!viewProjectionEye1.HasValue)
++			viewProjectionEye1 = View * ProjectionFor(1);
++		return viewProjectionEye1.Value;
++	}
++#endif
++
+ 	public Quaternion Rotation
+ 	{
+ 		get
+@@ -156,7 +206,20 @@ public struct Camera()
  		get
  		{
  			if (!frustum.HasValue)
 +			{
 +#if VISIONOS_KIT
 +				// visionOS port: the infinite reverse-Z projection has no far plane for the culling
-+				// frustum; build it from a finite standard-Z projection with the same shape
++				// frustum; build it from a finite standard-Z projection with the same shape. In a
++				// stereo frame the shape is the union of both eyes (this camera's view).
 +				if (VisionOSKit.ReverseZ)
-+					frustum = new BoundingFrustum(View * VisionOSKit.CullingProjection(Projection, ProjectionNearPlane, farPlane));
++				{
++					var shape = VisionOSKit.Frame is { } frame ? VisionOSKit.UnionProjection(frame.Projection0, frame.Projection1) : Projection;
++					frustum = new BoundingFrustum(View * VisionOSKit.CullingProjection(shape, ProjectionNearPlane, farPlane));
++				}
 +				else
 +#endif
  				frustum = new BoundingFrustum(ViewProjection);
@@ -947,24 +1326,59 @@ index e184bbf..43e35bf 100644
  			return frustum.Value;
  		}
  	}
+@@ -189,6 +252,9 @@ public struct Camera()
+ 		view = null;
+ 		projection = null;
+ 		viewProjection = null;
++#if VISIONOS_KIT
++		viewProjectionEye1 = null;
++#endif
+ 		rotation = null;
+ 		upwards = null;
+ 		leftwards = null;
 diff --git a/Source/Graphics/RenderState.cs b/Source/Graphics/RenderState.cs
-index 03f2db1..66da9b1 100644
+index 03f2db1..07b8289 100644
 --- a/Source/Graphics/RenderState.cs
 +++ b/Source/Graphics/RenderState.cs
-@@ -29,7 +29,7 @@ public struct RenderState(GraphicsDevice gfx, in Time time)
+@@ -25,12 +25,19 @@ public struct RenderState(GraphicsDevice gfx, in Time time)
+ 		var vertex = mat.VertexUniforms;
+ 		vertex.Model = localTransformation * ModelMatrix;
+ 		vertex.MVP = vertex.Model * Camera.ViewProjection;
++#if VISIONOS_KIT
++		// visionOS port: the right eye's matrix for the stereo pass (equal to MVP without stereo)
++		vertex.MVPEye1 = vertex.Model * Camera.ViewProjectionFor(1);
++#endif
+ 		Matrix.Invert(vertex.Model, out vertex.ModelInverse);
  		mat.VertexUniforms = vertex;
  
  		var fragment = mat.FragmentUniforms;
 -		fragment.Near = Camera.NearPlane;
 +		fragment.Near = Camera.ProjectionNearPlane;
  		fragment.Far = Camera.FarPlane;
++#if VISIONOS_KIT
++		fragment.SrgbOut = VisionOSKit.IsSrgbTarget(Camera.Target) ? 1 : 0;
++#endif
  		fragment.Silhouette = Silhouette ? 1 : 0;
  		fragment.Time = (float)Time.Elapsed.TotalSeconds;
+ 		fragment.Sun = new Vec4(SunDirection, 0);
 diff --git a/Source/Graphics/Skybox.cs b/Source/Graphics/Skybox.cs
-index 583434c..7b411fb 100644
+index 583434c..89678b0 100644
 --- a/Source/Graphics/Skybox.cs
 +++ b/Source/Graphics/Skybox.cs
-@@ -70,8 +70,16 @@ public class Skybox
+@@ -63,15 +63,28 @@ public class Skybox
+ 	public void Render(in Camera camera, in Matrix transform, float size)
+ 	{
+ 		var mat = Matrix.CreateScale(size) * transform * camera.ViewProjection;
+-		
++
++#if VISIONOS_KIT
++		// visionOS port: second matrix for the right eye of a stereo frame
++		material.Vertex.SetUniformBuffer(new UniformBuffers.SpriteVertex(mat, Matrix.CreateScale(size) * transform * camera.ViewProjectionFor(1)));
++#else
+ 		material.Vertex.SetUniformBuffer(new UniformBuffers.SpriteVertex(mat));
++#endif
+ 		material.Fragment.SetUniformBuffer(new UniformBuffers.SpriteFragment(camera));
+ 		material.Fragment.Samplers[0] = new(Texture, new TextureSampler(TextureFilter.Linear, TextureWrap.Clamp, TextureWrap.Clamp));
  
  		GraphicsDevice.Draw(new(camera.Target, mesh, material)
  		{
@@ -982,10 +1396,23 @@ index 583434c..7b411fb 100644
  			CullMode = CullMode.Back
  		});
 diff --git a/Source/Graphics/SpriteRenderer.cs b/Source/Graphics/SpriteRenderer.cs
-index aae3c23..810f986 100644
+index aae3c23..1a2a566 100644
 --- a/Source/Graphics/SpriteRenderer.cs
 +++ b/Source/Graphics/SpriteRenderer.cs
-@@ -71,7 +71,11 @@ public class SpriteRenderer
+@@ -59,7 +59,12 @@ public class SpriteRenderer
+ 		spriteMesh.SetVertices(CollectionsMarshal.AsSpan(spriteVertices));
+ 		spriteMesh.SetIndices(CollectionsMarshal.AsSpan(spriteIndices));
+ 
++#if VISIONOS_KIT
++		// visionOS port: second matrix for the right eye of a stereo frame
++		spriteMaterial.Vertex.SetUniformBuffer(new UniformBuffers.SpriteVertex(state.Camera.ViewProjection, state.Camera.ViewProjectionFor(1)));
++#else
+ 		spriteMaterial.Vertex.SetUniformBuffer(new UniformBuffers.SpriteVertex(state.Camera.ViewProjection));
++#endif
+ 		spriteMaterial.Fragment.SetUniformBuffer(new UniformBuffers.SpriteFragment(state.Camera));
+ 
+ 		foreach (var batch in spriteBatches)
+@@ -71,7 +76,11 @@ public class SpriteRenderer
  				BlendMode = BlendMode.Premultiply,
  				DepthTestEnabled = true,
  				DepthWriteEnabled = false,
@@ -998,40 +1425,101 @@ index aae3c23..810f986 100644
  				IndexOffset = batch.Index,
  				IndexCount = batch.Count
 diff --git a/Source/Graphics/UniformBuffers.cs b/Source/Graphics/UniformBuffers.cs
-index ff1be6e..d34d076 100644
+index ff1be6e..9899e21 100644
 --- a/Source/Graphics/UniformBuffers.cs
 +++ b/Source/Graphics/UniformBuffers.cs
-@@ -42,6 +42,21 @@ public struct EdgeFragment
+@@ -9,6 +9,13 @@ public unsafe struct DefaultVertex
+ 	public Matrix Model;
+ 	public Matrix ModelInverse;
+ 	public float JointsMult;
++#if VISIONOS_KIT
++	// visionOS port (VR shader variants): model-view-projection of the right eye, appended after
++	// the original layout (padding to the 16-byte boundary of the cbuffer); the reference shader
++	// reads only the prefix
++	public float Pad0, Pad1, Pad2;
++	public Matrix MVPEye1;
++#endif
+ }
+ 
+ [System.Runtime.CompilerServices.InlineArray(SkinnedModel.SkinMatrixCount)]
+@@ -27,6 +34,10 @@ public struct DefaultFragment
+ 	public float Silhouette;
+ 	public float Time;
+ 	public float Cutout;
++#if VISIONOS_KIT
++	// visionOS port: 1 when the pass writes the host's sRGB-encoded drawable (VR shader variants)
++	public float SrgbOut;
++#endif
+ }
+ 
+ [StructLayout(LayoutKind.Sequential, Pack = 1)]
+@@ -42,16 +53,62 @@ public struct EdgeFragment
  	public Vec2 Pixel;
  }
  
 +#if VISIONOS_KIT
 +/// <summary>
-+/// visionOS port: uniforms of the EdgeVR shader (reverse-Z path), the reference layout plus the
-+/// near plane and far normalisation in world units for the linearised depth.
++/// visionOS port: uniforms of the EdgeVR and EdgeVRArray shaders (reverse-Z path), the reference
++/// layout plus near plane, far clamp and threshold in world units for the linearised depth, the
++/// physical texture size of the stereo pass, the sRGB output flag and the test fill switch.
 +/// </summary>
-+[StructLayout(LayoutKind.Sequential, Pack = 1)]
+ [StructLayout(LayoutKind.Sequential, Pack = 1)]
+-public unsafe struct SpriteVertex(in Matrix matrix)
 +public struct EdgeFragmentVR
-+{
+ {
+-	public Matrix Matrix = matrix;
 +	public Vec4 Edge;
 +	public Vec2 Pixel;
 +	public float Near;
 +	public float Far;
++	public Vec2 PhysicalSize;
++	public float Threshold;
++	public float SrgbOut;
++	public float TestFill;
++	public float Pad0, Pad1, Pad2;
 +}
 +#endif
 +
- [StructLayout(LayoutKind.Sequential, Pack = 1)]
- public unsafe struct SpriteVertex(in Matrix matrix)
- {
-@@ -51,7 +66,7 @@ public unsafe struct SpriteVertex(in Matrix matrix)
++[StructLayout(LayoutKind.Sequential, Pack = 1)]
++public unsafe struct SpriteVertex
++{
++	public Matrix Matrix;
++#if VISIONOS_KIT
++	// visionOS port (VR shader variants): matrix of the right eye; the one-matrix constructor
++	// fills both, for passes without stereo
++	public Matrix MatrixEye1;
++
++	public SpriteVertex(in Matrix matrix)
++	{
++		Matrix = matrix;
++		MatrixEye1 = matrix;
++	}
++
++	public SpriteVertex(in Matrix matrix, in Matrix matrixEye1)
++	{
++		Matrix = matrix;
++		MatrixEye1 = matrixEye1;
++	}
++#else
++	public SpriteVertex(in Matrix matrix)
++	{
++		Matrix = matrix;
++	}
++#endif
+ }
+ 
  [StructLayout(LayoutKind.Sequential, Pack = 1)]
  public struct SpriteFragment(in Camera camera)
  {
 -	public float Near = camera.NearPlane;
 +	public float Near = camera.ProjectionNearPlane;
  	public float Far = camera.FarPlane;
++#if VISIONOS_KIT
++	// visionOS port: 1 when the pass writes the host's sRGB-encoded drawable (VR shader variants)
++	public float SrgbOut = VisionOSKit.IsSrgbTarget(camera.Target) ? 1 : 0;
++#endif
  }
- 
+-
 diff --git a/Source/Helpers/Menu.cs b/Source/Helpers/Menu.cs
 index 4f614cb..ae41dc8 100644
 --- a/Source/Helpers/Menu.cs
@@ -1175,10 +1663,10 @@ index 33da870..7590a36 100644
  			CutoutMode = false,
  		};
 diff --git a/Source/Scenes/World.cs b/Source/Scenes/World.cs
-index bdfb740..8fb3cb1 100644
+index bdfb740..0c3ded7 100644
 --- a/Source/Scenes/World.cs
 +++ b/Source/Scenes/World.cs
-@@ -70,7 +70,13 @@ public class World : Scene
+@@ -70,9 +70,20 @@ public class World : Scene
  		var stopwatch = Stopwatch.StartNew();
  		var map = Assets.Maps[entry.Map];
  
@@ -1190,22 +1678,43 @@ index bdfb740..8fb3cb1 100644
  		Camera.Target = Game.Window;
 +#endif
  		Camera.NearPlane = 20;
++#if VISIONOS_KIT
++		// visionOS port: C64_FAR=off removes the far limit on the reverse-Z path
++		Camera.FarPlane = VisionOSKit.WorldFarPlane;
++#else
  		Camera.FarPlane = 800;
++#endif
  		Camera.FOVMultiplier = 1;
-@@ -659,7 +665,12 @@ public class World : Scene
+ 
+ 		strawbCounterWas = Save.CurrentRecord.Strawberries.Count;
+@@ -658,8 +669,26 @@ public class World : Scene
+ 	public override void Render(Target target)
  	{
  		debugRndTimer.Restart();
- 		Camera.Target = target;
 +#if VISIONOS_KIT
-+		// visionOS port: depth clear and compares follow the depth convention (reverse-Z: 0, Greater)
-+		target.Clear(0x444c83, VisionOSKit.DepthClearValue, 0, ClearMask.All);
++		// visionOS port: depth clear and compares follow the depth convention (reverse-Z: 0, Greater).
++		// Stereo frame (M4b.3a): the 3D passes render into the intermediate array A (both views in
++		// one pass), the edge pass copies it into the host's drawable, sprites and transparent
++		// models follow into the drawable; the 2D UI stays off until the HUD layer exists.
++		var vr = VisionOSKit.Frame;
++		if (vr != null)
++		{
++			Camera.Target = VisionOSKit.Intermediate!;
++			Camera.Target.Clear(VisionOSKit.WorldClearColor, VisionOSKit.DepthClearValue, 0, ClearMask.All);
++		}
++		else
++		{
++			Camera.Target = target;
++			target.Clear(0x444c83, VisionOSKit.DepthClearValue, 0, ClearMask.All);
++		}
 +#else
+ 		Camera.Target = target;
  		target.Clear(0x444c83, 1, 0, ClearMask.All);
 +#endif
  
  		// create render state
  		RenderState state = new(GraphicsDevice, Time);
-@@ -668,7 +679,11 @@ public class World : Scene
+@@ -668,7 +697,11 @@ public class World : Scene
  			state.ModelMatrix = Matrix.Identity;
  			state.SunDirection = new Vec3(0, -.7f, -1).Normalized();
  			state.Silhouette = false;
@@ -1217,7 +1726,7 @@ index bdfb740..8fb3cb1 100644
  			state.DepthMask = true;
  			state.VerticalFogColor = 0xdceaf0;
  		}
-@@ -712,10 +727,15 @@ public class World : Scene
+@@ -712,10 +745,15 @@ public class World : Scene
  			var shift = new Vec3(Camera.Position.X, Camera.Position.Y, Camera.Position.Z);
  			for (int i = 0; i < skyboxes.Count; i++)
  			{
@@ -1234,7 +1743,7 @@ index bdfb740..8fb3cb1 100644
  			}
  		}
  
-@@ -725,7 +745,11 @@ public class World : Scene
+@@ -725,7 +763,11 @@ public class World : Scene
  		// render silhouettes
  		{
  			var it = state;
@@ -1246,19 +1755,90 @@ index bdfb740..8fb3cb1 100644
  			it.DepthMask = false;
  			it.Silhouette = true;
  			RenderModels(ref it, models, ModelFlags.Silhouette);
-@@ -766,7 +790,11 @@ public class World : Scene
- 			var orig = new Vec2(img.Width, img.Height) / 2;
- 			var bounds = new Rect(0, 0, Camera.Target.WidthInPixels, Camera.Target.HeightInPixels);
+@@ -735,8 +777,21 @@ public class World : Scene
  
+ 		// render main models
+ 		RenderModels(ref state, models, ModelFlags.Default);
+-		
++
+ 		// perform post processing effects
 +#if VISIONOS_KIT
-+			Camera.Target.Clear(Color.Black, VisionOSKit.DepthClearValue, 0, ClearMask.Depth);
++		if (vr != null)
++		{
++			// stereo frame: world pass submitted, edge pass from A into the drawable, the rest
++			// of the frame draws into the drawable (state.Camera is a copy, take the new target)
++			VisionOSKit.FlushPass(GraphicsDevice, "world");
++			ApplyPostEffectsStereo(vr);
++			VisionOSKit.FlushPass(GraphicsDevice, "edge");
++			Camera.Target = vr.Drawable;
++			state.Camera = Camera;
++		}
++		else
++#endif
+ 		ApplyPostEffects();
+ 
+ 		// render alpha threshold transparent stuff
+@@ -762,22 +817,49 @@ public class World : Scene
+ 		// strawberry collect effect
+ 		if (models.Any((it) => it.Model.Flags.Has(ModelFlags.StrawberryGetEffect)))
+ 		{
+-			var img = Assets.Subtextures["splash"];
+-			var orig = new Vec2(img.Width, img.Height) / 2;
+-			var bounds = new Rect(0, 0, Camera.Target.WidthInPixels, Camera.Target.HeightInPixels);
++#if VISIONOS_KIT
++			// stereo frame: only the model, the 2D splash and the second edge pass belong to the
++			// HUD layer (M4b.3b)
++			if (vr != null)
++			{
++				RenderModels(ref state, models, ModelFlags.StrawberryGetEffect);
++			}
++			else
++#endif
++			{
++				var img = Assets.Subtextures["splash"];
++				var orig = new Vec2(img.Width, img.Height) / 2;
++				var bounds = new Rect(0, 0, Camera.Target.WidthInPixels, Camera.Target.HeightInPixels);
+ 
+-			Camera.Target.Clear(Color.Black, 1, 0, ClearMask.Depth);
++#if VISIONOS_KIT
++				Camera.Target.Clear(Color.Black, VisionOSKit.DepthClearValue, 0, ClearMask.Depth);
 +#else
- 			Camera.Target.Clear(Color.Black, 1, 0, ClearMask.Depth);
++				Camera.Target.Clear(Color.Black, 1, 0, ClearMask.Depth);
 +#endif
  
- 			batch.Rect(bounds, Color.Black * 0.90f);
- 			batch.Image(img, bounds.Center, orig, Vec2.One, 0, Color.White);
-@@ -872,9 +900,27 @@ public class World : Scene
+-			batch.Rect(bounds, Color.Black * 0.90f);
+-			batch.Image(img, bounds.Center, orig, Vec2.One, 0, Color.White);
+-			batch.Render(Camera.Target);
+-			batch.Clear();
++				batch.Rect(bounds, Color.Black * 0.90f);
++				batch.Image(img, bounds.Center, orig, Vec2.One, 0, Color.White);
++				batch.Render(Camera.Target);
++				batch.Clear();
+ 
+-			RenderModels(ref state, models, ModelFlags.StrawberryGetEffect);
++				RenderModels(ref state, models, ModelFlags.StrawberryGetEffect);
+ 
+-			ApplyPostEffects();
++				ApplyPostEffects();
++			}
+ 		}
+ 
++#if VISIONOS_KIT
++		if (vr != null)
++		{
++			// stereo frame complete: sprites and transparent models submitted; no 2D UI (M4b.3b)
++			VisionOSKit.FlushPass(GraphicsDevice, "sprites");
++			VisionOSKit.FrameRendered = true;
++			lastDebugRndTime = debugRndTimer.Elapsed;
++			debugRndTimer.Stop();
++			return;
++		}
++#endif
++
+ 		// ui
+ 		{
+ 			batch.PushSampler(new TextureSampler(TextureFilter.Linear, TextureWrap.Clamp, TextureWrap.Clamp));
+@@ -872,9 +954,29 @@ public class World : Scene
  			// apply post fx
  			postMaterial.CopyFrom(Assets.Materials["Edge"]);
  			postMaterial.Fragment.Samplers[1] = new(target.Attachments[1], new(TextureFilter.Nearest, TextureWrap.Clamp, TextureWrap.Clamp));
@@ -1273,7 +1853,9 @@ index bdfb740..8fb3cb1 100644
 +					Pixel = new Vec2(edgeLineWidth / postTarget.Width, edgeLineWidth / postTarget.Height),
 +					Edge = new Color(0x110d33).ToVector4(),
 +					Near = Camera.ProjectionNearPlane,
-+					Far = Camera.FarPlane
++					Far = VisionOSKit.EdgeClampFar(Camera.FarPlane),
++					Threshold = VisionOSKit.EdgeThreshold,
++					PhysicalSize = new Vec2(target.Width, target.Height),
 +				});
 +			}
 +			else
@@ -1287,6 +1869,76 @@ index bdfb740..8fb3cb1 100644
  				Edge = new Color(0x110d33).ToVector4()
  			});
  			batch.PushMaterial(postMaterial);
+@@ -889,6 +991,69 @@ public class World : Scene
+ 		}
+ 	}
+ 
++#if VISIONOS_KIT
++	private Mesh<BatcherVertex>? stereoQuad;
++	private Point2 stereoQuadSize;
++
++	/// <summary>
++	/// visionOS port, stereo frame: the edge pass from the intermediate A into the host's
++	/// drawable. One full-screen quad in the logical space of the pass (both views, vertex
++	/// amplification); the EdgeVRArray fragment reads A at its physical pixel (same map, same
++	/// physical layout), draws the outline and copies A's depth into the drawable, so the sprite
++	/// and transparent passes test against the world and the compositor gets the world depth.
++	/// Depth write with Always; no clear of the drawable, the quad covers every pixel.
++	/// </summary>
++	private void ApplyPostEffectsStereo(VisionOSKit.VRFrame vr)
++	{
++		var a = VisionOSKit.Intermediate!;
++		var drawable = vr.Drawable;
++		var size = new Point2(vr.LogicalWidth, vr.LogicalHeight);
++		if (stereoQuad == null || stereoQuadSize != size)
++		{
++			stereoQuad ??= new Mesh<BatcherVertex>(GraphicsDevice, name: "stereo-edge-quad");
++			stereoQuadSize = size;
++			var mode = new Color(255, 0, 0, 0);   // Batcher mode "multiply": the fragment ignores it
++			stereoQuad.SetVertices((ReadOnlySpan<BatcherVertex>)[
++				new(new Vec2(0, 0), new Vec2(0, 0), Color.White, mode),
++				new(new Vec2(size.X, 0), new Vec2(1, 0), Color.White, mode),
++				new(new Vec2(size.X, size.Y), new Vec2(1, 1), Color.White, mode),
++				new(new Vec2(0, size.Y), new Vec2(0, 1), Color.White, mode),
++			]);
++			stereoQuad.SetIndices((ReadOnlySpan<int>)[0, 1, 2, 0, 2, 3]);
++		}
++
++		postMaterial.CopyFrom(Assets.Materials["EdgeVRArray"]);
++		postMaterial.Vertex.SetUniformBuffer(new UniformBuffers.EdgeVertex()
++		{
++			Matrix = Matrix.CreateOrthographicOffCenter(0, size.X, size.Y, 0, 0, float.MaxValue)
++		});
++		var nearest = new TextureSampler(TextureFilter.Nearest, TextureWrap.Clamp, TextureWrap.Clamp);
++		postMaterial.Fragment.Samplers[0] = new(a.Attachments[0], nearest);
++		postMaterial.Fragment.Samplers[1] = new(a.Attachments[1], nearest);
++		var lineWidth = (float)VisionOSKit.StereoLineWidth;
++		postMaterial.Fragment.SetUniformBuffer(new UniformBuffers.EdgeFragmentVR()
++		{
++			Edge = new Color(0x110d33).ToVector4(),
++			Pixel = new Vec2(lineWidth / a.Width, lineWidth / a.Height),
++			Near = Camera.ProjectionNearPlane,
++			Far = VisionOSKit.EdgeClampFar(Camera.FarPlane),
++			// negative test of the Mac check: the logical size is wrong under a map
++			PhysicalSize = VisionOSKit.StereoNegativeLogicalUV ? new Vec2(vr.LogicalWidth, vr.LogicalHeight) : new Vec2(a.Width, a.Height),
++			Threshold = VisionOSKit.EdgeThreshold,
++			SrgbOut = vr.ColorSrgb ? 1 : 0,
++			TestFill = VisionOSKit.StereoTestFill ? 1 : 0,
++		});
++		GraphicsDevice.Draw(new DrawCommand(drawable, stereoQuad, postMaterial)
++		{
++			BlendMode = BlendMode.Premultiply,
++			DepthTestEnabled = true,
++			DepthWriteEnabled = true,
++			DepthCompare = DepthCompare.Always,
++			CullMode = CullMode.None,
++		});
++	}
++#endif
++
+ 	private void RenderModels(ref RenderState state, List<ModelEntry> models, ModelFlags flags)
+ 	{
+ 		foreach (var it in models)
 diff --git a/Source/Screenwipes/SpotlightWipe.cs b/Source/Screenwipes/SpotlightWipe.cs
 index 650a35e..68b1c05 100644
 --- a/Source/Screenwipes/SpotlightWipe.cs
@@ -1302,10 +1954,10 @@ index 650a35e..68b1c05 100644
  	private const float EaseClosePercent = 0.3f; // how long (in percent) it eases the entire screen
 diff --git a/Source/VisionOSKit.cs b/Source/VisionOSKit.cs
 new file mode 100644
-index 0000000..e92764b
+index 0000000..9d3eb2f
 --- /dev/null
 +++ b/Source/VisionOSKit.cs
-@@ -0,0 +1,317 @@
+@@ -0,0 +1,557 @@
 +#if VISIONOS_KIT
 +// VisionOSKit.cs — Schalter des visionOS-Ports für Mac-Läufe (K6b, nur mit UseLocalFoster gebaut).
 +//
@@ -1588,6 +2240,246 @@ index 0000000..e92764b
 +			materials[name] = variant;
 +		}
 +		Log.Info("[c64-depth] shader variants selected: DefaultVR, SpriteVR, EdgeVR (hardware depth, no SV_Depth)");
++	}
++
++	/// <summary>
++	/// C64_FAR=off: no far limit on the reverse-Z path (no fade, no discard, culling without a
++	/// distance limit); default 800 units like the reference.
++	/// </summary>
++	public static bool FarOff { get; } = Environment.GetEnvironmentVariable("C64_FAR") == "off";
++
++	/// <summary>Far plane of the world camera: 800, or practically infinite with C64_FAR=off on the reverse-Z path.</summary>
++	public static float WorldFarPlane => ReverseZ && FarOff ? 1_000_000f : 800f;
++
++	/// <summary>Edge threshold in world units: 0.001 of the reference far plane (800), independent of C64_FAR.</summary>
++	public const float EdgeThreshold = 0.8f;
++
++	/// <summary>
++	/// Distance the edge pass clamps the linearised depth to: the camera's far plane, but below
++	/// the nearest point of the sky dome, so that the sky always reads as one "far" value.
++	/// </summary>
++	public static float EdgeClampFar(float farPlane) => MathF.Min(farPlane, SkyboxSize * 0.4f);
++
++	/// <summary>C64_STEREO_CLEAR=magenta: the world's clear colour on the stereo path (shows uncovered pixels).</summary>
++	public static Color WorldClearColor { get; } = Environment.GetEnvironmentVariable("C64_STEREO_CLEAR") == "magenta" ? new Color(255, 0, 255, 255) : new Color(0x444c83);
++
++	/// <summary>C64_STEREO_TESTFILL=1: the edge pass paints view 0 red and view 1 green.</summary>
++	public static bool StereoTestFill { get; } = Environment.GetEnvironmentVariable("C64_STEREO_TESTFILL") == "1";
++
++	/// <summary>
++	/// C64_STEREO_NEGATIVE=logical-uv: negative test of the Mac check. The edge pass reads A with
++	/// the logical instead of the physical size, which is wrong under a rasterization rate map
++	/// (physical differs from logical) and must show up as a misaligned copy.
++	/// </summary>
++	public static bool StereoNegativeLogicalUV { get; } = Environment.GetEnvironmentVariable("C64_STEREO_NEGATIVE") == "logical-uv";
++
++	// ---- Stereo world pass into the host's drawable (M4b.3a) ----
++	//
++	// The host hands over its drawable (colour and depth as 2D arrays with one layer per eye),
++	// the compositor's rasterization rate map and one reverse-Z projection per eye. World renders
++	// its 3D passes into an intermediate 2D array A of the map's physical size (one pass for both
++	// views through vertex amplification, map at the pass), the edge pass reads A at the physical
++	// pixel and writes colour and the copied depth into the drawable, and the sprite and
++	// transparent passes draw into the drawable afterwards. The imported drawables are cached by
++	// texture identity and released after 120 frames unseen.
++
++	/// <summary>Per-frame data of the stereo world pass, valid from BeginVRFrame to EndVRFrame.</summary>
++	public sealed class VRFrame
++	{
++		/// <summary>Target over the drawable's colour and depth arrays, both views in one pass.</summary>
++		public required Target Drawable;
++		/// <summary>The drawable colour is sRGB-encoded (the device); the shaders convert their output.</summary>
++		public bool ColorSrgb;
++		/// <summary>Reverse-Z infinite projections per eye, near plane in world units.</summary>
++		public Matrix Projection0, Projection1;
++		public int LogicalWidth, LogicalHeight, PhysicalWidth, PhysicalHeight;
++		public nint RateMap;
++	}
++
++	/// <summary>The current stereo frame, null outside of one (then World renders to its own target).</summary>
++	public static VRFrame? Frame { get; private set; }
++
++	/// <summary>Set by World when it rendered into the drawable of the current frame.</summary>
++	public static bool FrameRendered { get; set; }
++
++	/// <summary>The intermediate array A of the stereo pass (colour and Depth32, two layers, physical size).</summary>
++	public static Target? Intermediate { get; private set; }
++
++	/// <summary>Command buffer submissions requested through FlushPass in the current frame.</summary>
++	public static int FlushesThisFrame { get; private set; }
++
++	/// <summary>Outline width of the stereo edge pass in physical pixels (auto: round(physical height / 360)).</summary>
++	public static int StereoLineWidth { get; private set; } = 1;
++
++	private sealed class ImportedDrawable
++	{
++		public required Texture Color;
++		public required Texture Depth;
++		public required Target Target;
++		public long LastSeen;
++	}
++
++	private static readonly Dictionary<(nint Color, nint Depth), ImportedDrawable> imports = [];
++	private const int ImportKeepFrames = 120;
++	private static long frameCounter;
++	private static bool projectionShapeLogged;
++
++	/// <summary>True when the target is the sRGB-encoded drawable of the current stereo frame.</summary>
++	public static bool IsSrgbTarget(IDrawableTarget? target)
++		=> Frame is { } frame && frame.ColorSrgb && ReferenceEquals(target, frame.Drawable);
++
++	/// <summary>
++	/// Begins a stereo frame: imports (or finds) the drawable textures, keeps the intermediate at
++	/// the physical size, sets the rate map on both targets and stores the eye projections with
++	/// the near plane in world units. Call before Game.RenderFrame; EndVRFrame afterwards.
++	/// </summary>
++	public static void BeginVRFrame(GraphicsDevice device, nint colorTexture, nint depthTexture, int width, int height, int layers,
++		bool colorSrgb, nint rateMap, int logicalWidth, int logicalHeight, int physicalWidth, int physicalHeight,
++		Matrix projection0, Matrix projection1)
++	{
++		if (!ReverseZ)
++			throw new InvalidOperationException("the stereo world pass needs the reverse-Z path (celeste_init_options.reverse_z = 1)");
++		if (layers != 2)
++			throw new ArgumentOutOfRangeException(nameof(layers), $"the stereo world pass needs 2 layers, got {layers}");
++		if (Frame != null)
++			throw new InvalidOperationException("BeginVRFrame called twice without EndVRFrame");
++		frameCounter++;
++
++		var key = (colorTexture, depthTexture);
++		if (!imports.TryGetValue(key, out var imported))
++		{
++			var colorProps = SDL_CreateProperties();
++			var depthProps = SDL_CreateProperties();
++			SDL_SetPointerProperty(colorProps, SDL_PROP_GPU_TEXTURE_CREATE_METAL_TEXTURE_POINTER, colorTexture);
++			SDL_SetPointerProperty(depthProps, SDL_PROP_GPU_TEXTURE_CREATE_METAL_TEXTURE_POINTER, depthTexture);
++			try
++			{
++				// render target only: the kit requires the requested usage to be a subset of the
++				// native texture's usage, and a compositor drawable may lack shaderRead
++				var color = new Texture(device, width, height, colorSrgb ? TextureFormat.B8G8R8A8SRGB : TextureFormat.Color, layers, TextureFlags.RenderTarget, colorProps, "drawable-color");
++				var depth = new Texture(device, width, height, TextureFormat.Depth32, layers, TextureFlags.RenderTarget, depthProps, "drawable-depth");
++				var target = new Target(device, [color, depth], 0, SampleCount.One, true, DepthResolveFilter.Sample0, false, false, viewCount: layers, name: "drawable");
++				imported = new ImportedDrawable { Color = color, Depth = depth, Target = target };
++				imports[key] = imported;
++				Log.Info($"[c64-import] drawable imported color=0x{colorTexture:x} depth=0x{depthTexture:x} {width}x{height}x{layers} srgb={(colorSrgb ? 1 : 0)} cached={imports.Count}");
++			}
++			finally
++			{
++				SDL_DestroyProperties(colorProps);
++				SDL_DestroyProperties(depthProps);
++			}
++		}
++		imported.LastSeen = frameCounter;
++
++		// release drawables the host has not shown for a while (the compositor rotates about three)
++		if (imports.Count > 1)
++		{
++			foreach (var (k, v) in imports.ToArray())
++			{
++				if (frameCounter - v.LastSeen <= ImportKeepFrames)
++					continue;
++				v.Target.Dispose();
++				v.Color.Dispose();
++				v.Depth.Dispose();
++				imports.Remove(k);
++				Log.Info($"[c64-import] drawable released color=0x{k.Color:x} depth=0x{k.Depth:x} after {ImportKeepFrames} frames unseen, cached={imports.Count}");
++			}
++		}
++
++		// the intermediate at the physical size (changes with the render quality)
++		var physW = physicalWidth > 0 ? physicalWidth : width;
++		var physH = physicalHeight > 0 ? physicalHeight : height;
++		if (Intermediate == null || Intermediate.Width != physW || Intermediate.Height != physH)
++		{
++			Intermediate?.Dispose();
++			var aColor = new Texture(device, physW, physH, TextureFormat.Color, layers, TextureFlags.RenderTarget | TextureFlags.Sampled, 0, "stereo-intermediate-color") { AllowArraySampling = true };
++			var aDepth = new Texture(device, physW, physH, TextureFormat.Depth32, layers, TextureFlags.RenderTarget | TextureFlags.Sampled, 0, "stereo-intermediate-depth") { AllowArraySampling = true };
++			Intermediate = new Target(device, [aColor, aDepth], 0, SampleCount.One, true, DepthResolveFilter.Sample0, false, false, viewCount: layers, name: "stereo-intermediate");
++			StereoLineWidth = Math.Max(1, (int)MathF.Round(physH / 360f));
++			Log.Info($"[c64-stereo] intermediate {physW}x{physH}x{layers} (colour and Depth32), drawable {width}x{height}, logical {logicalWidth}x{logicalHeight}, outline {StereoLineWidth} px, map={(rateMap != 0 ? 1 : 0)}");
++		}
++
++		// rate map on both targets (the compositor hands out a new one each frame)
++		var logicalW = logicalWidth > 0 ? logicalWidth : width;
++		var logicalH = logicalHeight > 0 ? logicalHeight : height;
++		if (rateMap != 0)
++		{
++			imported.Target.SetRasterizationRateMap(rateMap, logicalW, logicalH);
++			Intermediate.SetRasterizationRateMap(rateMap, logicalW, logicalH);
++		}
++		else
++		{
++			imported.Target.ClearRasterizationRateMap();
++			Intermediate.ClearRasterizationRateMap();
++		}
++
++		// the host's projections carry the near plane in metres; in world units it is NearUnits
++		// (the x and y rows are scale free), the one place where the unit conversion happens
++		projection0.M43 = NearUnits;
++		projection1.M43 = NearUnits;
++		if (!projectionShapeLogged)
++		{
++			projectionShapeLogged = true;
++			var (l0, r0, t0, b0) = Tangents(projection0);
++			var (l1, r1, t1, b1) = Tangents(projection1);
++			Log.Info($"[c64-stereo] projections eye0 tangents l={l0:F3} r={r0:F3} t={t0:F3} b={b0:F3} eye1 l={l1:F3} r={r1:F3} t={t1:F3} b={b1:F3} M33={projection0.M33:F3}/{projection1.M33:F3} (0 = infinite far) near={NearUnits:F2} units");
++		}
++
++		Frame = new VRFrame
++		{
++			Drawable = imported.Target,
++			ColorSrgb = colorSrgb,
++			Projection0 = projection0,
++			Projection1 = projection1,
++			LogicalWidth = logicalW,
++			LogicalHeight = logicalH,
++			PhysicalWidth = physW,
++			PhysicalHeight = physH,
++			RateMap = rateMap,
++		};
++		FrameRendered = false;
++		FlushesThisFrame = 0;
++	}
++
++	/// <summary>Ends the stereo frame; returns whether World rendered into the drawable and how many submissions FlushPass made.</summary>
++	public static (bool Rendered, int Flushes) EndVRFrame()
++	{
++		var result = (FrameRendered, FlushesThisFrame);
++		Frame = null;
++		FrameRendered = false;
++		return result;
++	}
++
++	/// <summary>
++	/// Submits the commands recorded so far as their own command buffers, so that a host's
++	/// completion callback can time the passes of a frame (world, edge, sprites) separately.
++	/// </summary>
++	public static void FlushPass(GraphicsDevice device, string name)
++	{
++		device.SubmitCommands();
++		FlushesThisFrame++;
++	}
++
++	/// <summary>View tangents (left, right, top, bottom, all positive) of a projection in the row-vector convention.</summary>
++	public static (float Left, float Right, float Top, float Bottom) Tangents(in Matrix p)
++	{
++		var right = (1 + p.M31) / p.M11;
++		var left = (1 - p.M31) / p.M11;
++		var top = (1 + p.M32) / p.M22;
++		var bottom = (1 - p.M32) / p.M22;
++		return (left, right, top, bottom);
++	}
++
++	/// <summary>
++	/// Reverse-Z projection whose frustum contains both eyes' frusta (the larger tangent on each
++	/// side), for culling with one camera; symmetric in the two eyes, so the sign convention of
++	/// the off-centre terms does not matter.
++	/// </summary>
++	public static Matrix UnionProjection(in Matrix a, in Matrix b)
++	{
++		var (l0, r0, t0, b0) = Tangents(a);
++		var (l1, r1, t1, b1) = Tangents(b);
++		return CreateProjectionFromTangents(MathF.Max(l0, l1), MathF.Max(r0, r1), MathF.Max(t0, t1), MathF.Max(b0, b1));
 +	}
 +
 +	/// <summary>

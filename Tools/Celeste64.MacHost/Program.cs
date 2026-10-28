@@ -62,6 +62,20 @@
 //                       Vergleiche getauscht, Himmel 3 km
 //   --test-projection   dazu die Testprojektion nach computeProjection (Metal RH, unendliche
 //                       Far-Ebene, Tangenten links 1,732, rechts 1,0, oben 1,0, unten 1,192)
+//   --vr-world          M4b.3a: Stereo-Weltpass. Celeste bekommt vor jedem Tick die externen
+//                       Schichten als «Drawable» (VisionOSKit.BeginVRFrame: Farbe und Tiefe als
+//                       2D-Array, Rate Map des Hosts falls --rate-map, Testprojektion je Auge:
+//                       Auge 0 Tangenten 1,732/1,0/1,0/1,192, Auge 1 gespiegelt), ein Level
+//                       schreibt seine Welt direkt hinein; Titel und Overworld laufen weiter über
+//                       Outputs (K6e). Braucht --layers external --views 2; impliziert --vr-depth.
+//                       Der Schichtvergleich verlangt dann keine gleichen Schichten mehr
+//   --res WxH           interne Auflösung (VisionOSKit.InternalWidth/Height) und Umrissbreite auto
+//   --layer-dump PFX    bei jedem Schichtvergleich beide Schichten (physischer Bereich) als
+//                       PFX-L0-<frame>.rgba und PFX-L1-<frame>.rgba schreiben
+//   --vr-check          bei jedem Schichtvergleich im Weltpass die Farbe der Drawable-Schicht 0
+//                       gegen die Zwischenschicht A (VisionOSKit.Intermediate) vergleichen: nur
+//                       Umrisspixel dürfen abweichen (unter 10 %); mit C64_STEREO_NEGATIVE=logical-uv
+//                       und --rate-map muss der Anteil gross werden (Negativtest Map am Kantenpass)
 //   --depth-check N     alle N Ticks drei Testquads in 1, 5 und 30 m vor der Kamera (im Blickraum)
 //                       in das Welt-Ziel zeichnen, die Tiefe zurücklesen: near/d muss den Abstand
 //                       auf 1 % treffen; dazu die kleinste Tiefe des Bildes (Himmel: > 0, im
@@ -118,6 +132,12 @@ long keyProbeSeenDown = -1, keyProbeSeenUp = -1;
 // M4b.2: Reverse-Z-Pfad, Testprojektion, Tiefenprüfung
 bool vrDepth = false, testProjection = false;
 int depthCheck = 0;
+// M4b.3a: Stereo-Weltpass, interne Auflösung, Schicht-Dumps, Vergleich Drawable gegen A
+bool vrWorld = false, vrCheck = false;
+int resW = 0, resH = 0;
+string? layerDump = null;
+long vrWorldFrames = 0, vrCanvasFrames = 0;
+int vrChecks = 0, vrChecksFailed = 0;
 bool depthCheckThisFrame = false, sceneRenderedThisFrame = false;
 int depthChecks = 0, depthChecksFailed = 0;
 long afterOutputCalls = 0;
@@ -159,6 +179,15 @@ for (int i = 0; i < args.Length; i++)
 		case "--vr-depth": vrDepth = true; break;
 		case "--test-projection": testProjection = true; break;
 		case "--depth-check": depthCheck = int.Parse(args[++i]); break;
+		case "--vr-world": vrWorld = true; vrDepth = true; break;
+		case "--vr-check": vrCheck = true; break;
+		case "--res":
+		{
+			var parts = args[++i].Split('x');
+			resW = int.Parse(parts[0]); resH = int.Parse(parts[1]);
+			break;
+		}
+		case "--layer-dump": layerDump = args[++i]; break;
 		default: Console.Error.WriteLine($"Unbekanntes Argument: {args[i]}"); return 64;
 	}
 }
@@ -166,6 +195,17 @@ if (testProjection && !vrDepth)
 {
 	Console.Error.WriteLine("--test-projection braucht --vr-depth (die Projektion gilt nur auf dem Reverse-Z-Pfad)");
 	return 64;
+}
+if (vrWorld && (layers != "external" || views != 2))
+{
+	Console.Error.WriteLine("--vr-world braucht --layers external --views 2");
+	return 64;
+}
+if (resW > 0 && resH > 0)
+{
+	VisionOSKit.InternalWidth = resW;
+	VisionOSKit.InternalHeight = resH;
+	VisionOSKit.EdgeLineWidth = Math.Max(1, (int)MathF.Round(resH / 360f));
 }
 if (vrDepth)
 {
@@ -629,6 +669,16 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 	measureThisFrame = rateMapPtr != 0 && layerCheck > 0 && (totalTicks + 1) % layerCheck == layerCheck / 2;
 	depthCheckThisFrame = depthCheck > 0 && totalTicks > 0 && totalTicks % depthCheck == 0;
 	sceneRenderedThisFrame = false;
+	// M4b.3a: vor dem Tick das «Drawable» des Hosts an Celeste; nach dem Tick auswerten
+	if (vrWorld && mtlColor != 0 && mtlDepth != 0)
+	{
+		var eye0 = VisionOSKit.CreateProjectionFromTangents(1.732f, 1.0f, 1.0f, 1.192f);
+		var eye1 = VisionOSKit.CreateProjectionFromTangents(1.0f, 1.732f, 1.0f, 1.192f);
+		var hasMap = rateMapPtr != 0;
+		VisionOSKit.BeginVRFrame(game.GraphicsDevice, mtlColor, mtlDepth, LayerW, LayerH, LayerCount, colorSrgb: false,
+			hasMap ? rateMapPtr : 0, hasMap ? logicalW : LayerW, hasMap ? logicalH : LayerH, hasMap ? (int)physW : LayerW, hasMap ? (int)physH : LayerH,
+			eye0, eye1);
+	}
 	try
 	{
 		game.Tick(delta, present: !noPresent);
@@ -640,6 +690,13 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 		Log.Error($"[machost] Tick abgebrochen: {e.GetType().Name}: {e.Message}");
 		layerChecksFailed++;
 		break;
+	}
+	// M4b.3a: Ergebnis des Weltpasses dieses Ticks
+	if (vrWorld && VisionOSKit.Frame != null)
+	{
+		var (rendered, flushes) = VisionOSKit.EndVRFrame();
+		if (rendered) { if (vrWorldFrames++ == 0) Log.Info($"[machost] vr world: first world frame at tick {totalTicks} (frame {game.Time.Frame}), flushes={flushes}"); }
+		else vrCanvasFrames++;
 	}
 
 	// K6e.2: Messbild auswerten, beide Schichten, Soll aus der Map
@@ -832,9 +889,54 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 			if (pixels1[i].R + pixels1[i].G + pixels1[i].B > 0) nonBlack1++;
 		}
 		layerChecks++;
-		if (diff != 0 || nonBlack0 == 0) layerChecksFailed++;
-		Log.Info($"[machost] layers check #{layerChecks} frame={game.Time.Frame} diff={diff} of {pixels0.Length} nonBlack0={nonBlack0} nonBlack1={nonBlack1} ({(diff == 0 && nonBlack0 > 0 ? "ok" : "FEHLER")})");
+		// im Stereo-Weltpass unterscheiden sich die Schichten (Projektion je Auge): nur Inhalt verlangt
+		var layersOk = vrWorld ? (nonBlack0 > 0 && nonBlack1 > 0) : (diff == 0 && nonBlack0 > 0);
+		if (!layersOk) layerChecksFailed++;
+		Log.Info($"[machost] layers check #{layerChecks} frame={game.Time.Frame} diff={diff} of {pixels0.Length} nonBlack0={nonBlack0} nonBlack1={nonBlack1} ({(layersOk ? "ok" : "FEHLER")}{(vrWorld ? ", Weltpass: Schichten dürfen abweichen" : "")})");
 		Log.Info($"[machost] frame stats: views={views} passes/frame={game.GraphicsDevice.RenderPassesLastFrame} draws/frame={game.GraphicsDevice.DrawCallsLastFrame}");
+
+		// M4b.3a: beide Schichten (physischer Bereich) als RGBA roh für compare-canvas.py
+		if (layerDump != null)
+		{
+			var dumpRect = rateMapPtr != 0 ? new RectInt(0, 0, (int)physW, (int)physH) : rect;
+			for (int layerIndex = 0; layerIndex < LayerCount; layerIndex++)
+			{
+				var px = new Color[dumpRect.Width * dumpRect.Height];
+				layerColor.GetData<Color>(px, dumpRect, layerIndex);
+				var raw = new byte[px.Length * 4];
+				for (int i = 0; i < px.Length; i++) { raw[i * 4] = px[i].R; raw[i * 4 + 1] = px[i].G; raw[i * 4 + 2] = px[i].B; raw[i * 4 + 3] = px[i].A; }
+				var path = $"{layerDump}-L{layerIndex}-{game.Time.Frame}.rgba";
+				File.WriteAllBytes(path, raw);
+				Log.Info($"[machost] layer dump {path} ({dumpRect.Width}x{dumpRect.Height})");
+			}
+		}
+
+		// M4b.3a: Drawable-Schicht 0 gegen die Zwischenschicht A (beide physisch): der Kantenpass
+		// kopiert A und dunkelt nur Umrisspixel ab; mit falscher Abtastung (Negativtest) weicht
+		// fast alles ab
+		if (vrCheck && VisionOSKit.Intermediate is { } intermediate && vrWorldFrames > 0)
+		{
+			vrChecks++;
+			var checkRect = rateMapPtr != 0 ? new RectInt(0, 0, (int)physW, (int)physH) : rect;
+			var aPixels = new Color[checkRect.Width * checkRect.Height];
+			var dPixels = new Color[checkRect.Width * checkRect.Height];
+			intermediate.Attachments[0].GetData<Color>(aPixels, checkRect, 0);
+			layerColor.GetData<Color>(dPixels, checkRect, 0);
+			int differing = 0, outlined = 0;
+			for (int i = 0; i < aPixels.Length; i++)
+			{
+				if (aPixels[i] == dPixels[i]) continue;
+				differing++;
+				// outline = the edge colour mixed in at 70 %: darker than the source in every channel
+				if (dPixels[i].R <= aPixels[i].R && dPixels[i].G <= aPixels[i].G && dPixels[i].B <= aPixels[i].B) outlined++;
+			}
+			var fraction = differing / (double)aPixels.Length * 100;
+			// sprites and transparent models are drawn into the drawable after the copy, so not every
+			// differing pixel is darker; the fraction separates the cases (negative test: over 30 %)
+			var vrOk = fraction < 10;
+			if (!vrOk) vrChecksFailed++;
+			Log.Info($"[machost] vr check #{vrChecks} frame={game.Time.Frame} region={checkRect.Width}x{checkRect.Height} differing={differing} ({fraction:F2}%) outlineLike={outlined} negative={(VisionOSKit.StereoNegativeLogicalUV ? 1 : 0)} ({(vrOk ? "ok" : "FEHLER")})");
+		}
 
 		// Test-Viereck: im schwarzen Feld zählen, wie viele Pixel rein grün sind und wie viele
 		// Zwischenwerte haben (nur mit MSAA > 0)
@@ -914,7 +1016,8 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 					if (c.R + c.G + c.B > 0) nonBlack++;
 					if (x < half && c != shot[y * size.X + x + half]) halvesDiffer++;
 				}
-			var composeOk = magenta == 0 && nonBlack > 0 && halvesDiffer == 0;
+			// im Stereo-Weltpass zeigen die Hälften verschiedene Augen
+			var composeOk = magenta == 0 && nonBlack > 0 && (halvesDiffer == 0 || vrWorld);
 			if (!composeOk) layerChecksFailed++;
 			Log.Info($"[machost] compose check #{layerChecks} window={size.X}x{size.Y} fullscreen={game.Window.Fullscreen} magenta={magenta} nonBlack={nonBlack} of {shot.Length} halvesDiffer={halvesDiffer} ({(composeOk ? "ok" : "FEHLER")})");
 		}
@@ -938,7 +1041,8 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 
 Log.Info($"[machost] End: totalTicks={totalTicks} totalUpdates={totalUpdates} elapsed={clock.Elapsed.TotalSeconds:F2}s gameTime={game.Time.Elapsed.TotalSeconds:F2}s exiting={game.Exiting}" +
 	(layerColor != null ? $" layerChecks={layerChecks} failed={layerChecksFailed}" : "") +
-	(depthCheck > 0 ? $" depthChecks={depthChecks} failed={depthChecksFailed}" : ""));
+	(depthCheck > 0 ? $" depthChecks={depthChecks} failed={depthChecksFailed}" : "") +
+	(vrWorld ? $" vrWorldFrames={vrWorldFrames} vrCanvasFrames={vrCanvasFrames} vrChecks={vrChecks} failed={vrChecksFailed}" : ""));
 
 // Aufräumen in der Reihenfolge Ziel, Texturen, native Objekte; Foster gibt nur seine Handles frei
 VisionOSKit.Outputs = null;

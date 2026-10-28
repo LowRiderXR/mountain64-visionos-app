@@ -864,6 +864,74 @@ nonisolated final class Renderer: @unchecked Sendable {
 
     // MARK: Frame
 
+    // MARK: Stereo-Weltpass (M4b.3a)
+
+    /// Frame-Daten für celeste_render_frame_vr aus dem Drawable: Farb- und Tiefentextur (eine
+    /// 2D-Array-Textur für beide Views, Layout .layered), die Rate Map des Compositors mit
+    /// logischer und physischer Grösse, die Projektion je View aus computeProjection (16 Floats,
+    /// Spaltenreihenfolge wie simd; Celeste setzt ihre Near-Ebene in Einheiten selbst), die
+    /// View-Transformationen (für M4b.4) und die Near-Ebene des Layers. false, wenn das Drawable
+    /// nicht die Form hat (weniger als zwei Views oder keine Array-Textur).
+    private static func fillVRFrame(_ frame: inout celeste_vr_frame, drawable: LayerRenderer.Drawable,
+                                    deviceAnchor: DeviceAnchor?, configuration: LayerRenderer.Configuration) -> Bool {
+        let views = drawable.views
+        guard views.count >= 2 else { return false }
+        let index = views[0].textureMap.textureIndex
+        guard views[1].textureMap.textureIndex == index else { return false }
+        let color = drawable.colorTextures[index]
+        let depth = drawable.depthTextures[index]
+        guard color.textureType == .type2DArray, color.arrayLength >= 2 else { return false }
+        frame.size = Int32(MemoryLayout<celeste_vr_frame>.size)
+        frame.view_count = 2
+        frame.color_texture = Unmanaged.passUnretained(color).toOpaque()
+        frame.depth_texture = Unmanaged.passUnretained(depth).toOpaque()
+        frame.width = Int32(color.width)
+        frame.height = Int32(color.height)
+        frame.color_srgb = (color.pixelFormat == .bgra8Unorm_srgb || color.pixelFormat == .rgba8Unorm_srgb) ? 1 : 0
+        if configuration.isFoveationEnabled, let map = drawable.rasterizationRateMaps.first {
+            frame.rasterization_rate_map = Unmanaged.passUnretained(map).toOpaque()
+            frame.logical_width = Int32(map.screenSize.width)
+            frame.logical_height = Int32(map.screenSize.height)
+            let physical = map.physicalSize(layer: 0)
+            frame.physical_width = Int32(physical.width)
+            frame.physical_height = Int32(physical.height)
+        } else {
+            frame.rasterization_rate_map = nil
+            frame.logical_width = frame.width
+            frame.logical_height = frame.height
+            frame.physical_width = frame.width
+            frame.physical_height = frame.height
+        }
+        let anchorTransform = deviceAnchor?.originFromAnchorTransform ?? matrix_identity_float4x4
+        for slot in 0..<2 {
+            var projection = drawable.computeProjection(viewIndex: slot)
+            var viewTransform = anchorTransform * views[slot].transform
+            withUnsafeMutableBytes(of: &frame.projection) { dst in
+                withUnsafeBytes(of: &projection) { src in
+                    dst.baseAddress!.advanced(by: slot * 64).copyMemory(from: src.baseAddress!, byteCount: 64)
+                }
+            }
+            withUnsafeMutableBytes(of: &frame.view_transform) { dst in
+                withUnsafeBytes(of: &viewTransform) { src in
+                    dst.baseAddress!.advanced(by: slot * 64).copyMemory(from: src.baseAddress!, byteCount: 64)
+                }
+            }
+        }
+        frame.near_meters = Double(configuration.defaultDepthRange.y)
+        return true
+    }
+
+    private var lastStereoRc: Int32 = -3
+    private var stereoWorldFrames = 0
+
+    /// [c64-stereo]: der erste Welt-Frame und jeder Wechsel zwischen Welt (1) und Leinwand (0).
+    private func noteStereoFrame(rc: Int32, frame: celeste_vr_frame, frameIndex: UInt64) {
+        if rc == 1 { stereoWorldFrames += 1 }
+        guard rc != lastStereoRc else { return }
+        lastStereoRc = rc
+        c64Record("[c64-stereo] tMs=\(LaunchClock.tMs) frame=\(frameIndex) rc=\(rc) (\(rc == 1 ? "Welt im Drawable" : rc == 0 ? "Leinwand" : "kein Render")) drewWorld=\(frame.drew_world) flushes=\(frame.flushes) texture=\(frame.width)x\(frame.height) logical=\(frame.logical_width)x\(frame.logical_height) physical=\(frame.physical_width)x\(frame.physical_height) srgb=\(frame.color_srgb) map=\(frame.rasterization_rate_map != nil ? 1 : 0) near=\(String(format: "%.3f", frame.near_meters)) worldFrames=\(stereoWorldFrames)")
+    }
+
     /// M4b.2: Near-Ebene der Layer-Konfiguration (defaultDepthRange: x = far, y = near, Meter,
     /// layer_renderer_configuration.h:386-414, nur Reverse-Z) an Celeste. Nur wenn der Reverse-Z-Pfad
     /// an ist (C64_REVERSE_Z); sonst eine Logzeile mit dem gelesenen Wert.
@@ -999,6 +1067,11 @@ nonisolated final class Renderer: @unchecked Sendable {
         // M4b.1: Celestes Render-Hälfte nach dem Device Anchor, unmittelbar vor dem Encodieren;
         // SDL committet seine Buffer auf der gemeinsamen Queue vor dem Host-Buffer. Kein Render
         // ohne Update in diesem Frame (Pause, Mixer angehalten, Flag gesetzt).
+        // M4b.3a: mit Stereo-Weltpass bekommt Celeste das Drawable (Texturen, Map, Projektionen
+        // je Auge); Rückgabe 1 heisst, die Welt steht im Drawable, das Gerüst löscht und zeichnet
+        // dort nichts mehr. Rückgabe 0: Leinwand wie bisher.
+        var celesteRenderedThisFrame = false
+        var worldDrawnThisFrame = false
         if renderCelesteThisFrame {
             if CelesteProbe.pauseState.isBackground {
                 // Flag kam zwischen Update und Render: Celestes Render entfällt (keine
@@ -1006,13 +1079,30 @@ nonisolated final class Renderer: @unchecked Sendable {
                 // wird fertig präsentiert.
                 pauseFrameNote = PauseFrameNote(frameIndex: frame.frameIndex, flagSeen: "after-update", tickSkipped: false, renderSkipped: true, committed: false, presented: false)
             } else {
-                CelesteProbe.tickState.render()
+                celesteRenderedThisFrame = true
+                var worldFrame = celeste_vr_frame()
+                if CelesteProbe.stereoWorld,
+                   Self.fillVRFrame(&worldFrame, drawable: primary, deviceAnchor: deviceAnchor, configuration: layerRenderer.configuration) {
+                    let rc = CelesteProbe.tickState.renderVR(&worldFrame)
+                    worldDrawnThisFrame = rc == 1
+                    noteStereoFrame(rc: rc, frame: worldFrame, frameIndex: frame.frameIndex)
+                } else {
+                    CelesteProbe.tickState.render()
+                }
             }
         }
+        // Frame ohne Celeste-Render auf dem Stereo-Pfad (Laden, Pause, Flag): Drawable opak
+        // schwarz nach der Frame-Regel, nie alter Inhalt und keine Leinwand mit altem Bild.
+        let blackOnly = CelesteProbe.stereoWorld && CelesteProbe.ticksGame && !celesteRenderedThisFrame
+        let primaryColor = primary.colorTextures.first
 
         for drawable in drawables {
             if let anchor = deviceAnchor {
                 drawable.deviceAnchor = anchor
+            }
+            if worldDrawnThisFrame, let primaryColor, drawable.colorTextures.first === primaryColor {
+                // Celeste hat dieses Drawable geschrieben (beide Schichten, Tiefe kopiert)
+                continue
             }
             // K1b: zuerst SDL (importiert und löscht, committet auf der geteilten Queue), dann
             // der Gerüst-Buffer mit nur encodePresent. Scheitert SDL, zählt das Gerüst sdlFail und
@@ -1037,7 +1127,7 @@ nonisolated final class Renderer: @unchecked Sendable {
                 statSdlFail += 1
                 sdlFailTotal += 1
             }
-            encodeClearPasses(drawable: drawable, commandBuffer: commandBuffer, deviceAnchor: deviceAnchor)
+            encodeClearPasses(drawable: drawable, commandBuffer: commandBuffer, deviceAnchor: deviceAnchor, blackOnly: blackOnly)
         }
 
         // Verspätung unmittelbar vor encodePresent: Präsentationszeit minus jetzt, gleiche
@@ -1117,14 +1207,16 @@ nonisolated final class Renderer: @unchecked Sendable {
     /// mit dem Index der View-Textur, falls so viele Maps vorhanden sind, sonst die erste.
     /// Dass bei .dedicated eine Map pro Textur kommt, ist nicht dokumentiert; [c64-fov] loggt
     /// die tatsächliche Anzahl.
-    private func encodeClearPasses(drawable: LayerRenderer.Drawable, commandBuffer: MTLCommandBuffer, deviceAnchor: DeviceAnchor?) {
-        let scene = currentTestScene()
-        let canvas = currentCanvasScene()
+    private func encodeClearPasses(drawable: LayerRenderer.Drawable, commandBuffer: MTLCommandBuffer, deviceAnchor: DeviceAnchor?, blackOnly: Bool = false) {
+        // M4b.3a, blackOnly: nur der opake schwarze Clear (Tiefe 1000 m, eigener Inhalt), keine
+        // Leinwand und keine Testszene (Frame ohne Celeste-Render auf dem Stereo-Pfad)
+        let scene = blackOnly ? nil : currentTestScene()
+        let canvas = blackOnly ? nil : currentCanvasScene()
         let maps = layerRenderer.configuration.isFoveationEnabled ? drawable.rasterizationRateMaps : []
         let views = drawable.views
         guard let firstView = views.first else { return }
         let isArray = drawable.colorTextures[firstView.textureMap.textureIndex].textureType == .type2DArray
-        let clearDepth = canvasRequested ? Self.canvasClearDepth : 0.0
+        let clearDepth = canvasRequested || blackOnly ? Self.canvasClearDepth : 0.0
         canvas?.logEyesOnce(drawable: drawable, views: views, maps: maps)
 
         if isArray, views.count > 1 {

@@ -137,6 +137,45 @@ int32_t celeste_request_pause(void);
  * warning line. Call on the ticking thread, before the first update when possible. 0 or -1. */
 int32_t celeste_set_depth_near(double near_meters);
 
+/* Stereo world pass (M4b.3a): the frame data for celeste_render_frame_vr. Zero the struct, set
+ * size, then the fields. The textures are the host's drawable (compositor), 2D arrays with one
+ * layer per view, colour BGRA8Unorm_sRGB (color_srgb 1) or RGBA8Unorm (0), depth Depth32Float;
+ * usage must include RenderTarget. The host keeps them alive until the call returns and the
+ * game's command buffers completed (the game caches the imports by identity and releases an
+ * import after 120 frames unseen, see [c64-import]). The rasterization rate map is the
+ * compositor's for the drawable or NULL; logical_* is its screen size and physical_* its
+ * physical size of layer 0 (the texture size without a map). projection holds one reverse-Z
+ * infinite projection per view, 16 floats each, column-major as simd_float4x4 (the game uses
+ * them with its own near plane in world units); view_transform the origin-from-view transforms
+ * (unused in M4b.3a). drew_world and flushes are outputs. */
+typedef struct celeste_vr_frame {
+    int32_t size;                     /* sizeof(celeste_vr_frame) */
+    int32_t view_count;               /* 2 */
+    void *color_texture;              /* id<MTLTexture> */
+    void *depth_texture;              /* id<MTLTexture> */
+    int32_t width;                    /* texture size */
+    int32_t height;
+    int32_t color_srgb;               /* 1: colour texture is sRGB-encoded */
+    int32_t reserved;
+    void *rasterization_rate_map;     /* id<MTLRasterizationRateMap> or NULL */
+    int32_t logical_width;
+    int32_t logical_height;
+    int32_t physical_width;
+    int32_t physical_height;
+    float projection[32];             /* view 0: 0..15, view 1: 16..31 */
+    float view_transform[32];
+    double near_meters;               /* near plane of the layer in metres (as celeste_set_depth_near) */
+    int32_t drew_world;               /* out: 1 when the world was rendered into the drawable */
+    int32_t flushes;                  /* out: command buffer submissions the game made for its passes (2 buffers each) */
+} celeste_vr_frame;
+
+/* The render half of a frame with the stereo world pass: a running level renders its 3D world
+ * into the drawable (both views in one pass, the compositor's map at the pass) and returns 1;
+ * every other scene renders into the canvas as with celeste_render_frame and returns 0 (the
+ * host then shows the canvas and clears the drawable itself). -1 on failure. Call once per
+ * frame after celeste_update, on the same thread. Needs reverse_z = 1 at celeste_init. */
+int32_t celeste_render_frame_vr(celeste_vr_frame *frame);
+
 /* Canvas (M4a, variant a): the game renders its final image into a texture the host owns
  * instead of the hidden window. mtl_texture is an id<MTLTexture> on the device the game's
  * SDL_GPU device uses: type 2D, pixel format RGBA8Unorm (the game's output is not sRGB-encoded

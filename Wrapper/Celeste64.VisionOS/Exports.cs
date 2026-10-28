@@ -30,6 +30,32 @@ public struct CelesteInitOptions
 }
 
 /// <summary>
+/// Frame data of celeste_render_frame_vr; must match celeste_vr_frame in celeste.h field by field.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+public unsafe struct CelesteVRFrame
+{
+	public int Size;
+	public int ViewCount;
+	public IntPtr ColorTexture;
+	public IntPtr DepthTexture;
+	public int Width;
+	public int Height;
+	public int ColorSrgb;
+	public int Reserved;
+	public IntPtr RateMap;
+	public int LogicalWidth;
+	public int LogicalHeight;
+	public int PhysicalWidth;
+	public int PhysicalHeight;
+	public fixed float Projection[32];
+	public fixed float ViewTransform[32];
+	public double NearMeters;
+	public int DrewWorld;
+	public int Flushes;
+}
+
+/// <summary>
 /// Result of celeste_capabilities_get; must match celeste_capabilities in celeste.h.
 /// </summary>
 [StructLayout(LayoutKind.Sequential)]
@@ -540,6 +566,84 @@ public static unsafe class Exports
 			return SetError(e);
 		}
 	}
+
+	/// <summary>
+	/// The render half of a frame with the stereo world pass (M4b.3a): imports the host's
+	/// drawable (cached by identity), renders, and reports whether the world went into the
+	/// drawable (1) or the canvas (0). See celeste_vr_frame in celeste.h.
+	/// </summary>
+	[UnmanagedCallersOnly(EntryPoint = "celeste_render_frame_vr")]
+	public static int CelesteRenderFrameVR(CelesteVRFrame* frame)
+	{
+		try
+		{
+			if (game == null)
+				return SetError("celeste_render_frame_vr: no game; call celeste_init first");
+			if (frame == null || frame->Size != sizeof(CelesteVRFrame))
+				return SetError($"celeste_render_frame_vr: frame.size must be {sizeof(CelesteVRFrame)}");
+			if (!VisionOSKit.ReverseZ)
+				return SetError("celeste_render_frame_vr: needs reverse_z = 1 at celeste_init");
+			if (frame->ColorTexture == IntPtr.Zero || frame->DepthTexture == IntPtr.Zero)
+				return SetError("celeste_render_frame_vr: color_texture and depth_texture are required");
+			if (frame->ViewCount != 2)
+				return SetError($"celeste_render_frame_vr: view_count must be 2, got {frame->ViewCount}");
+			if (frame->Width <= 0 || frame->Height <= 0)
+				return SetError($"celeste_render_frame_vr: texture size {frame->Width}x{frame->Height} is invalid");
+			if (!game.GraphicsDevice.Capabilities.ExternalTextures || !game.GraphicsDevice.Capabilities.MultiView)
+				return SetError($"celeste_render_frame_vr: the loaded SDL lacks external textures or multiview ({game.GraphicsDevice.Capabilities})");
+
+			// once per new texture: does the native texture match what the game will request?
+			if (!verifiedTextures.Contains(frame->ColorTexture))
+			{
+				var pixelFormat = TextureProperty(frame->ColorTexture, "pixelFormat");
+				var expected = frame->ColorSrgb != 0 ? MTLPixelFormatBGRA8Unorm_sRGB : MTLPixelFormatRGBA8Unorm;
+				var arrayLength = TextureProperty(frame->ColorTexture, "arrayLength");
+				var depthFormat = TextureProperty(frame->DepthTexture, "pixelFormat");
+				var depthLayers = TextureProperty(frame->DepthTexture, "arrayLength");
+				Log.Info($"{Tag} vr frame textures color=0x{frame->ColorTexture:x} format={pixelFormat} layers={arrayLength} depth=0x{frame->DepthTexture:x} format={depthFormat} layers={depthLayers} size={frame->Width}x{frame->Height} srgb={frame->ColorSrgb} map=0x{frame->RateMap:x} logical={frame->LogicalWidth}x{frame->LogicalHeight} physical={frame->PhysicalWidth}x{frame->PhysicalHeight}");
+				if (pixelFormat != expected)
+					return SetError($"celeste_render_frame_vr: colour pixel format {pixelFormat} is not {(frame->ColorSrgb != 0 ? "BGRA8Unorm_sRGB (81)" : "RGBA8Unorm (70)")}");
+				if (depthFormat != MTLPixelFormatDepth32Float)
+					return SetError($"celeste_render_frame_vr: depth pixel format {depthFormat} is not Depth32Float (252)");
+				if (arrayLength != 2 || depthLayers != 2)
+					return SetError($"celeste_render_frame_vr: textures must have 2 array layers, got {arrayLength} and {depthLayers}");
+				verifiedTextures.Add(frame->ColorTexture);
+			}
+
+			if (frame->NearMeters > 0 && Math.Abs(frame->NearMeters - VisionOSKit.NearMeters) > 1e-6)
+				VisionOSKit.SetNearMeters(frame->NearMeters);
+
+			// 16 floats per view, the memory layout of simd_float4x4 (columns) equals the one of
+			// System.Numerics.Matrix4x4 (rows) in the row-vector convention: copied without transpose
+			float* p = frame->Projection;
+			var projection0 = *(System.Numerics.Matrix4x4*)p;
+			var projection1 = *(System.Numerics.Matrix4x4*)(p + 16);
+			VisionOSKit.BeginVRFrame(game.GraphicsDevice, frame->ColorTexture, frame->DepthTexture, frame->Width, frame->Height, frame->ViewCount,
+				frame->ColorSrgb != 0, frame->RateMap, frame->LogicalWidth, frame->LogicalHeight, frame->PhysicalWidth, frame->PhysicalHeight,
+				projection0, projection1);
+			bool rendered;
+			int flushes;
+			try
+			{
+				game.RenderFrame(false);
+			}
+			finally
+			{
+				(rendered, flushes) = VisionOSKit.EndVRFrame();
+			}
+			frame->DrewWorld = rendered ? 1 : 0;
+			frame->Flushes = flushes;
+			return rendered ? 1 : Ok;
+		}
+		catch (Exception e)
+		{
+			return SetError(e);
+		}
+	}
+
+	private static readonly HashSet<IntPtr> verifiedTextures = [];
+	private const nuint MTLPixelFormatBGRA8Unorm_sRGB = 81;
+	private const nuint MTLPixelFormatDepth32Float = 252;
 
 	/// <summary>
 	/// Foster's window as SDL sees it: logical size, pixel size, density and flags. The host uses
