@@ -72,7 +72,7 @@ FW_VERSION_STRING="${GAME_VERSION:-1.0}"
 FW_BUILD_NUMBER="${GAME_BUILD:-1}"
 VISIONOS_MIN="${VISIONOS_MIN:-1.0}"
 
-EXPECTED_EXPORTS=(celeste_version celeste_set_log_callback celeste_capabilities_get celeste_window_info_get celeste_init celeste_tick celeste_update celeste_render_frame celeste_set_canvas celeste_clear_canvas celeste_exiting celeste_request_exit celeste_audio_suspend celeste_request_pause celeste_end celeste_last_error)
+EXPECTED_EXPORTS=(celeste_version celeste_set_log_callback celeste_capabilities_get celeste_window_info_get celeste_init celeste_tick celeste_update celeste_render_frame celeste_set_canvas celeste_clear_canvas celeste_exiting celeste_request_exit celeste_audio_suspend celeste_request_pause celeste_set_depth_near celeste_end celeste_last_error)
 
 # Content for the framework: everything Celeste reads at run time (Assets.cs loads *.glb, *.png,
 # *.map, *.json, banks, shaders, fonts), without the Blender sources next to the models (38 MB of
@@ -173,7 +173,16 @@ if [[ "$MODE" == "mac-check" ]]; then
     echo "-- run with --split (update and render separate, log: $SPLIT_LOG)"
     DYLD_LIBRARY_PATH="$STAGE" "$BUILD_DIR/mac-check" "$DYLIB" "$STAGE" --split --dump "$BUILD_DIR/mac-check-canvas-split" > "$SPLIT_LOG" 2>&1 || { echo "error: mac check split run failed (exit $?)" >&2; tail -30 "$SPLIT_LOG" >&2; exit 1; }
     grep -E "^mac-check: (split|canvas after 548|canvas dump|ticks ok|run ok)|Exception|rror" "$SPLIT_LOG" | head -8
-    python3 "$ROOT/scripts/compare-canvas.py" "$BUILD_DIR/mac-check-canvas.rgba" "$BUILD_DIR/mac-check-canvas-split.rgba" --width 1280 --width-b 1280 | grep -E "^(B |mean difference|histogram intersection|verdict)" | sed 's/^/   /'
+    python3 "$ROOT/scripts/compare-canvas.py" "$BUILD_DIR/mac-check-canvas.rgba" "$BUILD_DIR/mac-check-canvas-split.rgba" --width 1280 --width-b 1280 | grep -E "^(B |mean difference|histogram intersection|exact|verdict)" | sed 's/^/   /'
+
+    # The same run on the reverse-Z depth path (reverse_z = 1, celeste_set_depth_near 0.1 m): the
+    # VR shader variants, a float depth target and the swapped compares must give the same title
+    # screen as the default run (the depth convention is internal to the world target).
+    RZ_LOG="$BUILD_DIR/mac-check-run-reversez.log"
+    echo "-- run with --reverse-z (reverse-Z depth path, log: $RZ_LOG)"
+    DYLD_LIBRARY_PATH="$STAGE" "$BUILD_DIR/mac-check" "$DYLIB" "$STAGE" --reverse-z --dump "$BUILD_DIR/mac-check-canvas-reversez" > "$RZ_LOG" 2>&1 || { echo "error: mac check reverse-z run failed (exit $?)" >&2; tail -30 "$RZ_LOG" >&2; exit 1; }
+    grep -E "^mac-check: (requested|celeste_set_depth_near|canvas after 548|canvas dump|ticks ok|run ok)|c64-depth|Exception|rror" "$RZ_LOG" | sed -E 's/ userPath="[^"]*"//; s/ capabilities=.*$//' | head -12
+    python3 "$ROOT/scripts/compare-canvas.py" "$BUILD_DIR/mac-check-canvas.rgba" "$BUILD_DIR/mac-check-canvas-reversez.rgba" --width 1280 --width-b 1280 | grep -E "^(B |mean difference|histogram intersection|exact|verdict)" | sed 's/^/   /'
 
     # The same run per internal resolution, outline width auto, one dump each; the colour
     # statistics of each dump must match the default run (same title screen, same frame).

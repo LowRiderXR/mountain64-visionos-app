@@ -25,6 +25,8 @@ public struct CelesteInitOptions
 	public int InternalWidth;
 	public int InternalHeight;
 	public int EdgeLineWidth;
+	// 1: reverse-Z depth path (VR shader variants, infinite far plane), see celeste.h.
+	public int ReverseZ;
 }
 
 /// <summary>
@@ -421,7 +423,11 @@ public static unsafe class Exports
 			VisionOSKit.InternalWidth = internalWidth;
 			VisionOSKit.InternalHeight = internalHeight;
 			VisionOSKit.EdgeLineWidth = edgeLineWidth;
-			Log.Info($"{Tag} init thread={initThreadId} contentRoot=\"{contentRoot}\" baseDirectory=\"{AppContext.BaseDirectory}\" hiddenWindow={options->HiddenWindow} depthClip={options->DepthClip} metalDevice=0x{options->MetalDevice:x} queue=0x{options->MetalCommandQueue:x} callback={(options->CompletedCallback != IntPtr.Zero ? 1 : 0)} internal={internalWidth}x{internalHeight} edgeLine={edgeLineWidth} optionsSize={options->Size}");
+			// Depth convention: decided before the game exists (the world target is created with
+			// the game, the shader variants are chosen when the assets load).
+			var reverseZ = hasResolution && options->ReverseZ != 0;
+			VisionOSKit.ReverseZ = reverseZ;
+			Log.Info($"{Tag} init thread={initThreadId} contentRoot=\"{contentRoot}\" baseDirectory=\"{AppContext.BaseDirectory}\" hiddenWindow={options->HiddenWindow} depthClip={options->DepthClip} metalDevice=0x{options->MetalDevice:x} queue=0x{options->MetalCommandQueue:x} callback={(options->CompletedCallback != IntPtr.Zero ? 1 : 0)} internal={internalWidth}x{internalHeight} edgeLine={edgeLineWidth} reverseZ={(reverseZ ? 1 : 0)} worldScale={VisionOSKit.WorldScale:F1} optionsSize={options->Size}");
 
 			var created = new Game(new(
 				ApplicationName: Game.GamePath,
@@ -617,6 +623,31 @@ public static unsafe class Exports
 				return SetError("celeste_request_pause: no game");
 			VisionOSKit.RequestPause();
 			Log.Info($"{Tag} pause requested; the next update applies it to a running level");
+			return Ok;
+		}
+		catch (Exception e)
+		{
+			return SetError(e);
+		}
+	}
+
+	/// <summary>
+	/// Near plane of the reverse-Z projection in metres; the host reads it from its layer's
+	/// default depth range once the layer exists. The game converts it to world units at one
+	/// place (VisionOSKit.SetNearMeters); the cameras pick it up with their next change. Call on
+	/// the ticking thread. 0 or -1.
+	/// </summary>
+	[UnmanagedCallersOnly(EntryPoint = "celeste_set_depth_near")]
+	public static int CelesteSetDepthNear(double nearMeters)
+	{
+		try
+		{
+			if (game == null)
+				return SetError("celeste_set_depth_near: no game");
+			if (!(nearMeters > 0) || double.IsInfinity(nearMeters))
+				return SetError($"celeste_set_depth_near: {nearMeters} is not a positive finite distance in metres");
+			VisionOSKit.SetNearMeters(nearMeters);
+			Log.Info($"{Tag} depth near={nearMeters:F3} m -> {VisionOSKit.NearUnits:F2} units reverseZ={(VisionOSKit.ReverseZ ? 1 : 0)} thread={Environment.CurrentManagedThreadId}");
 			return Ok;
 		}
 		catch (Exception e)

@@ -50,6 +50,19 @@ def stats(data):
     return [s / n for s in sums], [h / n for h in hist], black / n
 
 
+def exact(a, b):
+    """Pixels that differ in any channel (RGB, alpha ignored) and the largest channel difference."""
+    differing = 0
+    max_channel = 0
+    for i in range(0, len(a), 4):
+        d = max(abs(a[i] - b[i]), abs(a[i + 1] - b[i + 1]), abs(a[i + 2] - b[i + 2]))
+        if d:
+            differing += 1
+            if d > max_channel:
+                max_channel = d
+    return differing, max_channel
+
+
 def main():
     args = []
     width = 1280
@@ -88,6 +101,12 @@ def main():
     print("  A " + " ".join(f"{x * 100:5.1f}" for x in hista))
     print("  B " + " ".join(f"{x * 100:5.1f}" for x in histb))
     print(f"histogram intersection = {intersection * 100:.1f}% (100 = identical distributions)")
+    # Same shape: count the pixels that differ at all (exact comparison, for two runs of the same
+    # program; the statistics above stay the measure for Mac against device).
+    if width == width_b and h_a == h_b:
+        differing, max_channel = exact(a, b)
+        n = width * h_a
+        print(f"exact: differing pixels = {differing} of {n} ({differing / n * 100:.3f}%), max channel difference = {max_channel}")
     verdict = "same colour space" if max(abs(mb[i] - ma[i]) for i in range(3)) < 12 and intersection > 0.8 else "DIFFERENT, check gamma or content"
     print(f"verdict: {verdict} (threshold: channel means within 12, intersection above 80%; the title screen animates, so expect small differences)")
 

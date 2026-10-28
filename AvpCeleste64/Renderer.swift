@@ -297,6 +297,8 @@ nonisolated final class Renderer: @unchecked Sendable {
     // Wanduhr-Intervall zwischen aufeinanderfolgenden Rückkehren von queryNextFrame.
     // Zeigt den Block, weil es am Render-Thread misst, nicht am Frame-Zähler des Compositors.
     private var lastQueryReturn: CFAbsoluteTime?
+    // M4b.2: Near-Ebene des Layers einmal an Celeste gemeldet (vor dem ersten Update auf dem Render-Thread).
+    private var depthNearSent = false
     private var statWallMin = Double.greatestFiniteMagnitude
     private var statWallMax = 0.0
     private var statWallSum = 0.0
@@ -862,6 +864,20 @@ nonisolated final class Renderer: @unchecked Sendable {
 
     // MARK: Frame
 
+    /// M4b.2: Near-Ebene der Layer-Konfiguration (defaultDepthRange: x = far, y = near, Meter,
+    /// layer_renderer_configuration.h:386-414, nur Reverse-Z) an Celeste. Nur wenn der Reverse-Z-Pfad
+    /// an ist (C64_REVERSE_Z); sonst eine Logzeile mit dem gelesenen Wert.
+    private func sendDepthNear() {
+        let range = layerRenderer.configuration.defaultDepthRange
+        guard CelesteProbe.reverseZ else {
+            c64Record("[c64-depth] tMs=\(LaunchClock.tMs) reverseZ=0 (Referenzpfad), layer defaultDepthRange " + String(format: "far=%.3f near=%.3f", range.x, range.y))
+            return
+        }
+        let rc = celeste_set_depth_near(Double(range.y))
+        let error = rc == 0 ? "" : (celeste_last_error().map { " error=\"\(String(cString: $0))\"" } ?? "")
+        c64Record("[c64-depth] tMs=\(LaunchClock.tMs) layer defaultDepthRange " + String(format: "far=%.3f near=%.3f m", range.x, range.y) + " -> celeste_set_depth_near rc=\(rc)\(error)")
+    }
+
     private func renderFrame() {
         guard let frame = layerRenderer.queryNextFrame() else {
             // Kein Frame verfügbar (pausiert, invalidiert oder zu viele in Arbeit): kurz warten.
@@ -904,6 +920,12 @@ nonisolated final class Renderer: @unchecked Sendable {
                 c64Record("[c64-celeste] tMs=\(LaunchClock.tMs) Tick ausgelassen, Mixer angehalten; Schleife präsentiert weiter")
             }
         } else if CelesteProbe.ticksGame {
+            // M4b.2: vor dem ersten Update auf diesem Thread die Near-Ebene des Layers an Celeste
+            // (celeste_set_depth_near, Meter); Celeste rechnet sie an einer Stelle in Einheiten um.
+            if !depthNearSent {
+                depthNearSent = true
+                sendDepthNear()
+            }
             renderCelesteThisFrame = CelesteProbe.tickState.update(frameInterval: frameInterval)
         }
         frame.endUpdate()

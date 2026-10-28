@@ -46,6 +46,556 @@ index d210edd..bc09646 100644
    <PropertyGroup Condition="($(RuntimeIdentifier) == '' and $([MSBuild]::IsOSPlatform('Linux'))) or $(RuntimeIdentifier.StartsWith('linux'))">
      <IsLinux>true</IsLinux>
    </PropertyGroup>
+diff --git a/Content/Shaders/Compiled/DefaultVR.fragment.json b/Content/Shaders/Compiled/DefaultVR.fragment.json
+new file mode 100644
+index 0000000..de41677
+--- /dev/null
++++ b/Content/Shaders/Compiled/DefaultVR.fragment.json
+@@ -0,0 +1 @@
++{ "samplers": 1, "storage_textures": 0, "storage_buffers": 0, "uniform_buffers": 1, "inputs": [{ "name": "in.var.TEXCOORD0", "type": "float2", "location": 0 }, { "name": "in.var.TEXCOORD2", "type": "float3", "location": 2 }, { "name": "in.var.TEXCOORD3", "type": "float3", "location": 3 }], "outputs": [{ "name": "out.var.SV_Target0", "type": "float4", "location": 0 }] }
+diff --git a/Content/Shaders/Compiled/DefaultVR.fragment.msl b/Content/Shaders/Compiled/DefaultVR.fragment.msl
+new file mode 100644
+index 0000000..0c38f88
+--- /dev/null
++++ b/Content/Shaders/Compiled/DefaultVR.fragment.msl
+@@ -0,0 +1,60 @@
++#include <metal_stdlib>
++#include <simd/simd.h>
++
++using namespace metal;
++
++struct type_VertexUniforms
++{
++    float4x4 u_mvp;
++    float4x4 u_model;
++    float4x4 u_model_inverse;
++    float u_jointMult;
++};
++
++struct type_JointUniforms
++{
++    float4x4 u_jointMat[32];
++};
++
++struct type_FragmentUniforms
++{
++    float4 u_color;
++    float4 u_sun;
++    float4 u_silhouette_color;
++    float4 u_vertical_fog_color;
++    float u_near;
++    float u_far;
++    float u_effects;
++    float u_silhouette;
++    float u_time;
++    float u_cutout;
++};
++
++struct fragment_main_out
++{
++    float4 out_var_SV_Target0 [[color(0)]];
++};
++
++struct fragment_main_in
++{
++    float2 in_var_TEXCOORD0 [[user(locn0)]];
++    float3 in_var_TEXCOORD2 [[user(locn2)]];
++    float3 in_var_TEXCOORD3 [[user(locn3)]];
++};
++
++fragment fragment_main_out fragment_main(fragment_main_in in [[stage_in]], constant type_FragmentUniforms& FragmentUniforms [[buffer(0)]], texture2d<float> Texture [[texture(0)]], sampler Sampler [[sampler(0)]], float4 gl_FragCoord [[position]])
++{
++    fragment_main_out out = {};
++    float4 _72 = Texture.sample(Sampler, in.in_var_TEXCOORD0);
++    float4 _75 = _72 * FragmentUniforms.u_color;
++    float _94 = (fast::clamp((((FragmentUniforms.u_near / precise::max(gl_FragCoord.z, 1.0000000116860974230803549289703e-07)) / FragmentUniforms.u_far) - 0.89999997615814208984375) * 9.9999980926513671875, 0.0, 1.0) * (-1.0)) + 1.0;
++    if (_94 <= 0.0)
++    {
++        discard_fragment();
++    }
++    float _105 = dot(in.in_var_TEXCOORD2, float3(FragmentUniforms.u_sun.xyz));
++    float _129 = _75.w;
++    out.out_var_SV_Target0 = float4(mix(mix(mix(mix(_75.xyz, float3(1.0), float3((precise::max(0.0, -_105) * 0.100000001490116119384765625) * FragmentUniforms.u_effects)), float3(0.01568627543747425079345703125, 0.105882354080677032470703125, 0.17254902422428131103515625), float3((precise::max(0.0, _105) * 0.800000011920928955078125) * FragmentUniforms.u_effects)), FragmentUniforms.u_silhouette_color.xyz, float3(FragmentUniforms.u_silhouette)), FragmentUniforms.u_vertical_fog_color.xyz * _129, float3(fast::clamp((in.in_var_TEXCOORD3.z - 50.0) * (-0.0199999995529651641845703125), 0.0, 1.0))), _129) * _94;
++    return out;
++}
++
+diff --git a/Content/Shaders/Compiled/DefaultVR.vertex.json b/Content/Shaders/Compiled/DefaultVR.vertex.json
+new file mode 100644
+index 0000000..4852634
+--- /dev/null
++++ b/Content/Shaders/Compiled/DefaultVR.vertex.json
+@@ -0,0 +1 @@
++{ "samplers": 0, "storage_textures": 0, "storage_buffers": 0, "uniform_buffers": 2, "inputs": [{ "name": "in.var.TEXCOORD0", "type": "float3", "location": 0 }, { "name": "in.var.TEXCOORD1", "type": "float2", "location": 1 }, { "name": "in.var.TEXCOORD2", "type": "float3", "location": 2 }, { "name": "in.var.TEXCOORD3", "type": "float3", "location": 3 }, { "name": "in.var.TEXCOORD4", "type": "float4", "location": 4 }, { "name": "in.var.TEXCOORD5", "type": "float4", "location": 5 }], "outputs": [{ "name": "out.var.TEXCOORD0", "type": "float2", "location": 0 }, { "name": "out.var.TEXCOORD1", "type": "float3", "location": 1 }, { "name": "out.var.TEXCOORD2", "type": "float3", "location": 2 }, { "name": "out.var.TEXCOORD3", "type": "float3", "location": 3 }] }
+diff --git a/Content/Shaders/Compiled/DefaultVR.vertex.msl b/Content/Shaders/Compiled/DefaultVR.vertex.msl
+new file mode 100644
+index 0000000..31ca2e9
+--- /dev/null
++++ b/Content/Shaders/Compiled/DefaultVR.vertex.msl
+@@ -0,0 +1,69 @@
++#include <metal_stdlib>
++#include <simd/simd.h>
++
++using namespace metal;
++
++struct type_VertexUniforms
++{
++    float4x4 u_mvp;
++    float4x4 u_model;
++    float4x4 u_model_inverse;
++    float u_jointMult;
++};
++
++struct type_JointUniforms
++{
++    float4x4 u_jointMat[32];
++};
++
++struct type_FragmentUniforms
++{
++    float4 u_color;
++    float4 u_sun;
++    float4 u_silhouette_color;
++    float4 u_vertical_fog_color;
++    float u_near;
++    float u_far;
++    float u_effects;
++    float u_silhouette;
++    float u_time;
++    float u_cutout;
++};
++
++struct vertex_main_out
++{
++    float2 out_var_TEXCOORD0 [[user(locn0)]];
++    float3 out_var_TEXCOORD1 [[user(locn1)]];
++    float3 out_var_TEXCOORD2 [[user(locn2)]];
++    float3 out_var_TEXCOORD3 [[user(locn3)]];
++    float4 gl_Position [[position]];
++};
++
++struct vertex_main_in
++{
++    float3 in_var_TEXCOORD0 [[attribute(0)]];
++    float2 in_var_TEXCOORD1 [[attribute(1)]];
++    float3 in_var_TEXCOORD2 [[attribute(2)]];
++    float3 in_var_TEXCOORD3 [[attribute(3)]];
++    float4 in_var_TEXCOORD4 [[attribute(4)]];
++    float4 in_var_TEXCOORD5 [[attribute(5)]];
++};
++
++vertex vertex_main_out vertex_main(vertex_main_in in [[stage_in]], constant type_VertexUniforms& VertexUniforms [[buffer(0)]], constant type_JointUniforms& JointUniforms [[buffer(1)]])
++{
++    vertex_main_out out = {};
++    float4x4 _73 = JointUniforms.u_jointMat[int(in.in_var_TEXCOORD4.x)] * in.in_var_TEXCOORD5.x;
++    float4x4 _81 = JointUniforms.u_jointMat[int(in.in_var_TEXCOORD4.y)] * in.in_var_TEXCOORD5.y;
++    float4x4 _101 = JointUniforms.u_jointMat[int(in.in_var_TEXCOORD4.z)] * in.in_var_TEXCOORD5.z;
++    float4x4 _117 = JointUniforms.u_jointMat[int(in.in_var_TEXCOORD4.w)] * in.in_var_TEXCOORD5.w;
++    float4x4 _130 = float4x4(float4(1.0, 0.0, 0.0, 0.0), float4(0.0, 1.0, 0.0, 0.0), float4(0.0, 0.0, 1.0, 0.0), float4(0.0, 0.0, 0.0, 1.0)) * (1.0 - VertexUniforms.u_jointMult);
++    float4x4 _131 = float4x4(((float4(_73[0][0], _73[1][0], _73[2][0], _73[3][0]) + float4(_81[0][0], _81[1][0], _81[2][0], _81[3][0])) + float4(_101[0][0], _101[1][0], _101[2][0], _101[3][0])) + float4(_117[0][0], _117[1][0], _117[2][0], _117[3][0]), ((float4(_73[0][1], _73[1][1], _73[2][1], _73[3][1]) + float4(_81[0][1], _81[1][1], _81[2][1], _81[3][1])) + float4(_101[0][1], _101[1][1], _101[2][1], _101[3][1])) + float4(_117[0][1], _117[1][1], _117[2][1], _117[3][1]), ((float4(_73[0][2], _73[1][2], _73[2][2], _73[3][2]) + float4(_81[0][2], _81[1][2], _81[2][2], _81[3][2])) + float4(_101[0][2], _101[1][2], _101[2][2], _101[3][2])) + float4(_117[0][2], _117[1][2], _117[2][2], _117[3][2]), ((float4(_73[0][3], _73[1][3], _73[2][3], _73[3][3]) + float4(_81[0][3], _81[1][3], _81[2][3], _81[3][3])) + float4(_101[0][3], _101[1][3], _101[2][3], _101[3][3])) + float4(_117[0][3], _117[1][3], _117[2][3], _117[3][3])) * VertexUniforms.u_jointMult;
++    float4 _162 = float4(in.in_var_TEXCOORD0, 1.0);
++    out.out_var_TEXCOORD0 = in.in_var_TEXCOORD1;
++    out.out_var_TEXCOORD1 = in.in_var_TEXCOORD2;
++    out.out_var_TEXCOORD2 = fast::normalize(in.in_var_TEXCOORD3 * transpose(float3x3(float4(VertexUniforms.u_model_inverse[0][0], VertexUniforms.u_model_inverse[1][0], VertexUniforms.u_model_inverse[2][0], VertexUniforms.u_model_inverse[3][0]).xyz, float4(VertexUniforms.u_model_inverse[0][1], VertexUniforms.u_model_inverse[1][1], VertexUniforms.u_model_inverse[2][1], VertexUniforms.u_model_inverse[3][1]).xyz, float4(VertexUniforms.u_model_inverse[0][2], VertexUniforms.u_model_inverse[1][2], VertexUniforms.u_model_inverse[2][2], VertexUniforms.u_model_inverse[3][2]).xyz)));
++    out.out_var_TEXCOORD3 = float3((VertexUniforms.u_model * _162).xyz);
++    out.gl_Position = _162 * (float4x4(_130[0] + _131[0], _130[1] + _131[1], _130[2] + _131[2], _130[3] + _131[3]) * transpose(VertexUniforms.u_mvp));
++    return out;
++}
++
+diff --git a/Content/Shaders/Compiled/EdgeVR.fragment.json b/Content/Shaders/Compiled/EdgeVR.fragment.json
+new file mode 100644
+index 0000000..f77834d
+--- /dev/null
++++ b/Content/Shaders/Compiled/EdgeVR.fragment.json
+@@ -0,0 +1 @@
++{ "samplers": 2, "storage_textures": 0, "storage_buffers": 0, "uniform_buffers": 1, "inputs": [{ "name": "in.var.TEXCOORD0", "type": "float2", "location": 0 }], "outputs": [{ "name": "out.var.SV_Target0", "type": "float4", "location": 0 }] }
+diff --git a/Content/Shaders/Compiled/EdgeVR.fragment.msl b/Content/Shaders/Compiled/EdgeVR.fragment.msl
+new file mode 100644
+index 0000000..c5f648c
+--- /dev/null
++++ b/Content/Shaders/Compiled/EdgeVR.fragment.msl
+@@ -0,0 +1,36 @@
++#include <metal_stdlib>
++#include <simd/simd.h>
++
++using namespace metal;
++
++struct type_VertexUniforms
++{
++    float4x4 Matrix;
++};
++
++struct type_FragmentUniforms
++{
++    float4 EdgeColor;
++    float2 Pixel;
++    float Near;
++    float Far;
++};
++
++struct fragment_main_out
++{
++    float4 out_var_SV_Target0 [[color(0)]];
++};
++
++struct fragment_main_in
++{
++    float2 in_var_TEXCOORD0 [[user(locn0)]];
++};
++
++fragment fragment_main_out fragment_main(fragment_main_in in [[stage_in]], constant type_FragmentUniforms& FragmentUniforms [[buffer(0)]], texture2d<float> Texture [[texture(0)]], texture2d<float> Depth [[texture(1)]], sampler TextureSampler [[sampler(0)]], sampler DepthSampler [[sampler(1)]])
++{
++    fragment_main_out out = {};
++    float4 _111 = Texture.sample(TextureSampler, in.in_var_TEXCOORD0);
++    out.out_var_SV_Target0 = float4(mix(_111.xyz, FragmentUniforms.EdgeColor.xyz, float3(step(0.001000000047497451305389404296875 * FragmentUniforms.Far, (0.25 * (((precise::min(FragmentUniforms.Near / precise::max(Depth.sample(DepthSampler, (in.in_var_TEXCOORD0 + float2(FragmentUniforms.Pixel.x, 0.0))).x, 1.0000000116860974230803549289703e-07), FragmentUniforms.Far) + precise::min(FragmentUniforms.Near / precise::max(Depth.sample(DepthSampler, (in.in_var_TEXCOORD0 + float2(-FragmentUniforms.Pixel.x, 0.0))).x, 1.0000000116860974230803549289703e-07), FragmentUniforms.Far)) + precise::min(FragmentUniforms.Near / precise::max(Depth.sample(DepthSampler, (in.in_var_TEXCOORD0 + float2(0.0, FragmentUniforms.Pixel.y))).x, 1.0000000116860974230803549289703e-07), FragmentUniforms.Far)) + precise::min(FragmentUniforms.Near / precise::max(Depth.sample(DepthSampler, (in.in_var_TEXCOORD0 + float2(0.0, -FragmentUniforms.Pixel.y))).x, 1.0000000116860974230803549289703e-07), FragmentUniforms.Far))) - precise::min(FragmentUniforms.Near / precise::max(Depth.sample(DepthSampler, in.in_var_TEXCOORD0).x, 1.0000000116860974230803549289703e-07), FragmentUniforms.Far)) * 0.699999988079071044921875)), _111.w);
++    return out;
++}
++
+diff --git a/Content/Shaders/Compiled/EdgeVR.vertex.json b/Content/Shaders/Compiled/EdgeVR.vertex.json
+new file mode 100644
+index 0000000..d3c33c7
+--- /dev/null
++++ b/Content/Shaders/Compiled/EdgeVR.vertex.json
+@@ -0,0 +1 @@
++{ "samplers": 0, "storage_textures": 0, "storage_buffers": 0, "uniform_buffers": 1, "inputs": [{ "name": "in.var.TEXCOORD0", "type": "float2", "location": 0 }, { "name": "in.var.TEXCOORD1", "type": "float2", "location": 1 }, { "name": "in.var.TEXCOORD2", "type": "float4", "location": 2 }, { "name": "in.var.TEXCOORD4", "type": "float4", "location": 3 }], "outputs": [{ "name": "out.var.TEXCOORD0", "type": "float2", "location": 0 }, { "name": "out.var.TEXCOORD1", "type": "float4", "location": 1 }, { "name": "out.var.TEXCOORD4", "type": "float4", "location": 2 }] }
+diff --git a/Content/Shaders/Compiled/EdgeVR.vertex.msl b/Content/Shaders/Compiled/EdgeVR.vertex.msl
+new file mode 100644
+index 0000000..ca0f5eb
+--- /dev/null
++++ b/Content/Shaders/Compiled/EdgeVR.vertex.msl
+@@ -0,0 +1,44 @@
++#include <metal_stdlib>
++#include <simd/simd.h>
++
++using namespace metal;
++
++struct type_VertexUniforms
++{
++    float4x4 Matrix;
++};
++
++struct type_FragmentUniforms
++{
++    float4 EdgeColor;
++    float2 Pixel;
++    float Near;
++    float Far;
++};
++
++struct vertex_main_out
++{
++    float2 out_var_TEXCOORD0 [[user(locn0)]];
++    float4 out_var_TEXCOORD1 [[user(locn1)]];
++    float4 out_var_TEXCOORD4 [[user(locn2)]];
++    float4 gl_Position [[position]];
++};
++
++struct vertex_main_in
++{
++    float2 in_var_TEXCOORD0 [[attribute(0)]];
++    float2 in_var_TEXCOORD1 [[attribute(1)]];
++    float4 in_var_TEXCOORD2 [[attribute(2)]];
++    float4 in_var_TEXCOORD4 [[attribute(3)]];
++};
++
++vertex vertex_main_out vertex_main(vertex_main_in in [[stage_in]], constant type_VertexUniforms& VertexUniforms [[buffer(0)]])
++{
++    vertex_main_out out = {};
++    out.out_var_TEXCOORD0 = in.in_var_TEXCOORD1;
++    out.out_var_TEXCOORD1 = in.in_var_TEXCOORD2;
++    out.out_var_TEXCOORD4 = in.in_var_TEXCOORD4;
++    out.gl_Position = VertexUniforms.Matrix * float4(in.in_var_TEXCOORD0, 0.0, 1.0);
++    return out;
++}
++
+diff --git a/Content/Shaders/Compiled/SpriteVR.fragment.json b/Content/Shaders/Compiled/SpriteVR.fragment.json
+new file mode 100644
+index 0000000..34f0f2e
+--- /dev/null
++++ b/Content/Shaders/Compiled/SpriteVR.fragment.json
+@@ -0,0 +1 @@
++{ "samplers": 1, "storage_textures": 0, "storage_buffers": 0, "uniform_buffers": 1, "inputs": [{ "name": "in.var.TEXCOORD0", "type": "float2", "location": 0 }, { "name": "in.var.TEXCOORD1", "type": "float4", "location": 1 }], "outputs": [{ "name": "out.var.SV_Target0", "type": "float4", "location": 0 }] }
+diff --git a/Content/Shaders/Compiled/SpriteVR.fragment.msl b/Content/Shaders/Compiled/SpriteVR.fragment.msl
+new file mode 100644
+index 0000000..dea1680
+--- /dev/null
++++ b/Content/Shaders/Compiled/SpriteVR.fragment.msl
+@@ -0,0 +1,34 @@
++#include <metal_stdlib>
++#include <simd/simd.h>
++
++using namespace metal;
++
++struct type_VertexUniforms
++{
++    float4x4 u_matrix;
++};
++
++struct type_FragmentUniforms
++{
++    float u_near;
++    float u_far;
++};
++
++struct fragment_main_out
++{
++    float4 out_var_SV_Target0 [[color(0)]];
++};
++
++struct fragment_main_in
++{
++    float2 in_var_TEXCOORD0 [[user(locn0)]];
++    float4 in_var_TEXCOORD1 [[user(locn1)]];
++};
++
++fragment fragment_main_out fragment_main(fragment_main_in in [[stage_in]], constant type_FragmentUniforms& FragmentUniforms [[buffer(0)]], texture2d<float> Texture [[texture(0)]], sampler Sampler [[sampler(0)]])
++{
++    fragment_main_out out = {};
++    out.out_var_SV_Target0 = (Texture.sample(Sampler, in.in_var_TEXCOORD0) * in.in_var_TEXCOORD1) * step(0.0, FragmentUniforms.u_far);
++    return out;
++}
++
+diff --git a/Content/Shaders/Compiled/SpriteVR.vertex.json b/Content/Shaders/Compiled/SpriteVR.vertex.json
+new file mode 100644
+index 0000000..397af50
+--- /dev/null
++++ b/Content/Shaders/Compiled/SpriteVR.vertex.json
+@@ -0,0 +1 @@
++{ "samplers": 0, "storage_textures": 0, "storage_buffers": 0, "uniform_buffers": 1, "inputs": [{ "name": "in.var.TEXCOORD0", "type": "float3", "location": 0 }, { "name": "in.var.TEXCOORD1", "type": "float2", "location": 1 }, { "name": "in.var.TEXCOORD2", "type": "float4", "location": 2 }], "outputs": [{ "name": "out.var.TEXCOORD0", "type": "float2", "location": 0 }, { "name": "out.var.TEXCOORD1", "type": "float4", "location": 1 }] }
+diff --git a/Content/Shaders/Compiled/SpriteVR.vertex.msl b/Content/Shaders/Compiled/SpriteVR.vertex.msl
+new file mode 100644
+index 0000000..0e2dbd3
+--- /dev/null
++++ b/Content/Shaders/Compiled/SpriteVR.vertex.msl
+@@ -0,0 +1,39 @@
++#include <metal_stdlib>
++#include <simd/simd.h>
++
++using namespace metal;
++
++struct type_VertexUniforms
++{
++    float4x4 u_matrix;
++};
++
++struct type_FragmentUniforms
++{
++    float u_near;
++    float u_far;
++};
++
++struct vertex_main_out
++{
++    float2 out_var_TEXCOORD0 [[user(locn0)]];
++    float4 out_var_TEXCOORD1 [[user(locn1)]];
++    float4 gl_Position [[position]];
++};
++
++struct vertex_main_in
++{
++    float3 in_var_TEXCOORD0 [[attribute(0)]];
++    float2 in_var_TEXCOORD1 [[attribute(1)]];
++    float4 in_var_TEXCOORD2 [[attribute(2)]];
++};
++
++vertex vertex_main_out vertex_main(vertex_main_in in [[stage_in]], constant type_VertexUniforms& VertexUniforms [[buffer(0)]])
++{
++    vertex_main_out out = {};
++    out.gl_Position = VertexUniforms.u_matrix * float4(in.in_var_TEXCOORD0, 1.0);
++    out.out_var_TEXCOORD0 = in.in_var_TEXCOORD1;
++    out.out_var_TEXCOORD1 = in.in_var_TEXCOORD2;
++    return out;
++}
++
+diff --git a/Content/Shaders/Default.hlsl b/Content/Shaders/Default.hlsl
+index a06d347..89a4797 100644
+--- a/Content/Shaders/Default.hlsl
++++ b/Content/Shaders/Default.hlsl
+@@ -79,7 +79,9 @@ SamplerState Sampler : register(s0, space2);
+ struct FragmentOutput
+ {
+     float4 color : SV_Target0;
++#ifndef VISIONOS_VR
+     float depth : SV_Depth;
++#endif
+ };
+ 
+ FragmentOutput fragment_main(VertexOutput input)
+@@ -91,9 +93,23 @@ FragmentOutput fragment_main(VertexOutput input)
+ 	//if (src.a < u_cutout)
+ 	//	discard;
+ 
++#ifdef VISIONOS_VR
++	// visionOS VR variant: the hardware depth comes from a reverse-Z projection with an
++	// infinite far plane (depth = near / distance); the shader writes no depth of its own.
++	// The distance fade keeps its old meaning by linearising back to view distance over far.
++	float depth = ViewDistanceReverseZ(input.position.z, u_near) / u_far;
++#else
+ 	float depth = LinearizeDepth(input.position.z, u_near, u_far);
++#endif
+ 	float fall = Map(input.world.z, 50, 0, 0, 1);
+ 	float fade = Map(depth, 0.9, 1, 1, 0);
++#ifdef VISIONOS_VR
++	// Soft far plane: the infinite projection clips nothing at far, and a fragment faded to
++	// nothing would still write its depth and get an outline in the edge pass. Discarding it
++	// matches the reference, where the far plane clips this geometry.
++	if (fade <= 0.0)
++		discard;
++#endif
+ 	float3  col = src.rgb;
+ 
+ 	// lighten texture color based on normal
+@@ -111,7 +127,9 @@ FragmentOutput fragment_main(VertexOutput input)
+ 	col = lerp(col, u_vertical_fog_color.rgb * src.a, fall);
+ 
+ 	FragmentOutput output;
++#ifndef VISIONOS_VR
+ 	output.depth = depth;
++#endif
+ 	output.color = float4(col, src.a) * fade;
+ 	return output;
+ }
+\ No newline at end of file
+diff --git a/Content/Shaders/DefaultVR.hlsl b/Content/Shaders/DefaultVR.hlsl
+new file mode 100644
+index 0000000..22bc376
+--- /dev/null
++++ b/Content/Shaders/DefaultVR.hlsl
+@@ -0,0 +1,4 @@
++// visionOS VR variant of Default.hlsl: no SV_Depth output, hardware depth from the
++// reverse-Z projection (see VISIONOS_VR in Default.hlsl). Compiled by scripts/compile-vr-shaders.sh.
++#define VISIONOS_VR 1
++#include "Default.hlsl"
+diff --git a/Content/Shaders/Edge.hlsl b/Content/Shaders/Edge.hlsl
+index 428d06b..50f8088 100644
+--- a/Content/Shaders/Edge.hlsl
++++ b/Content/Shaders/Edge.hlsl
+@@ -1,3 +1,7 @@
++#ifdef VISIONOS_VR
++#include "Partials/Methods.hlsl"
++#endif
++
+ // Vertex Shader
+ 
+ cbuffer VertexUniforms : register(b0, space1)
+@@ -37,6 +41,12 @@ cbuffer FragmentUniforms : register(b0, space3)
+ {
+     float4 EdgeColor;
+ 	float2 Pixel;
++#ifdef VISIONOS_VR
++	// visionOS VR variant: near plane and far normalisation in world units, to turn the
++	// reverse-Z hardware depth back into the linear distance the edge threshold expects
++	float Near;
++	float Far;
++#endif
+ };
+ 
+ Texture2D Texture : register(t0, space2);
+@@ -47,21 +57,35 @@ SamplerState DepthSampler : register(s1, space2);
+ 
+ float depth(float2 uv)
+ {
++#ifdef VISIONOS_VR
++	// view distance in world units, clamped to Far: the sky dome and anything beyond the far
++	// normalisation read as "far", exactly like the cleared depth of the reference, so the sky
++	// itself (a smooth but sloped depth field, with the sampler clamp at the image border) never
++	// produces an edge; depth 0 (nothing drawn) is very far and clamps the same way, never NaN
++	return min(ViewDistanceReverseZ(Depth.Sample(DepthSampler, uv).r, Near), Far);
++#else
+ 	return Depth.Sample(DepthSampler, uv).r;
++#endif
+ }
+ 
+ float4 fragment_main(VsOutput input) : SV_Target0
+ {
+ 	// get depth and adjacent depth values
+ 	float it = depth(input.TexCoord);
+-	float other = 
++	float other =
+ 		depth(input.TexCoord + float2(Pixel.x, 0)) * 0.25 +
+ 		depth(input.TexCoord + float2(-Pixel.x, 0)) * 0.25 +
+ 		depth(input.TexCoord + float2(0, Pixel.y)) * 0.25 +
+ 		depth(input.TexCoord + float2(0, -Pixel.y)) * 0.25;
+-	
++
+ 	// more edge the closer to the screen
++#ifdef VISIONOS_VR
++	// same threshold as the reference (0.001 of far) but in world units: the distances
++	// above are linear, so the sign of the difference stays as in the reference
++	float edge = step(0.001 * Far, other - it);
++#else
+ 	float edge = step(0.001, other - it);
++#endif
+ 
+ 	// calculate edge color mixed with default color
+ 	float4 col = Texture.Sample(TextureSampler, input.TexCoord);
+diff --git a/Content/Shaders/EdgeVR.hlsl b/Content/Shaders/EdgeVR.hlsl
+new file mode 100644
+index 0000000..9485097
+--- /dev/null
++++ b/Content/Shaders/EdgeVR.hlsl
+@@ -0,0 +1,4 @@
++// visionOS VR variant of Edge.hlsl: linear distances from the reverse-Z depth (see VISIONOS_VR
++// in Edge.hlsl). Compiled by scripts/compile-vr-shaders.sh.
++#define VISIONOS_VR 1
++#include "Edge.hlsl"
+diff --git a/Content/Shaders/Partials/Methods.hlsl b/Content/Shaders/Partials/Methods.hlsl
+index 18bf955..6f16734 100644
+--- a/Content/Shaders/Partials/Methods.hlsl
++++ b/Content/Shaders/Partials/Methods.hlsl
+@@ -13,4 +13,11 @@ float Map(float value, float min1, float max1, float min2, float max2)
+ float3 TransformNormal(float3 normal, float4x4 transform)
+ {
+ 	return normalize(mul(transpose((float3x3)transform), normal));
+-}
+\ No newline at end of file
++}
++// visionOS VR variant (VISIONOS_VR): view distance from a reverse-Z depth with an infinite far
++// plane (depth = near / distance). near is in world units, so the result is in world units.
++// Depth 0 (nothing drawn) becomes a very large finite distance instead of infinity or NaN.
++float ViewDistanceReverseZ(float depth, float near)
++{
++	return near / max(depth, 1e-7);
++}
+diff --git a/Content/Shaders/Sprite.hlsl b/Content/Shaders/Sprite.hlsl
+index ae89d7f..b6b0de0 100644
+--- a/Content/Shaders/Sprite.hlsl
++++ b/Content/Shaders/Sprite.hlsl
+@@ -44,13 +44,23 @@ SamplerState Sampler : register(s0, space2);
+ struct FragmentOutput
+ {
+     float4 color : SV_Target0;
++#ifndef VISIONOS_VR
+     float depth : SV_Depth;
++#endif
+ };
+ 
+ FragmentOutput fragment_main(VertexOutput input)
+ {
+ 	FragmentOutput output;
+-	output.depth = LinearizeDepth(input.position.z, u_near, u_far);
+ 	output.color = Texture.Sample(Sampler, input.tex) * input.color;
++#ifdef VISIONOS_VR
++	// visionOS VR variant: hardware depth from the reverse-Z projection, no depth output. The
++	// factor is 1 for any far plane; it only keeps the uniform buffer referenced, so the compiled
++	// variant declares the same one fragment uniform buffer as the original (Foster's material
++	// layout and the game's SetUniformBuffer calls stay unchanged).
++	output.color *= step(0.0, u_far);
++#else
++	output.depth = LinearizeDepth(input.position.z, u_near, u_far);
++#endif
+ 	return output;
+ }
+\ No newline at end of file
+diff --git a/Content/Shaders/SpriteVR.hlsl b/Content/Shaders/SpriteVR.hlsl
+new file mode 100644
+index 0000000..1dec08b
+--- /dev/null
++++ b/Content/Shaders/SpriteVR.hlsl
+@@ -0,0 +1,4 @@
++// visionOS VR variant of Sprite.hlsl: no SV_Depth output (see VISIONOS_VR in Sprite.hlsl).
++// Compiled by scripts/compile-vr-shaders.sh.
++#define VISIONOS_VR 1
++#include "Sprite.hlsl"
 diff --git a/Source/Actors/Cutscene.cs b/Source/Actors/Cutscene.cs
 index 3b98afe..111db92 100644
 --- a/Source/Actors/Cutscene.cs
@@ -121,7 +671,7 @@ index bbbc4b0..345e2c2 100644
  		banks.Add(bank);
  		bank.getEventList(out var evs);
 diff --git a/Source/Data/Assets.cs b/Source/Data/Assets.cs
-index e96e261..e8c3f6f 100644
+index e96e261..15d7cba 100644
 --- a/Source/Data/Assets.cs
 +++ b/Source/Data/Assets.cs
 @@ -7,7 +7,7 @@ namespace Celeste64;
@@ -133,6 +683,17 @@ index e96e261..e8c3f6f 100644
  	public const string AssetFolder = "Content";
  
  	private static string? contentPath = null;
+@@ -147,6 +147,10 @@ public static partial class Assets
+ 			if (LoadShader(gfx, name) is Material material)
+ 				Materials[name] = material;
+ 		}
++#if VISIONOS_KIT
++		// visionOS port: on the reverse-Z path the VR shader variants replace Default, Sprite and Edge
++		VisionOSKit.SelectShaderVariants(Materials);
++#endif
+ 
+ 		// load font files
+ 		var fontsPath = Path.Join(ContentPath, "Fonts");
 diff --git a/Source/Data/Controls.cs b/Source/Data/Controls.cs
 index 300dab1..4d0b815 100644
 --- a/Source/Data/Controls.cs
@@ -191,7 +752,7 @@ index f2ba5d0..9814c98 100644
  		Audio.SetVCAVolume("vca:/sfx", Calc.Clamp(SfxVolume / 10.0f, 0, 1));
  	}
 diff --git a/Source/Game.cs b/Source/Game.cs
-index 312df59..7f78135 100644
+index 312df59..409e444 100644
 --- a/Source/Game.cs
 +++ b/Source/Game.cs
 @@ -37,15 +37,29 @@ public class Game : App
@@ -260,7 +821,7 @@ index 312df59..7f78135 100644
  		Audio.Update();
  
  		// toggle mouse camera mode
-@@ -316,9 +351,20 @@ public class Game : App
+@@ -316,9 +351,24 @@ public class Game : App
  
  	protected override void Render()
  	{
@@ -278,13 +839,17 @@ index 312df59..7f78135 100644
 +		if (transitionStep == TransitionStep.Perform || transitionStep == TransitionStep.Hold)
 +		{
 +			foreach (var output in outputs)
++#if VISIONOS_KIT
++				output.Clear(Color.Black, VisionOSKit.DepthClearValue, 0, ClearMask.Color | ClearMask.Depth);
++#else
 +				output.Clear(Color.Black, 1, 0, ClearMask.Color | ClearMask.Depth);
++#endif
 +		}
 +		else
  		{
  			// draw the world to the target
  			if (scenes.TryPeek(out var scene))
-@@ -332,16 +378,31 @@ public class Game : App
+@@ -332,16 +382,35 @@ public class Game : App
  				batcher.Clear();
  			}
  
@@ -299,7 +864,11 @@ index 312df59..7f78135 100644
 +			foreach (var output in outputs)
  			{
 -				var scale = Math.Min(Window.WidthInPixels / (float)target.Width, Window.HeightInPixels / (float)target.Height);
++#if VISIONOS_KIT
++				output.Clear(Color.Black, VisionOSKit.DepthClearValue, 0, ClearMask.Color | ClearMask.Depth);
++#else
 +				output.Clear(Color.Black, 1, 0, ClearMask.Color | ClearMask.Depth);
++#endif
 +				var scale = Math.Min(output.WidthInPixels / (float)target.Width, output.HeightInPixels / (float)target.Height);
  				batcher.PushSampler(new(TextureFilter.Nearest, TextureWrap.Clamp, TextureWrap.Clamp));
 -				batcher.Image(target, Window.SizeInPixels / 2, target.Bounds.Size / 2, Vec2.One * scale, 0, Color.White);
@@ -320,6 +889,149 @@ index 312df59..7f78135 100644
  	}
  
  	private FMOD.RESULT MusicTimelineCallback(FMOD.Studio.EVENT_CALLBACK_TYPE type, IntPtr _event, IntPtr parameters)
+diff --git a/Source/Graphics/Camera.cs b/Source/Graphics/Camera.cs
+index e184bbf..43e35bf 100644
+--- a/Source/Graphics/Camera.cs
++++ b/Source/Graphics/Camera.cs
+@@ -117,6 +117,18 @@ public struct Camera()
+ 		}
+ 	}
+ 
++	/// <summary>
++	/// Near plane the projection and the shader uniforms use. NearPlane itself stays the game's
++	/// value (the camera logic in Player.cs reads it); on the visionOS reverse-Z path the
++	/// projection takes the host's near plane in world units instead.
++	/// </summary>
++	public readonly float ProjectionNearPlane
++#if VISIONOS_KIT
++		=> VisionOSKit.ReverseZ ? VisionOSKit.NearUnits : nearPlane;
++#else
++		=> nearPlane;
++#endif
++
+ 	public Matrix Projection
+ 	{
+ 		get
+@@ -125,6 +137,17 @@ public struct Camera()
+ 			{
+ 				var width = target.WidthInPixels;
+ 				var height = target.HeightInPixels;
++#if VISIONOS_KIT
++				if (VisionOSKit.ReverseZ)
++				{
++					// visionOS port: reverse-Z with an infinite far plane (depth = near / distance),
++					// or the host's projection; FarPlane only normalises edge and fade and bounds the
++					// culling frustum
++					projection = VisionOSKit.ProjectionOverride ?? VisionOSKit.ReverseZInfinite(
++						Matrix.CreatePerspectiveFieldOfView(MathF.PI / 4.0f * fovMultiplier, width / (float)height, ProjectionNearPlane, farPlane), ProjectionNearPlane);
++					return projection.Value;
++				}
++#endif
+ 				projection = Matrix.CreatePerspectiveFieldOfView(MathF.PI / 4.0f * fovMultiplier, width / (float)height, nearPlane, farPlane);
+ 			}
+ 			return projection.Value;
+@@ -156,7 +179,16 @@ public struct Camera()
+ 		get
+ 		{
+ 			if (!frustum.HasValue)
++			{
++#if VISIONOS_KIT
++				// visionOS port: the infinite reverse-Z projection has no far plane for the culling
++				// frustum; build it from a finite standard-Z projection with the same shape
++				if (VisionOSKit.ReverseZ)
++					frustum = new BoundingFrustum(View * VisionOSKit.CullingProjection(Projection, ProjectionNearPlane, farPlane));
++				else
++#endif
+ 				frustum = new BoundingFrustum(ViewProjection);
++			}
+ 			return frustum.Value;
+ 		}
+ 	}
+diff --git a/Source/Graphics/RenderState.cs b/Source/Graphics/RenderState.cs
+index 03f2db1..66da9b1 100644
+--- a/Source/Graphics/RenderState.cs
++++ b/Source/Graphics/RenderState.cs
+@@ -29,7 +29,7 @@ public struct RenderState(GraphicsDevice gfx, in Time time)
+ 		mat.VertexUniforms = vertex;
+ 
+ 		var fragment = mat.FragmentUniforms;
+-		fragment.Near = Camera.NearPlane;
++		fragment.Near = Camera.ProjectionNearPlane;
+ 		fragment.Far = Camera.FarPlane;
+ 		fragment.Silhouette = Silhouette ? 1 : 0;
+ 		fragment.Time = (float)Time.Elapsed.TotalSeconds;
+diff --git a/Source/Graphics/Skybox.cs b/Source/Graphics/Skybox.cs
+index 583434c..7b411fb 100644
+--- a/Source/Graphics/Skybox.cs
++++ b/Source/Graphics/Skybox.cs
+@@ -70,8 +70,16 @@ public class Skybox
+ 
+ 		GraphicsDevice.Draw(new(camera.Target, mesh, material)
+ 		{
++#if VISIONOS_KIT
++			// visionOS port, reverse-Z path: the sky writes its depth (near / radius > 0) so that no
++			// pixel keeps the clear value 0, which the compositor reads as "no content". SDL's Metal
++			// backend only writes depth when the test is enabled, hence test on with Always.
++			DepthTestEnabled = VisionOSKit.ReverseZ,
++			DepthWriteEnabled = VisionOSKit.ReverseZ,
++#else
+ 			DepthTestEnabled = false,
+ 			DepthWriteEnabled = false,
++#endif
+ 			DepthCompare = DepthCompare.Always,
+ 			CullMode = CullMode.Back
+ 		});
+diff --git a/Source/Graphics/SpriteRenderer.cs b/Source/Graphics/SpriteRenderer.cs
+index aae3c23..810f986 100644
+--- a/Source/Graphics/SpriteRenderer.cs
++++ b/Source/Graphics/SpriteRenderer.cs
+@@ -71,7 +71,11 @@ public class SpriteRenderer
+ 				BlendMode = BlendMode.Premultiply,
+ 				DepthTestEnabled = true,
+ 				DepthWriteEnabled = false,
++#if VISIONOS_KIT
++				DepthCompare = postEffects ? DepthCompare.Always : VisionOSKit.CompareNearer,
++#else
+ 				DepthCompare = postEffects ? DepthCompare.Always : DepthCompare.Less,
++#endif
+ 				CullMode = CullMode.None,
+ 				IndexOffset = batch.Index,
+ 				IndexCount = batch.Count
+diff --git a/Source/Graphics/UniformBuffers.cs b/Source/Graphics/UniformBuffers.cs
+index ff1be6e..d34d076 100644
+--- a/Source/Graphics/UniformBuffers.cs
++++ b/Source/Graphics/UniformBuffers.cs
+@@ -42,6 +42,21 @@ public struct EdgeFragment
+ 	public Vec2 Pixel;
+ }
+ 
++#if VISIONOS_KIT
++/// <summary>
++/// visionOS port: uniforms of the EdgeVR shader (reverse-Z path), the reference layout plus the
++/// near plane and far normalisation in world units for the linearised depth.
++/// </summary>
++[StructLayout(LayoutKind.Sequential, Pack = 1)]
++public struct EdgeFragmentVR
++{
++	public Vec4 Edge;
++	public Vec2 Pixel;
++	public float Near;
++	public float Far;
++}
++#endif
++
+ [StructLayout(LayoutKind.Sequential, Pack = 1)]
+ public unsafe struct SpriteVertex(in Matrix matrix)
+ {
+@@ -51,7 +66,7 @@ public unsafe struct SpriteVertex(in Matrix matrix)
+ [StructLayout(LayoutKind.Sequential, Pack = 1)]
+ public struct SpriteFragment(in Camera camera)
+ {
+-	public float Near = camera.NearPlane;
++	public float Near = camera.ProjectionNearPlane;
+ 	public float Far = camera.FarPlane;
+ }
+ 
 diff --git a/Source/Helpers/Menu.cs b/Source/Helpers/Menu.cs
 index 4f614cb..ae41dc8 100644
 --- a/Source/Helpers/Menu.cs
@@ -387,7 +1099,7 @@ index b06f359..73ff61f 100644
  			game.Run();
  		}
 diff --git a/Source/Scenes/Overworld.cs b/Source/Scenes/Overworld.cs
-index 697d6fe..7cb8e77 100644
+index 697d6fe..354fd46 100644
 --- a/Source/Scenes/Overworld.cs
 +++ b/Source/Scenes/Overworld.cs
 @@ -3,8 +3,8 @@ namespace Celeste64;
@@ -410,8 +1122,60 @@ index 697d6fe..7cb8e77 100644
  
  			Target.Clear(Color.Transparent);
  			batch.PushSampler(new(TextureFilter.Linear, TextureWrap.Clamp, TextureWrap.Clamp));
+@@ -292,7 +292,11 @@ public class Overworld : Scene
+ 
+ 	public override void Render(Target target)
+ 	{
++#if VISIONOS_KIT
++		target.Clear(0x0b090d, VisionOSKit.DepthClearValue, 0, ClearMask.All);
++#else
+ 		target.Clear(0x0b090d, 1, 0, ClearMask.All);
++#endif
+ 
+ 		// update entry textures
+ 		foreach (var entry in entries)
+@@ -336,7 +340,11 @@ public class Overworld : Scene
+ 			{
+ 				DepthTestEnabled = true,
+ 				DepthWriteEnabled = true,
++#if VISIONOS_KIT
++				DepthCompare = VisionOSKit.CompareNearer,
++#else
+ 				DepthCompare = DepthCompare.Less,
++#endif
+ 				CullMode = CullMode.None
+ 			});
+ 		}
+diff --git a/Source/Scenes/Titlescreen.cs b/Source/Scenes/Titlescreen.cs
+index 33da870..7590a36 100644
+--- a/Source/Scenes/Titlescreen.cs
++++ b/Source/Scenes/Titlescreen.cs
+@@ -39,7 +39,11 @@ public class Titlescreen : Scene
+ 
+     public override void Render(Target target)
+     {
++#if VISIONOS_KIT
++		target.Clear(Color.Black, VisionOSKit.DepthClearValue, 0, ClearMask.All);
++#else
+ 		target.Clear(Color.Black, 1, 0, ClearMask.All);
++#endif
+ 
+ 		var camFrom = new Vec3(0, -200, 60);
+ 		var camTo = new Vec3(00, -80, 50);
+@@ -69,7 +73,11 @@ public class Titlescreen : Scene
+ 			Silhouette = false,
+ 			SunDirection = -Vec3.UnitZ,
+ 			VerticalFogColor = Color.White,
++#if VISIONOS_KIT
++			DepthCompare = VisionOSKit.CompareNearer,
++#else
+ 			DepthCompare = DepthCompare.Less,
++#endif
+ 			DepthMask = true,
+ 			CutoutMode = false,
+ 		};
 diff --git a/Source/Scenes/World.cs b/Source/Scenes/World.cs
-index bdfb740..b2d4a49 100644
+index bdfb740..8fb3cb1 100644
 --- a/Source/Scenes/World.cs
 +++ b/Source/Scenes/World.cs
 @@ -70,7 +70,13 @@ public class World : Scene
@@ -428,13 +1192,91 @@ index bdfb740..b2d4a49 100644
  		Camera.NearPlane = 20;
  		Camera.FarPlane = 800;
  		Camera.FOVMultiplier = 1;
-@@ -872,9 +878,15 @@ public class World : Scene
+@@ -659,7 +665,12 @@ public class World : Scene
+ 	{
+ 		debugRndTimer.Restart();
+ 		Camera.Target = target;
++#if VISIONOS_KIT
++		// visionOS port: depth clear and compares follow the depth convention (reverse-Z: 0, Greater)
++		target.Clear(0x444c83, VisionOSKit.DepthClearValue, 0, ClearMask.All);
++#else
+ 		target.Clear(0x444c83, 1, 0, ClearMask.All);
++#endif
+ 
+ 		// create render state
+ 		RenderState state = new(GraphicsDevice, Time);
+@@ -668,7 +679,11 @@ public class World : Scene
+ 			state.ModelMatrix = Matrix.Identity;
+ 			state.SunDirection = new Vec3(0, -.7f, -1).Normalized();
+ 			state.Silhouette = false;
++#if VISIONOS_KIT
++			state.DepthCompare = VisionOSKit.CompareNearer;
++#else
+ 			state.DepthCompare = DepthCompare.Less;
++#endif
+ 			state.DepthMask = true;
+ 			state.VerticalFogColor = 0xdceaf0;
+ 		}
+@@ -712,10 +727,15 @@ public class World : Scene
+ 			var shift = new Vec3(Camera.Position.X, Camera.Position.Y, Camera.Position.Z);
+ 			for (int i = 0; i < skyboxes.Count; i++)
+ 			{
+-				skyboxes[i].Render(Camera, 
++				skyboxes[i].Render(Camera,
+ 				Matrix.CreateRotationZ(i * GeneralTimer * 0.01f) *
+ 				Matrix.CreateScale(1, 1, 0.5f) *
++#if VISIONOS_KIT
++				// visionOS port: the sky dome sits kilometres away on the reverse-Z path (300 in the reference)
++				Matrix.CreateTranslation(shift), VisionOSKit.SkyboxSize);
++#else
+ 				Matrix.CreateTranslation(shift), 300);
++#endif
+ 			}
+ 		}
+ 
+@@ -725,7 +745,11 @@ public class World : Scene
+ 		// render silhouettes
+ 		{
+ 			var it = state;
++#if VISIONOS_KIT
++			it.DepthCompare = VisionOSKit.CompareFarther;
++#else
+ 			it.DepthCompare = DepthCompare.Greater;
++#endif
+ 			it.DepthMask = false;
+ 			it.Silhouette = true;
+ 			RenderModels(ref it, models, ModelFlags.Silhouette);
+@@ -766,7 +790,11 @@ public class World : Scene
+ 			var orig = new Vec2(img.Width, img.Height) / 2;
+ 			var bounds = new Rect(0, 0, Camera.Target.WidthInPixels, Camera.Target.HeightInPixels);
+ 
++#if VISIONOS_KIT
++			Camera.Target.Clear(Color.Black, VisionOSKit.DepthClearValue, 0, ClearMask.Depth);
++#else
+ 			Camera.Target.Clear(Color.Black, 1, 0, ClearMask.Depth);
++#endif
+ 
+ 			batch.Rect(bounds, Color.Black * 0.90f);
+ 			batch.Image(img, bounds.Center, orig, Vec2.One, 0, Color.White);
+@@ -872,9 +900,27 @@ public class World : Scene
  			// apply post fx
  			postMaterial.CopyFrom(Assets.Materials["Edge"]);
  			postMaterial.Fragment.Samplers[1] = new(target.Attachments[1], new(TextureFilter.Nearest, TextureWrap.Clamp, TextureWrap.Clamp));
 +#if VISIONOS_KIT
 +			// visionOS port: outline width in target pixels, chosen by the host with the resolution
 +			var edgeLineWidth = (float)VisionOSKit.EdgeLineWidth;
++			if (VisionOSKit.ReverseZ)
++			{
++				// reverse-Z path: EdgeVR linearises the hardware depth with near and far in world units
++				postMaterial.Fragment.SetUniformBuffer(new UniformBuffers.EdgeFragmentVR()
++				{
++					Pixel = new Vec2(edgeLineWidth / postTarget.Width, edgeLineWidth / postTarget.Height),
++					Edge = new Color(0x110d33).ToVector4(),
++					Near = Camera.ProjectionNearPlane,
++					Far = Camera.FarPlane
++				});
++			}
++			else
 +#else
 +			var edgeLineWidth = 1.0f;
 +#endif
@@ -460,10 +1302,10 @@ index 650a35e..68b1c05 100644
  	private const float EaseClosePercent = 0.3f; // how long (in percent) it eases the entire screen
 diff --git a/Source/VisionOSKit.cs b/Source/VisionOSKit.cs
 new file mode 100644
-index 0000000..ce388ed
+index 0000000..e92764b
 --- /dev/null
 +++ b/Source/VisionOSKit.cs
-@@ -0,0 +1,153 @@
+@@ -0,0 +1,317 @@
 +#if VISIONOS_KIT
 +// VisionOSKit.cs — Schalter des visionOS-Ports für Mac-Läufe (K6b, nur mit UseLocalFoster gebaut).
 +//
@@ -568,8 +1410,11 @@ index 0000000..ce388ed
 +	};
 +
 +	/// <summary>
-+	/// Welt-Ziel (Farbe und Depth16) mit der Kantenglättung aus C64_MSAA. Celeste rendert
++	/// Welt-Ziel (Farbe und Tiefe) mit der Kantenglättung aus C64_MSAA. Celeste rendert
 +	/// mehrere Pässe in dieses Ziel und sampelt seine Tiefe im Kantenpass (World.cs:874).
++	/// Reverse-Z path: Depth32 (float) instead of Depth16, because near / distance needs the
++	/// float range (the sky at 3 km is 3e-5, two steps of a 16-bit depth) and the device
++	/// drawables are depth32Float as well.
 +	/// </summary>
 +	public static Target CreateMainTarget(GraphicsDevice device, int width, int height)
 +	{
@@ -578,10 +1423,171 @@ index 0000000..ce388ed
 +			Log.Info($"[c64-msaa] Welt-Ziel {width}x{height} mit {samples} ({device.Capabilities})");
 +		// Celeste rendert in Standard-Z (nah = klein): Tiefenauflösung mit Min, damit Kantenpixel am
 +		// Vordergrund hängen; die Samples bleiben gespeichert (MultiSampleStore), weil spätere
-+		// Pässe (Rückkopie, Sprites, Erdbeere) das Ziel laden
-+		MainTarget = new Target(device, width, height, [(TextureFormat.Color, TextureFlags.None, samples), (TextureFormat.Depth16, TextureFlags.None, samples)],
-+			name: "world", multiSampleStore: true, depthResolve: DepthResolveFilter.Min);
++		// Pässe (Rückkopie, Sprites, Erdbeere) das Ziel laden. Reverse-Z: nah = gross, also Max.
++		var depthFormat = ReverseZ ? TextureFormat.Depth32 : TextureFormat.Depth16;
++		var depthResolve = ReverseZ ? DepthResolveFilter.Max : DepthResolveFilter.Min;
++		MainTarget = new Target(device, width, height, [(TextureFormat.Color, TextureFlags.None, samples), (depthFormat, TextureFlags.None, samples)],
++			name: "world", multiSampleStore: true, depthResolve: depthResolve);
++		if (ReverseZ)
++			Log.Info($"[c64-depth] world target {width}x{height} depth={depthFormat} reverseZ=1 scale={WorldScale:F1} units/m");
 +		return MainTarget;
++	}
++
++	// ---- Depth convention of the VR path (reverse-Z, infinite far plane) ----
++	//
++	// The device drawables expect hardware depth = near / distance (reverse-Z with an infinite
++	// far plane, as computeProjection produces it); the compositor treats depth 0 as "no
++	// content". Celeste's own convention is standard Z with a linear depth written by the
++	// fragment shaders (LinearizeDepth). With ReverseZ on, the shader variants DefaultVR,
++	// SpriteVR and EdgeVR (no SV_Depth) replace the originals, the projection becomes
++	// reverse-Z infinite, depth clears are 0 and the depth compares are swapped. The near plane
++	// comes from the host in metres (celeste_set_depth_near) and is converted here, at one place,
++	// with the world scale. The reference path (ReverseZ off) is unchanged.
++
++	/// <summary>
++	/// Reverse-Z path on or off. Set by the host before the game is created: the shader
++	/// variants are chosen when the assets load and the world target is created with the game.
++	/// </summary>
++	public static bool ReverseZ { get; set; }
++
++	/// <summary>World units per metre (M4b decision: 10). C64_WORLD_SCALE overrides it for experiments.</summary>
++	public static float WorldScale { get; } =
++		float.TryParse(Environment.GetEnvironmentVariable("C64_WORLD_SCALE"), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var scale) && scale > 0 ? scale : 10f;
++
++	// Near plane of the VR projection in metres, from the host; 0 = not set yet.
++	private static double nearMeters;
++	private static bool nearFallbackLogged;
++	private const double FallbackNearMeters = 0.1;
++
++	/// <summary>Near plane in metres as the host passed it (0 while unknown).</summary>
++	public static double NearMeters => nearMeters;
++
++	/// <summary>
++	/// Sets the near plane of the VR projection in metres (the host reads it from the layer's
++	/// default depth range). Any positive value; the cameras pick it up with their next change.
++	/// </summary>
++	public static void SetNearMeters(double meters)
++	{
++		if (!(meters > 0) || double.IsInfinity(meters))
++			throw new ArgumentOutOfRangeException(nameof(meters), $"near plane must be a positive finite distance in metres, got {meters}");
++		nearMeters = meters;
++		Log.Info($"[c64-depth] near={meters:F3} m -> {NearUnits:F2} units (scale {WorldScale:F1} units/m) reverseZ={(ReverseZ ? 1 : 0)}");
++	}
++
++	/// <summary>
++	/// Near plane of the VR projection in world units: near_m * scale. Before the host set a
++	/// value, 0.1 m with one warning line (the loading ticks run before the host's layer exists).
++	/// </summary>
++	public static float NearUnits
++	{
++		get
++		{
++			var meters = nearMeters;
++			if (meters <= 0)
++			{
++				meters = FallbackNearMeters;
++				if (!nearFallbackLogged)
++				{
++					nearFallbackLogged = true;
++					Log.Warning($"[c64-depth] near plane not set by the host yet, projection uses {meters:F3} m until celeste_set_depth_near");
++				}
++			}
++			return (float)(meters * WorldScale);
++		}
++	}
++
++	/// <summary>
++	/// Radius of the sky dome in metres on the VR path. 3 km: at that distance the stereo
++	/// disparity (0.064 m / 3000 m = 0.0012 degrees) is far below one display pixel, and a head
++	/// movement of 0.1 m shifts the sky by 0.002 degrees, so the compositor's reprojection with
++	/// depth keeps it still; the depth near / R = 0.1 / 3000 = 3.3e-5 stays well above 0 in a
++	/// float depth. Beyond a few kilometres nothing improves, and 1 km would already do.
++	/// </summary>
++	public const double SkyRadiusMeters = 3000;
++
++	/// <summary>Half size of Celeste's skybox cube in world units: the dome radius on the VR path, 300 in the reference.</summary>
++	public static float SkyboxSize => ReverseZ ? (float)(SkyRadiusMeters * WorldScale) : 300f;
++
++	/// <summary>Depth clear value: 0 (far) on the reverse-Z path, 1 in the reference.</summary>
++	public static float DepthClearValue => ReverseZ ? 0f : 1f;
++
++	/// <summary>Depth compare that passes nearer fragments: Greater on the reverse-Z path, Less in the reference.</summary>
++	public static DepthCompare CompareNearer => ReverseZ ? DepthCompare.Greater : DepthCompare.Less;
++
++	/// <summary>Depth compare that passes farther fragments (silhouettes behind geometry): Less on the reverse-Z path, Greater in the reference.</summary>
++	public static DepthCompare CompareFarther => ReverseZ ? DepthCompare.Less : DepthCompare.Greater;
++
++	/// <summary>
++	/// Projection a host puts in place of the cameras' own (the Mac check renders with a test
++	/// projection shaped like computeProjection). Only on the reverse-Z path; null = Celeste's
++	/// field-of-view projection. The cameras cache their projection and pick a new value up with
++	/// their next change.
++	/// </summary>
++	public static Matrix? ProjectionOverride { get; set; }
++
++	/// <summary>
++	/// Turns a standard right-handed projection (System.Numerics, depth 0..1) into reverse-Z
++	/// with an infinite far plane: clip z = near, clip w = view distance, so depth = near / distance.
++	/// </summary>
++	public static Matrix ReverseZInfinite(Matrix standard, float near)
++	{
++		var m = standard;
++		m.M33 = 0f;
++		m.M43 = near;
++		return m;
++	}
++
++	/// <summary>
++	/// Reverse-Z infinite projection from view tangents (left, right, top, bottom, all positive),
++	/// the shape of the compositor's computeProjection, with the current near plane in units.
++	/// Row-vector convention like Matrix.CreatePerspectiveOffCenter (right-handed, -Z forward).
++	/// </summary>
++	public static Matrix CreateProjectionFromTangents(float left, float right, float top, float bottom)
++	{
++		var m = Matrix.Identity;
++		m.M11 = 2f / (left + right);
++		m.M22 = 2f / (top + bottom);
++		m.M31 = (right - left) / (left + right);
++		m.M32 = (top - bottom) / (top + bottom);
++		m.M33 = 0f;
++		m.M34 = -1f;
++		m.M43 = NearUnits;
++		m.M44 = 0f;
++		return m;
++	}
++
++	/// <summary>
++	/// Finite standard-Z projection with the same x and y rows as the given projection, for the
++	/// culling frustum: an infinite reverse-Z matrix has no far plane and its near plane row
++	/// extracts as a zero normal (BoundingFrustum.CreatePlanes), so the frustum is built from
++	/// this one with near and far in world units instead.
++	/// </summary>
++	public static Matrix CullingProjection(Matrix projection, float near, float far)
++	{
++		var m = projection;
++		var range = far / (near - far);
++		m.M33 = range;
++		m.M34 = -1f;
++		m.M43 = near * range;
++		m.M44 = 0f;
++		return m;
++	}
++
++	/// <summary>
++	/// After the shaders are loaded: on the reverse-Z path the VR variants (no SV_Depth) take
++	/// the places of Default, Sprite and Edge, so the game's material lookups stay unchanged.
++	/// </summary>
++	public static void SelectShaderVariants(Dictionary<string, Material> materials)
++	{
++		if (!ReverseZ)
++			return;
++		foreach (var name in new[] { "Default", "Sprite", "Edge" })
++		{
++			if (!materials.TryGetValue(name + "VR", out var variant))
++				throw new Exception($"shader variant {name}VR is missing in Content/Shaders (run scripts/compile-vr-shaders.sh)");
++			materials[name] = variant;
++		}
++		Log.Info("[c64-depth] shader variants selected: DefaultVR, SpriteVR, EdgeVR (hardware depth, no SV_Depth)");
 +	}
 +
 +	/// <summary>

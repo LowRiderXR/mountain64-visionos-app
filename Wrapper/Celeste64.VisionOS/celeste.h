@@ -48,6 +48,13 @@ typedef struct celeste_init_options {
      * (0 = 1, the original one-pixel outline). Whole numbers only; a host that offers "auto"
      * resolves it to round(internal_height / 360) itself. */
     int32_t edge_line_width;
+    /* 1: reverse-Z depth path for the VR image: Celeste's 3D scenes render with a reverse-Z
+     * projection with an infinite far plane (hardware depth = near / distance, as the
+     * compositor's drawables expect it), the shader variants without SV_Depth, a float depth
+     * target, depth clear 0 and swapped depth compares; the sky dome moves to 3 km. The near
+     * plane comes from celeste_set_depth_near. 0: Celeste's own depth convention (reference).
+     * Fixed for the lifetime of the game. */
+    int32_t reverse_z;
 } celeste_init_options;
 
 /* Capabilities of the loaded SDL as Foster reports them. kit_sdl_loaded is probed by export name
@@ -123,6 +130,12 @@ int32_t celeste_audio_suspend(int32_t suspend);
 /* Asks the game to pause at its next update (the device was put on again): a running level
  * opens its pause menu, the title and the overworld do nothing. Any thread. 0 or -1. */
 int32_t celeste_request_pause(void);
+
+/* Near plane of the reverse-Z projection (reverse_z = 1) in metres: the host reads it from its
+ * layer (configuration.defaultDepthRange.y) once the layer exists and passes it here; the game
+ * converts it to world units at one place. Until the first call the game uses 0.1 m with one
+ * warning line. Call on the ticking thread, before the first update when possible. 0 or -1. */
+int32_t celeste_set_depth_near(double near_meters);
 
 /* Canvas (M4a, variant a): the game renders its final image into a texture the host owns
  * instead of the hidden window. mtl_texture is an id<MTLTexture> on the device the game's

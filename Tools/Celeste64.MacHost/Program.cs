@@ -57,6 +57,17 @@
 //   --key-probe N       K6f.4: vor Tick N ein F7-Tastenereignis einspeisen (SDL_PushEvent), zwei
 //                       Ticks später loslassen; meldet, nach welchem Tick Foster die Taste als
 //                       gedrückt bzw. losgelassen sieht (vor da3b23a N+1, nachher N)
+//   --vr-depth          M4b.2: Reverse-Z-Pfad (VisionOSKit.ReverseZ, Near 0,1 m wie der Layer der
+//                       Brille): Shader-Varianten ohne SV_Depth, Welt-Ziel Depth32, Clear 0,
+//                       Vergleiche getauscht, Himmel 3 km
+//   --test-projection   dazu die Testprojektion nach computeProjection (Metal RH, unendliche
+//                       Far-Ebene, Tangenten links 1,732, rechts 1,0, oben 1,0, unten 1,192)
+//   --depth-check N     alle N Ticks drei Testquads in 1, 5 und 30 m vor der Kamera (im Blickraum)
+//                       in das Welt-Ziel zeichnen, die Tiefe zurücklesen: near/d muss den Abstand
+//                       auf 1 % treffen; dazu die kleinste Tiefe des Bildes (Himmel: > 0, im
+//                       Kuppelbereich) und die Zahl der Pixel auf dem Clear-Wert 0; der Himmel
+//                       wird nur im Level bewertet (nach der letzten --tap-confirm-Taste plus
+//                       300 Ticks), Frames einer Blende werden übersprungen
 //
 // Vorschau (K6d.1-Korrektur): Das Fenster wird in jedem Frame zuerst schwarz gecleart; jede
 // Schicht wird in eine eigene 2D-Textur geblittet (ein Blit deckt sein Ziel ganz ab, denn
@@ -73,6 +84,10 @@ using System.Runtime.InteropServices;
 using Celeste64;
 using Foster.Framework;
 using static SDL3.SDL;
+using Matrix = System.Numerics.Matrix4x4;
+using Vec2 = System.Numerics.Vector2;
+using Vec3 = System.Numerics.Vector3;
+using Vec4 = System.Numerics.Vector4;
 
 int hz = 90;
 double seconds = 30;
@@ -100,6 +115,11 @@ bool passSelftest = false;
 var minimizeAt = new List<long>();
 long keyProbeAt = -1;
 long keyProbeSeenDown = -1, keyProbeSeenUp = -1;
+// M4b.2: Reverse-Z-Pfad, Testprojektion, Tiefenprüfung
+bool vrDepth = false, testProjection = false;
+int depthCheck = 0;
+bool depthCheckThisFrame = false, sceneRenderedThisFrame = false;
+int depthChecks = 0, depthChecksFailed = 0;
 long afterOutputCalls = 0;
 // K6e.2: Map des Hosts, ihre logische und physische Grösse, Messbild-Frame
 nint rateMapPtr = 0;
@@ -136,8 +156,24 @@ for (int i = 0; i < args.Length; i++)
 		case "--pass-selftest": passSelftest = true; break;
 		case "--minimize-at": foreach (var t in args[++i].Split(',')) minimizeAt.Add(long.Parse(t)); break;
 		case "--key-probe": keyProbeAt = long.Parse(args[++i]); break;
+		case "--vr-depth": vrDepth = true; break;
+		case "--test-projection": testProjection = true; break;
+		case "--depth-check": depthCheck = int.Parse(args[++i]); break;
 		default: Console.Error.WriteLine($"Unbekanntes Argument: {args[i]}"); return 64;
 	}
+}
+if (testProjection && !vrDepth)
+{
+	Console.Error.WriteLine("--test-projection braucht --vr-depth (die Projektion gilt nur auf dem Reverse-Z-Pfad)");
+	return 64;
+}
+if (vrDepth)
+{
+	// vor dem Spiel: Welt-Ziel und Shader-Auswahl lesen den Schalter beim Erzeugen bzw. Laden
+	VisionOSKit.ReverseZ = true;
+	VisionOSKit.SetNearMeters(0.1);
+	if (testProjection)
+		VisionOSKit.ProjectionOverride = VisionOSKit.CreateProjectionFromTangents(1.732f, 1.0f, 1.0f, 1.192f);
 }
 if (layers is not ("none" or "foster" or "external"))
 {
@@ -149,7 +185,7 @@ Thread.CurrentThread.CurrentCulture = System.Globalization.CultureInfo.Invariant
 if (gpuTiming)
 	Environment.SetEnvironmentVariable("C64_GPU_TIMING", "1");
 
-Log.Info($"[machost] hz={hz} seconds={seconds} gapMs={gapMs} present={!noPresent} gpuTiming={gpuTiming} layers={layers} layerDepth={layerDepth} kitSDL={GraphicsDevice.IsKitSDLLoaded()}");
+Log.Info($"[machost] hz={hz} seconds={seconds} gapMs={gapMs} present={!noPresent} gpuTiming={gpuTiming} layers={layers} layerDepth={layerDepth} kitSDL={GraphicsDevice.IsKitSDLLoaded()} vrDepth={vrDepth} testProjection={testProjection} depthCheck={depthCheck}");
 
 // Device-Properties: Completion-Rückruf (K6b.2) und, für den externen Weg, Device und Queue
 // des Hosts (P1), wie sie auf der Brille der Layer-Renderer liefert.
@@ -458,9 +494,59 @@ if (blitSelftest)
 // Brille kommt sie pro Drawable neu vom Compositor; hier ist es dieselbe, der Weg ist derselbe)
 Target? mainTarget = null;
 bool rateMapLogged = false;
+// M4b.2: drei Testquads im Blickraum (x rechts, y oben, -z vorwärts) in 1, 5 und 30 m, gezeichnet
+// mit Celestes Sprite-Material (auf dem Reverse-Z-Pfad die Variante ohne SV_Depth) und nur der
+// Projektion als Matrix; Tiefenschreiben mit Always, damit der Messwert sicher von den Quads kommt
+float[] depthPointsMeters = [1f, 5f, 30f];
+float[] depthPointTangents = [-0.4f, 0f, 0.4f];
+Mesh<Celeste64.SpriteVertex>? depthMesh = null;
+Material? depthMaterial = null;
+Texture? depthWhite = null;
+Matrix depthProjection = Matrix.Identity;
+var depthPixels = new (int x, int y)[depthPointsMeters.Length];
 VisionOSKit.AfterSceneRender = t =>
 {
 	mainTarget = t;
+	sceneRenderedThisFrame = true;
+	if (depthCheckThisFrame && vrDepth)
+	{
+		var gd = game.GraphicsDevice;
+		var near = VisionOSKit.NearUnits;
+		depthProjection = VisionOSKit.ProjectionOverride ?? VisionOSKit.ReverseZInfinite(
+			Matrix.CreatePerspectiveFieldOfView(MathF.PI / 4.0f, t.Width / (float)t.Height, near, 800f), near);
+		if (depthMesh == null)
+		{
+			depthWhite = new Texture(gd, 1, 1, TextureFormat.Color, 1, TextureFlags.None, 0, "depth-white");
+			depthWhite.SetData<Color>([Color.White]);
+			depthMaterial = new Material(Assets.Materials["Sprite"]);
+			depthMaterial.Fragment.Samplers[0] = new(depthWhite, new TextureSampler(TextureFilter.Nearest, TextureWrap.Clamp, TextureWrap.Clamp));
+			var verts = new List<Celeste64.SpriteVertex>(); var idx = new List<int>();
+			for (int p = 0; p < depthPointsMeters.Length; p++)
+			{
+				var d = depthPointsMeters[p] * VisionOSKit.WorldScale;
+				var cx = depthPointTangents[p] * d; var half = 0.03f * d;
+				int b = verts.Count;
+				var tint = new Color((byte)(80 * (p + 1)), 40, 200, 255);
+				verts.Add(new(new Vec3(cx - half, -half, -d), Vec2.Zero, tint));
+				verts.Add(new(new Vec3(cx + half, -half, -d), Vec2.UnitX, tint));
+				verts.Add(new(new Vec3(cx + half, half, -d), Vec2.One, tint));
+				verts.Add(new(new Vec3(cx - half, half, -d), Vec2.UnitY, tint));
+				idx.AddRange([b, b + 1, b + 2, b, b + 2, b + 3]);
+			}
+			depthMesh = new Mesh<Celeste64.SpriteVertex>(gd, name: "depth-points");
+			depthMesh.SetVertices(CollectionsMarshal.AsSpan(verts));
+			depthMesh.SetIndices(CollectionsMarshal.AsSpan(idx));
+		}
+		for (int p = 0; p < depthPointsMeters.Length; p++)
+		{
+			var d = depthPointsMeters[p] * VisionOSKit.WorldScale;
+			var clip = Vec4.Transform(new Vec4(depthPointTangents[p] * d, 0, -d, 1), depthProjection);
+			depthPixels[p] = ((int)((clip.X / clip.W + 1) / 2 * t.Width), (int)((1 - clip.Y / clip.W) / 2 * t.Height));
+		}
+		depthMaterial!.Vertex.SetUniformBuffer(new Celeste64.UniformBuffers.SpriteVertex(depthProjection));
+		depthMaterial.Fragment.SetUniformBuffer(new Celeste64.UniformBuffers.SpriteFragment(new Camera() { Target = t, NearPlane = near, FarPlane = 800f }));
+		gd.Draw(new DrawCommand(t, depthMesh, depthMaterial) { DepthTestEnabled = true, DepthWriteEnabled = true, DepthCompare = DepthCompare.Always, CullMode = CullMode.None });
+	}
 	if (rateMapPtr != 0 && layer0 != null)
 	{
 		layer0.SetRasterizationRateMap(rateMapPtr, logicalW, logicalH);
@@ -541,6 +627,8 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 	}
 	// K6e.2: Messframe (Balkenbild statt Celeste) in der Mitte zwischen zwei Schichtvergleichen
 	measureThisFrame = rateMapPtr != 0 && layerCheck > 0 && (totalTicks + 1) % layerCheck == layerCheck / 2;
+	depthCheckThisFrame = depthCheck > 0 && totalTicks > 0 && totalTicks % depthCheck == 0;
+	sceneRenderedThisFrame = false;
 	try
 	{
 		game.Tick(delta, present: !noPresent);
@@ -615,6 +703,53 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 		Log.Info($"[machost] ratemap check frame={game.Time.Frame} logical={logicalW}x{logicalH} physical={physW}x{physH} samples={samples} missing={missing} maxDevPx={maxDev:F3} meanDevPx={(found > 0 ? sumDev / found : 0):F3} ({(ok ? "ok" : "FEHLER")})");
 	}
 
+	// M4b.2: Tiefe der Testquads zurücklesen (Depth32 des Reverse-Z-Pfads), near/d gegen den Abstand
+	if (depthCheckThisFrame && mainTarget != null && mainTarget.Attachments.Length > 1)
+	{
+		depthChecks++;
+		if (!sceneRenderedThisFrame)
+		{
+			// Blende (Perform oder Hold): Game.Render zeichnet die Szene nicht, das Welt-Ziel zeigt den
+			// letzten Frame ohne Testquads; nicht bewertet
+			Log.Info($"[machost] depth check frame={game.Time.Frame}: kein Szenenrender in diesem Frame (Blende), übersprungen");
+			depthChecks--;
+		}
+		else if (!vrDepth || mainTarget.Attachments[1].Format != TextureFormat.Depth32)
+		{
+			Log.Warning($"[machost] depth check frame={game.Time.Frame}: braucht --vr-depth (Depth32), Format ist {mainTarget.Attachments[1].Format}");
+			depthChecksFailed++;
+		}
+		else
+		{
+			var tw = mainTarget.Width; var th = mainTarget.Height;
+			var depth = new float[tw * th];
+			mainTarget.Attachments[1].GetData<float>(depth, new RectInt(0, 0, tw, th));
+			var nearM = VisionOSKit.NearMeters;
+			bool ok = true;
+			for (int p = 0; p < depthPointsMeters.Length; p++)
+			{
+				var (px, py) = depthPixels[p];
+				var d = px >= 0 && py >= 0 && px < tw && py < th ? depth[py * tw + px] : float.NaN;
+				var distance = d > 0 ? nearM / d : double.PositiveInfinity;
+				var dev = Math.Abs(distance - depthPointsMeters[p]) / depthPointsMeters[p] * 100;
+				var pointOk = dev <= 1.0;
+				ok &= pointOk;
+				Log.Info($"[machost] depth point frame={game.Time.Frame} D={depthPointsMeters[p]:F1} m pixel=({px},{py}) d={d:E4} near/d={distance:F4} m dev={dev:F4}% ({(pointOk ? "ok" : "FEHLER")})");
+			}
+			float dmin = float.MaxValue, dmax = 0; long zero = 0;
+			foreach (var v in depth) { if (v <= 0) { zero++; continue; } if (v < dmin) dmin = v; if (v > dmax) dmax = v; }
+			// Himmel: Würfel mit halber Kante R und Z-Faktor 0,5, also Abstände R/2 bis R·1,5: Tiefe near/(1,5 R) bis near/(0,5 R)
+			var skyLo = nearM / (VisionOSKit.SkyRadiusMeters * 1.5); var skyHi = nearM / (VisionOSKit.SkyRadiusMeters * 0.5);
+			// im Level (Game hält seine Szenen privat): nach der letzten Bestätigungstaste plus
+			// Ladezeit und Blende (120 Ticks), sonst Titel oder Overworld ohne Himmel
+			var inWorld = tapConfirm.Count > 0 && totalTicks > tapConfirm[^1] + 300;
+			var skyOk = !inWorld || (zero == 0 && dmin >= skyLo * 0.99 && dmin <= skyHi * 1.01);
+			ok &= skyOk;
+			Log.Info($"[machost] depth sky frame={game.Time.Frame} inWorld={inWorld} zero={zero} of {depth.Length} minDepth={(zero == depth.Length ? 0 : dmin):E4} (= {(dmin > 0 && dmin < float.MaxValue ? nearM / dmin : 0):F0} m) maxDepth={dmax:E4} (= {(dmax > 0 ? nearM / dmax : 0):F3} m) dome={skyLo:E3}..{skyHi:E3} ({(skyOk ? "ok" : "FEHLER")}{(inWorld ? "" : ", nur im Level bewertet")})");
+			if (!ok) depthChecksFailed++;
+		}
+	}
+
 	// Welt-Ziel zurücklesen: Farbe (Auflösungstextur) und Tiefe (bei MSAA die Auflösungstiefe)
 	if (targetCheck > 0 && mainTarget != null && totalTicks % targetCheck == 0)
 	{
@@ -632,11 +767,23 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 		{
 			try
 			{
-				var depth = new ushort[tw * th];
-				mainTarget.Attachments[1].GetData<ushort>(depth, new RectInt(0, 0, tw, th));
-				ushort dmin = ushort.MaxValue, dmax = 0; var distinct = new HashSet<ushort>(); long zero = 0, full = 0;
-				foreach (var d in depth) { if (d < dmin) dmin = d; if (d > dmax) dmax = d; distinct.Add(d); if (d == 0) zero++; if (d == ushort.MaxValue) full++; }
-				depthInfo = $"min={dmin} max={dmax} distinct={distinct.Count} zero={zero} full={full} sampler={(mainTarget.Attachments[1].SampleCount != SampleCount.One ? "resolve" : "1x")}";
+				if (mainTarget.Attachments[1].Format == TextureFormat.Depth32)
+				{
+					// M4b.2: Reverse-Z-Pfad mit Float-Tiefe
+					var depth = new float[tw * th];
+					mainTarget.Attachments[1].GetData<float>(depth, new RectInt(0, 0, tw, th));
+					float dmin = float.MaxValue, dmax = 0; var distinct = new HashSet<float>(); long zero = 0, full = 0;
+					foreach (var d in depth) { if (d < dmin) dmin = d; if (d > dmax) dmax = d; distinct.Add(d); if (d == 0) zero++; if (d == 1) full++; }
+					depthInfo = $"d32 min={dmin:E3} max={dmax:E3} distinct={distinct.Count} zero={zero} one={full} sampler={(mainTarget.Attachments[1].SampleCount != SampleCount.One ? "resolve" : "1x")}";
+				}
+				else
+				{
+					var depth = new ushort[tw * th];
+					mainTarget.Attachments[1].GetData<ushort>(depth, new RectInt(0, 0, tw, th));
+					ushort dmin = ushort.MaxValue, dmax = 0; var distinct = new HashSet<ushort>(); long zero = 0, full = 0;
+					foreach (var d in depth) { if (d < dmin) dmin = d; if (d > dmax) dmax = d; distinct.Add(d); if (d == 0) zero++; if (d == ushort.MaxValue) full++; }
+					depthInfo = $"min={dmin} max={dmax} distinct={distinct.Count} zero={zero} full={full} sampler={(mainTarget.Attachments[1].SampleCount != SampleCount.One ? "resolve" : "1x")}";
+				}
 			}
 			catch (Exception e) { depthInfo = $"Fehler: {e.GetType().Name}: {e.Message}"; }
 		}
@@ -650,7 +797,12 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 			var bytes = new byte[tw * th * 3];
 			for (int i = 0; i < color.Length; i++) { bytes[i * 3] = color[i].R; bytes[i * 3 + 1] = color[i].G; bytes[i * 3 + 2] = color[i].B; }
 			f.Write(bytes);
-			Log.Info($"[machost] target dump {path}");
+			// M4b.2: dazu RGBA roh (Zeilen von oben) für scripts/compare-canvas.py --width <Breite>
+			var rawPath = $"{targetDump}-{game.Time.Frame}.rgba";
+			var raw = new byte[tw * th * 4];
+			for (int i = 0; i < color.Length; i++) { raw[i * 4] = color[i].R; raw[i * 4 + 1] = color[i].G; raw[i * 4 + 2] = color[i].B; raw[i * 4 + 3] = color[i].A; }
+			File.WriteAllBytes(rawPath, raw);
+			Log.Info($"[machost] target dump {path} und {rawPath} ({tw}x{th})");
 		}
 	}
 	// K6f.4: nach welchem Tick sieht Foster die Sonde? (Zustand nach Tick totalTicks)
@@ -785,7 +937,8 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 }
 
 Log.Info($"[machost] End: totalTicks={totalTicks} totalUpdates={totalUpdates} elapsed={clock.Elapsed.TotalSeconds:F2}s gameTime={game.Time.Elapsed.TotalSeconds:F2}s exiting={game.Exiting}" +
-	(layerColor != null ? $" layerChecks={layerChecks} failed={layerChecksFailed}" : ""));
+	(layerColor != null ? $" layerChecks={layerChecks} failed={layerChecksFailed}" : "") +
+	(depthCheck > 0 ? $" depthChecks={depthChecks} failed={depthChecksFailed}" : ""));
 
 // Aufräumen in der Reihenfolge Ziel, Texturen, native Objekte; Foster gibt nur seine Handles frei
 VisionOSKit.Outputs = null;
@@ -793,6 +946,7 @@ VisionOSKit.AfterSceneRender = null;
 VisionOSKit.AfterOutput = null;
 VisionOSKit.AfterRender = null;
 game.End();
+depthMesh?.Dispose(); depthWhite?.Dispose();
 layer0?.Dispose(); layer1?.Dispose();
 composeCheck?.Dispose(); previewLeft?.Dispose(); previewRight?.Dispose(); layerColor?.Dispose(); layerDepthTex?.Dispose();
 if (extColorProps != 0) SDL_DestroyProperties(extColorProps);

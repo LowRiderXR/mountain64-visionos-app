@@ -22,7 +22,9 @@
  * writes the canvas after the first canvas ticks as <base>.png and <base>.rgba (reference for
  * scripts/compare-canvas.py against the dump the device writes). Before celeste_end the run
  * asks the game to exit (celeste_request_exit); the next tick must return 1. Exit code 0 when
- * every check passes.
+ * every check passes. --reverse-z runs the game on the reverse-Z depth path (reverse_z = 1 and
+ * celeste_set_depth_near(0.1) after init, the near plane of the device's layer); the image on
+ * the canvas must match the default run (scripts/compare-canvas.py).
  */
 
 #include <dlfcn.h>
@@ -79,6 +81,9 @@ static int g_split = 0;
 static update_fn g_update = NULL;
 static render_fn g_render = NULL;
 typedef int32_t (*audio_suspend_fn)(int32_t);
+typedef int32_t (*set_depth_near_fn)(double);
+/* --reverse-z: reverse-Z depth path (celeste_init_options.reverse_z, celeste_set_depth_near). */
+static int g_reverse_z = 0;
 typedef int32_t (*end_fn)(void);
 typedef int32_t (*set_canvas_fn)(void *, int32_t, int32_t);
 typedef int32_t (*clear_canvas_fn)(void);
@@ -185,7 +190,7 @@ static int run_bad_options(init_fn celeste_init, tick_fn celeste_tick, end_fn ce
 int main(int argc, char **argv)
 {
     if (argc < 3) {
-        fprintf(stderr, "usage: %s <path to Celeste64.VisionOS.dylib> (<content root> [--dump <base>] [--res <W>x<H>] [--line <N>|auto] [--bad-options] | --bad-content)\n", argv[0]);
+        fprintf(stderr, "usage: %s <path to Celeste64.VisionOS.dylib> (<content root> [--dump <base>] [--res <W>x<H>] [--line <N>|auto] [--split] [--reverse-z] [--bad-options] | --bad-content)\n", argv[0]);
         return 64;
     }
     /* Options after the content root. */
@@ -206,6 +211,8 @@ int main(int argc, char **argv)
             bad_options = 1;
         } else if (strcmp(argv[i], "--split") == 0) {
             g_split = 1;
+        } else if (strcmp(argv[i], "--reverse-z") == 0) {
+            g_reverse_z = 1;
         } else {
             fprintf(stderr, "unknown option %s\n", argv[i]);
             return 64;
@@ -240,11 +247,12 @@ int main(int argc, char **argv)
     exiting_fn celeste_request_exit = (exiting_fn)require(handle, "celeste_request_exit");
     exiting_fn celeste_request_pause = (exiting_fn)require(handle, "celeste_request_pause");
     audio_suspend_fn celeste_audio_suspend = (audio_suspend_fn)require(handle, "celeste_audio_suspend");
+    set_depth_near_fn celeste_set_depth_near = (set_depth_near_fn)require(handle, "celeste_set_depth_near");
     end_fn celeste_end = (end_fn)require(handle, "celeste_end");
     set_canvas_fn celeste_set_canvas = (set_canvas_fn)require(handle, "celeste_set_canvas");
     clear_canvas_fn celeste_clear_canvas = (clear_canvas_fn)require(handle, "celeste_clear_canvas");
     last_error_fn celeste_last_error = (last_error_fn)require(handle, "celeste_last_error");
-    if (!celeste_version || !celeste_set_log_callback || !celeste_capabilities_get || !celeste_window_info_get || !celeste_init || !celeste_tick || !g_update || !g_render || !celeste_exiting || !celeste_request_exit || !celeste_request_pause || !celeste_audio_suspend || !celeste_end || !celeste_set_canvas || !celeste_clear_canvas || !celeste_last_error) {
+    if (!celeste_version || !celeste_set_log_callback || !celeste_capabilities_get || !celeste_window_info_get || !celeste_init || !celeste_tick || !g_update || !g_render || !celeste_exiting || !celeste_request_exit || !celeste_request_pause || !celeste_audio_suspend || !celeste_set_depth_near || !celeste_end || !celeste_set_canvas || !celeste_clear_canvas || !celeste_last_error) {
         return 2;
     }
     if (celeste_set_log_callback(on_log, NULL) != 0) {
@@ -313,11 +321,22 @@ int main(int argc, char **argv)
     options.internal_width = res_w;
     options.internal_height = res_h;
     options.edge_line_width = line;
-    printf("mac-check: requested internal=%dx%d line=%d (0 = default), canvas=%dx%d%s\n", res_w, res_h, line, canvas_w, canvas_h, letterboxed ? " (letterboxed)" : "");
+    options.reverse_z = g_reverse_z;
+    printf("mac-check: requested internal=%dx%d line=%d (0 = default), canvas=%dx%d%s, reverse_z=%d\n", res_w, res_h, line, canvas_w, canvas_h, letterboxed ? " (letterboxed)" : "", g_reverse_z);
     int32_t rc = celeste_init(&options);
     if (rc != 0) {
         fprintf(stderr, "celeste_init failed: rc=%d %s\n", rc, celeste_last_error());
         return 7;
+    }
+    if (g_reverse_z) {
+        /* The near plane the device's layer reports (defaultDepthRange.y, 0.1 m); on the device the
+           host reads it from the layer, here it is the known value. A non-positive value must fail. */
+        int32_t bad_rc = celeste_set_depth_near(0.0);
+        rc = celeste_set_depth_near(0.1);
+        printf("mac-check: celeste_set_depth_near(0.0) rc=%d (expected -1), celeste_set_depth_near(0.1) rc=%d%s%s\n", bad_rc, rc, rc ? " " : "", rc ? celeste_last_error() : "");
+        if (bad_rc != -1 || rc != 0) {
+            return 21;
+        }
     }
     if (celeste_capabilities_get(&caps) != 0) {
         fprintf(stderr, "celeste_capabilities_get after init failed: %s\n", celeste_last_error());

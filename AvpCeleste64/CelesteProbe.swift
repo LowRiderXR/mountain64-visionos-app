@@ -250,6 +250,14 @@ nonisolated enum CelesteProbe {
         ProcessInfo.processInfo.environment["C64_CANVAS_FILTER"] == "nearest"
     }
 
+    /// M4b.2: Tiefenkonvention des VR-Pfads (Reverse-Z, unendliche Far-Ebene, Shader ohne
+    /// SV_Depth) in Celeste; Standard an, C64_REVERSE_Z=0 schaltet auf Celestes eigene
+    /// Konvention (Referenzpfad). Die Near-Ebene liefert der Renderer aus der Layer-Konfiguration
+    /// (celeste_set_depth_near), bevor der erste Tick auf dem Render-Thread läuft.
+    static var reverseZ: Bool {
+        ProcessInfo.processInfo.environment["C64_REVERSE_Z"] != "0"
+    }
+
     /// Die Leinwandtextur des Hosts; der Renderer übernimmt sie beim Start des ImmersiveSpace.
     @MainActor static var canvasTexture: MTLTexture?
 
@@ -699,6 +707,8 @@ nonisolated enum CelesteProbe {
         options.internal_width = Int32(settings.internalWidth)
         options.internal_height = Int32(settings.internalHeight)
         options.edge_line_width = Int32(settings.edgeLineWidth)
+        // Tiefenkonvention des VR-Pfads (M4b.2, C64_REVERSE_Z); Near folgt im Renderer aus dem Layer.
+        options.reverse_z = reverseZ ? 1 : 0
 
         let initStart = DispatchTime.now()
         let initRc: Int32 = contentRoot.withCString { cRoot in
@@ -707,7 +717,7 @@ nonisolated enum CelesteProbe {
         }
         let initMs = elapsedMs(since: initStart)
         if initRc == 0 {
-            c64Record("[c64-celeste] tMs=\(LaunchClock.tMs) step=init rc=0 thread=\(Thread.isMainThread ? "main" : "other") contentRoot=\"\(contentRoot)\" internal=\(settings.internalWidth)x\(settings.internalHeight) line=\(settings.edgeLineWidth) optionsSize=\(options.size) ms=\(format(initMs))")
+            c64Record("[c64-celeste] tMs=\(LaunchClock.tMs) step=init rc=0 thread=\(Thread.isMainThread ? "main" : "other") contentRoot=\"\(contentRoot)\" internal=\(settings.internalWidth)x\(settings.internalHeight) line=\(settings.edgeLineWidth) reverseZ=\(options.reverse_z) optionsSize=\(options.size) ms=\(format(initMs))")
         } else {
             let error = celeste_last_error().map { String(cString: $0) } ?? ""
             c64Record("[c64-celeste] step=init rc=\(initRc) error=\"\(error)\" ms=\(format(initMs))")
