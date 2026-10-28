@@ -24,7 +24,9 @@
  * asks the game to exit (celeste_request_exit); the next tick must return 1. Exit code 0 when
  * every check passes. --reverse-z runs the game on the reverse-Z depth path (reverse_z = 1 and
  * celeste_set_depth_near(0.1) after init, the near plane of the device's layer); the image on
- * the canvas must match the default run (scripts/compare-canvas.py).
+ * the canvas must match the default run (scripts/compare-canvas.py). --vr-frame drives the frames
+ * through celeste_render_frame_vr with a host drawable (2D arrays); on the title screen the game
+ * must keep rendering into the canvas (return 0) and the canvas must equal the --reverse-z run.
  */
 
 #include <dlfcn.h>
@@ -40,6 +42,7 @@
 /* Tools/Celeste64.MacHost/native/k6d_metal.m */
 void *k6d_metal_device(void);
 void *k6d_metal_queue(void *device);
+void *k6d_metal_array_texture(void *device, unsigned width, unsigned height, unsigned layers, int kind);
 void *k6d_metal_texture_2d(void *device, unsigned width, unsigned height, int pixel_format_view);
 int k6d_metal_read_pixel(void *queue, void *texture, unsigned x, unsigned y, unsigned char out[4]);
 int k6d_metal_write_canvas(void *queue, void *texture, const char *png_path, const char *raw_path, double mean_rgb[3]);
@@ -84,6 +87,29 @@ typedef int32_t (*audio_suspend_fn)(int32_t);
 typedef int32_t (*set_depth_near_fn)(double);
 /* --reverse-z: reverse-Z depth path (celeste_init_options.reverse_z, celeste_set_depth_near). */
 static int g_reverse_z = 0;
+/* --vr-frame: run_ticks drives the frame as celeste_update plus celeste_render_frame_vr with a
+   host "drawable" (2D array textures, colour RGBA8 and Depth32Float, two layers, no rate map) and
+   a reverse-Z test projection per view; implies --reverse-z. On the title screen the game must
+   return 0 (canvas) in every frame and the canvas must equal the --reverse-z run exactly. */
+typedef int32_t (*render_vr_fn)(celeste_vr_frame *);
+static int g_vr_frame = 0;
+static render_vr_fn g_render_vr = NULL;
+static celeste_vr_frame g_frame;
+static int g_vr_world_frames = 0;   /* frames the game reported as drawn into the drawable */
+
+/* Reverse-Z infinite projection from view tangents (left, right, top, bottom), column-major
+   like simd_float4x4 (the game sets its own near plane). */
+static void vr_projection(float *out, float l, float r, float t, float b)
+{
+    memset(out, 0, 16 * sizeof(float));
+    out[0] = 2.0f / (l + r);          /* column 0 row 0 */
+    out[5] = 2.0f / (t + b);          /* column 1 row 1 */
+    out[8] = (r - l) / (l + r);       /* column 2 row 0 */
+    out[9] = (t - b) / (t + b);       /* column 2 row 1 */
+    out[10] = 0.0f;                   /* infinite far */
+    out[11] = -1.0f;                  /* column 2 row 3 */
+    out[14] = 0.1f;                   /* column 3 row 2: near (metres, replaced by the game) */
+}
 typedef int32_t (*end_fn)(void);
 typedef int32_t (*set_canvas_fn)(void *, int32_t, int32_t);
 typedef int32_t (*clear_canvas_fn)(void);
@@ -110,7 +136,19 @@ static int run_ticks(tick_fn celeste_tick, last_error_fn celeste_last_error, int
     int ok = 0;
     for (int i = 0; i < count; i++) {
         int32_t t;
-        if (g_split) {
+        if (g_vr_frame) {
+            t = g_update(1.0 / HZ);
+            if (t == -1) {
+                fprintf(stderr, "celeste_update %s %d failed: %s\n", label, i, celeste_last_error());
+                return -1;
+            }
+            int32_t r = g_render_vr(&g_frame);
+            if (r == -1) {
+                fprintf(stderr, "celeste_render_frame_vr %s %d failed: %s\n", label, i, celeste_last_error());
+                return -1;
+            }
+            if (r == 1) g_vr_world_frames++;
+        } else if (g_split) {
             t = g_update(1.0 / HZ);
             if (t == -1) {
                 fprintf(stderr, "celeste_update %s %d failed: %s\n", label, i, celeste_last_error());
@@ -213,6 +251,9 @@ int main(int argc, char **argv)
             g_split = 1;
         } else if (strcmp(argv[i], "--reverse-z") == 0) {
             g_reverse_z = 1;
+        } else if (strcmp(argv[i], "--vr-frame") == 0) {
+            g_vr_frame = 1;
+            g_reverse_z = 1;
         } else {
             fprintf(stderr, "unknown option %s\n", argv[i]);
             return 64;
@@ -248,11 +289,12 @@ int main(int argc, char **argv)
     exiting_fn celeste_request_pause = (exiting_fn)require(handle, "celeste_request_pause");
     audio_suspend_fn celeste_audio_suspend = (audio_suspend_fn)require(handle, "celeste_audio_suspend");
     set_depth_near_fn celeste_set_depth_near = (set_depth_near_fn)require(handle, "celeste_set_depth_near");
+    g_render_vr = (render_vr_fn)require(handle, "celeste_render_frame_vr");
     end_fn celeste_end = (end_fn)require(handle, "celeste_end");
     set_canvas_fn celeste_set_canvas = (set_canvas_fn)require(handle, "celeste_set_canvas");
     clear_canvas_fn celeste_clear_canvas = (clear_canvas_fn)require(handle, "celeste_clear_canvas");
     last_error_fn celeste_last_error = (last_error_fn)require(handle, "celeste_last_error");
-    if (!celeste_version || !celeste_set_log_callback || !celeste_capabilities_get || !celeste_window_info_get || !celeste_init || !celeste_tick || !g_update || !g_render || !celeste_exiting || !celeste_request_exit || !celeste_request_pause || !celeste_audio_suspend || !celeste_set_depth_near || !celeste_end || !celeste_set_canvas || !celeste_clear_canvas || !celeste_last_error) {
+    if (!celeste_version || !celeste_set_log_callback || !celeste_capabilities_get || !celeste_window_info_get || !celeste_init || !celeste_tick || !g_update || !g_render || !celeste_exiting || !celeste_request_exit || !celeste_request_pause || !celeste_audio_suspend || !celeste_set_depth_near || !g_render_vr || !celeste_end || !celeste_set_canvas || !celeste_clear_canvas || !celeste_last_error) {
         return 2;
     }
     if (celeste_set_log_callback(on_log, NULL) != 0) {
@@ -268,6 +310,8 @@ int main(int argc, char **argv)
     printf("mac-check: celeste_version: %s\n", version);
     if (g_split)
         printf("mac-check: split mode: frames run as celeste_update + celeste_render_frame\n");
+    if (g_vr_frame)
+        printf("mac-check: vr-frame mode: frames run as celeste_update + celeste_render_frame_vr (host drawable 2D array, reverse-Z)\n");
     if (celeste_version() != version) {
         fprintf(stderr, "celeste_version is not stable across calls\n");
         return 4;
@@ -337,6 +381,30 @@ int main(int argc, char **argv)
         if (bad_rc != -1 || rc != 0) {
             return 21;
         }
+    }
+    void *vr_color = NULL, *vr_depth = NULL;
+    if (g_vr_frame) {
+        /* the host drawable: colour RGBA8 (kind 0) and Depth32Float (kind 2), two layers */
+        vr_color = k6d_metal_array_texture(device, 1280, 720, 2, 0);
+        vr_depth = k6d_metal_array_texture(device, 1280, 720, 2, 2);
+        if (!vr_color || !vr_depth) {
+            fprintf(stderr, "vr frame textures could not be created\n");
+            return 22;
+        }
+        memset(&g_frame, 0, sizeof g_frame);
+        g_frame.size = sizeof g_frame;
+        g_frame.view_count = 2;
+        g_frame.color_texture = vr_color;
+        g_frame.depth_texture = vr_depth;
+        g_frame.width = 1280;
+        g_frame.height = 720;
+        g_frame.color_srgb = 0;
+        g_frame.logical_width = g_frame.physical_width = 1280;
+        g_frame.logical_height = g_frame.physical_height = 720;
+        vr_projection(g_frame.projection, 1.732f, 1.0f, 1.0f, 1.192f);
+        vr_projection(g_frame.projection + 16, 1.0f, 1.732f, 1.0f, 1.192f);
+        g_frame.near_meters = 0.1;
+        printf("mac-check: vr frame: drawable 1280x720x2 RGBA8 + Depth32Float, test projections per view\n");
     }
     if (celeste_capabilities_get(&caps) != 0) {
         fprintf(stderr, "celeste_capabilities_get after init failed: %s\n", celeste_last_error());
@@ -433,6 +501,13 @@ int main(int argc, char **argv)
 
     int total = TICKS_WINDOW + TICKS_CANVAS + TICKS_CANVAS_2 + TICKS_AFTER;
     printf("mac-check: ticks ok=%d of %d exit=%d failed=%d exiting=%d\n", ticks_ok, total, ticks_exit, failed, celeste_exiting());
+    if (g_vr_frame) {
+        /* the title screen never renders into the drawable */
+        printf("mac-check: vr frame: world frames=%d of %d (expected 0 on the title screen) %s\n", g_vr_world_frames, total, g_vr_world_frames == 0 ? "(ok)" : "(FAILED)");
+        if (g_vr_world_frames != 0) {
+            return 23;
+        }
+    }
 
     /* Pause probe: FMOD mixer suspend and resume back to back (no tick in between, as FMOD
        requires), then a pause request; the next tick applies it only to a running level, on the
@@ -461,6 +536,8 @@ int main(int argc, char **argv)
         return 20;
     }
     k6d_metal_release(canvas);
+    k6d_metal_release(vr_color);
+    k6d_metal_release(vr_depth);
     k6d_metal_release(queue);
     k6d_metal_release(device);
     if (rc != 0 || failed || ticks_ok != total) {

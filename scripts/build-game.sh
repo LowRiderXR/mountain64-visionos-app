@@ -184,6 +184,20 @@ if [[ "$MODE" == "mac-check" ]]; then
     grep -E "^mac-check: (requested|celeste_set_depth_near|canvas after 548|canvas dump|ticks ok|run ok)|c64-depth|Exception|rror" "$RZ_LOG" | sed -E 's/ userPath="[^"]*"//; s/ capabilities=.*$//' | head -12
     python3 "$ROOT/scripts/compare-canvas.py" "$BUILD_DIR/mac-check-canvas.rgba" "$BUILD_DIR/mac-check-canvas-reversez.rgba" --width 1280 --width-b 1280 | grep -E "^(B |mean difference|histogram intersection|exact|verdict)" | sed 's/^/   /'
 
+    # The frames through celeste_render_frame_vr with a host drawable (stereo world pass): the title
+    # screen must still render into the canvas (return 0 every frame) with Celeste's own projection,
+    # so the dump must equal the --reverse-z run exactly (M4b.3a-N1).
+    VRF_LOG="$BUILD_DIR/mac-check-run-vrframe.log"
+    echo "-- run with --vr-frame (celeste_render_frame_vr with a host drawable, log: $VRF_LOG)"
+    DYLD_LIBRARY_PATH="$STAGE" "$BUILD_DIR/mac-check" "$DYLIB" "$STAGE" --vr-frame --dump "$BUILD_DIR/mac-check-canvas-vrframe" > "$VRF_LOG" 2>&1 || { echo "error: mac check vr-frame run failed (exit $?)" >&2; tail -30 "$VRF_LOG" >&2; exit 1; }
+    grep -E "^mac-check: (vr frame|canvas after 548|canvas dump|ticks ok|run ok)|c64-import|c64-stereo|Exception|rror" "$VRF_LOG" | sed -E 's/ userPath="[^"]*"//; s/ capabilities=.*$//' | head -12
+    python3 "$ROOT/scripts/compare-canvas.py" "$BUILD_DIR/mac-check-canvas-reversez.rgba" "$BUILD_DIR/mac-check-canvas-vrframe.rgba" --width 1280 --width-b 1280 | grep -E "^(B |mean difference|histogram intersection|exact|verdict)" | sed 's/^/   /'
+    if ! cmp -s "$BUILD_DIR/mac-check-canvas-reversez.rgba" "$BUILD_DIR/mac-check-canvas-vrframe.rgba"; then
+        echo "error: the --vr-frame title dump differs from the --reverse-z dump (a stereo projection leaked into a canvas scene)" >&2
+        exit 1
+    fi
+    echo "   vr-frame dump identical to the reverse-z dump"
+
     # The same run per internal resolution, outline width auto, one dump each; the colour
     # statistics of each dump must match the default run (same title screen, same frame).
     for res in "${MAC_CHECK_RESOLUTIONS[@]}"; do

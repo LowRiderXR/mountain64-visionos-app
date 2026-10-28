@@ -1224,7 +1224,7 @@ index 312df59..6c9dbde 100644
  
  	private FMOD.RESULT MusicTimelineCallback(FMOD.Studio.EVENT_CALLBACK_TYPE type, IntPtr _event, IntPtr parameters)
 diff --git a/Source/Graphics/Camera.cs b/Source/Graphics/Camera.cs
-index e184bbf..cf00f2f 100644
+index e184bbf..b6a828c 100644
 --- a/Source/Graphics/Camera.cs
 +++ b/Source/Graphics/Camera.cs
 @@ -14,6 +14,9 @@ public struct Camera()
@@ -1256,17 +1256,18 @@ index e184bbf..cf00f2f 100644
  	public Matrix Projection
  	{
  		get
-@@ -125,6 +140,17 @@ public struct Camera()
+@@ -125,6 +140,18 @@ public struct Camera()
  			{
  				var width = target.WidthInPixels;
  				var height = target.HeightInPixels;
 +#if VISIONOS_KIT
 +				if (VisionOSKit.ReverseZ)
 +				{
-+					// visionOS port: reverse-Z with an infinite far plane (depth = near / distance),
-+					// the host's projection of the left eye during a stereo frame, or the test
-+					// projection; FarPlane only normalises edge and fade and bounds the culling frustum
-+					projection = VisionOSKit.Frame?.Projection0 ?? VisionOSKit.ProjectionOverride ?? VisionOSKit.ReverseZInfinite(
++					// visionOS port: reverse-Z with an infinite far plane (depth = near / distance);
++					// the host's projection of the left eye only for a camera that renders the stereo
++					// world (target A or the drawable), otherwise the test projection or Celeste's
++					// own; FarPlane only normalises edge and fade and bounds the culling frustum
++					projection = VisionOSKit.StereoFrameFor(target)?.Projection0 ?? VisionOSKit.ProjectionOverride ?? VisionOSKit.ReverseZInfinite(
 +						Matrix.CreatePerspectiveFieldOfView(MathF.PI / 4.0f * fovMultiplier, width / (float)height, ProjectionNearPlane, farPlane), ProjectionNearPlane);
 +					return projection.Value;
 +				}
@@ -1274,18 +1275,19 @@ index e184bbf..cf00f2f 100644
  				projection = Matrix.CreatePerspectiveFieldOfView(MathF.PI / 4.0f * fovMultiplier, width / (float)height, nearPlane, farPlane);
  			}
  			return projection.Value;
-@@ -141,6 +167,30 @@ public struct Camera()
+@@ -141,6 +168,31 @@ public struct Camera()
  		}
  	}
  
 +#if VISIONOS_KIT
 +	/// <summary>
-+	/// visionOS port: projection of one eye during a stereo frame (the host's matrices, both
-+	/// with this camera's view); without a stereo frame both eyes use <see cref="Projection"/>.
++	/// visionOS port: projection of one eye for a camera that renders the stereo world (target A
++	/// or the drawable; the host's matrices, both with this camera's view). Every other camera
++	/// (title, overworld) uses <see cref="Projection"/> for both eyes.
 +	/// </summary>
 +	public Matrix ProjectionFor(int eye)
 +	{
-+		var frame = VisionOSKit.Frame;
++		var frame = VisionOSKit.StereoFrameFor(target);
 +		if (frame != null && eye == 1)
 +			return frame.Projection1;
 +		return Projection;
@@ -1294,7 +1296,7 @@ index e184bbf..cf00f2f 100644
 +	/// <summary>visionOS port: view times the projection of one eye, see <see cref="ProjectionFor"/>.</summary>
 +	public Matrix ViewProjectionFor(int eye)
 +	{
-+		if (eye == 0 || VisionOSKit.Frame == null)
++		if (eye == 0 || VisionOSKit.StereoFrameFor(target) == null)
 +			return ViewProjection;
 +		if (!viewProjectionEye1.HasValue)
 +			viewProjectionEye1 = View * ProjectionFor(1);
@@ -1305,18 +1307,18 @@ index e184bbf..cf00f2f 100644
  	public Quaternion Rotation
  	{
  		get
-@@ -156,7 +206,20 @@ public struct Camera()
+@@ -156,7 +208,20 @@ public struct Camera()
  		get
  		{
  			if (!frustum.HasValue)
 +			{
 +#if VISIONOS_KIT
 +				// visionOS port: the infinite reverse-Z projection has no far plane for the culling
-+				// frustum; build it from a finite standard-Z projection with the same shape. In a
-+				// stereo frame the shape is the union of both eyes (this camera's view).
++				// frustum; build it from a finite standard-Z projection with the same shape. For
++				// the camera of the stereo world the shape is the union of both eyes (this camera's view).
 +				if (VisionOSKit.ReverseZ)
 +				{
-+					var shape = VisionOSKit.Frame is { } frame ? VisionOSKit.UnionProjection(frame.Projection0, frame.Projection1) : Projection;
++					var shape = VisionOSKit.StereoFrameFor(target) is { } frame ? VisionOSKit.UnionProjection(frame.Projection0, frame.Projection1) : Projection;
 +					frustum = new BoundingFrustum(View * VisionOSKit.CullingProjection(shape, ProjectionNearPlane, farPlane));
 +				}
 +				else
@@ -1326,7 +1328,7 @@ index e184bbf..cf00f2f 100644
  			return frustum.Value;
  		}
  	}
-@@ -189,6 +252,9 @@ public struct Camera()
+@@ -189,6 +254,9 @@ public struct Camera()
  		view = null;
  		projection = null;
  		viewProjection = null;
@@ -1954,10 +1956,10 @@ index 650a35e..68b1c05 100644
  	private const float EaseClosePercent = 0.3f; // how long (in percent) it eases the entire screen
 diff --git a/Source/VisionOSKit.cs b/Source/VisionOSKit.cs
 new file mode 100644
-index 0000000..9d3eb2f
+index 0000000..8bb70e1
 --- /dev/null
 +++ b/Source/VisionOSKit.cs
-@@ -0,0 +1,557 @@
+@@ -0,0 +1,570 @@
 +#if VISIONOS_KIT
 +// VisionOSKit.cs — Schalter des visionOS-Ports für Mac-Läufe (K6b, nur mit UseLocalFoster gebaut).
 +//
@@ -2327,6 +2329,19 @@ index 0000000..9d3eb2f
 +	/// <summary>True when the target is the sRGB-encoded drawable of the current stereo frame.</summary>
 +	public static bool IsSrgbTarget(IDrawableTarget? target)
 +		=> Frame is { } frame && frame.ColorSrgb && ReferenceEquals(target, frame.Drawable);
++
++	/// <summary>
++	/// The current stereo frame for a camera that renders the stereo world, that is whose target
++	/// is the intermediate A or the drawable; null for every other target (title, overworld and
++	/// other cameras keep Celeste's own projection even while a stereo frame is open).
++	/// </summary>
++	public static VRFrame? StereoFrameFor(IDrawableTarget? target)
++	{
++		var frame = Frame;
++		if (frame == null || target == null)
++			return null;
++		return ReferenceEquals(target, frame.Drawable) || ReferenceEquals(target, Intermediate) ? frame : null;
++	}
 +
 +	/// <summary>
 +	/// Begins a stereo frame: imports (or finds) the drawable textures, keeps the intermediate at
