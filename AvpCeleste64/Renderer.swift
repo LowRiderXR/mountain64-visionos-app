@@ -130,6 +130,7 @@ nonisolated final class Renderer: @unchecked Sendable {
             c64Record("[c64-loop] tMs=\(LaunchClock.tMs) Layer läuft (Start); provider=\(Self.name(worldTracking.state))")
             lastPresentationTime = nil
             lastQueryReturn = nil
+        lastPredictedPresentation = nil
             return
         }
         logPauseFrameNote()
@@ -184,6 +185,7 @@ nonisolated final class Renderer: @unchecked Sendable {
         resumeFramesToLog = 3
         lastPresentationTime = nil
         lastQueryReturn = nil
+        lastPredictedPresentation = nil
     }
 
     /// Ticks wieder zulassen, sobald der Mixer läuft: Pausenanfrage ans Spiel, dann
@@ -207,6 +209,7 @@ nonisolated final class Renderer: @unchecked Sendable {
             CelesteProbe.tickState.resume(reason: reason)
         }
         lastQueryReturn = nil
+        lastPredictedPresentation = nil
     }
 
     /// Ton nach einer Pause: Session aktivieren, nur bei Erfolg mixerResume (FMOD-Beispiel
@@ -299,6 +302,10 @@ nonisolated final class Renderer: @unchecked Sendable {
     // Wanduhr-Intervall zwischen aufeinanderfolgenden Rückkehren von queryNextFrame.
     // Zeigt den Block, weil es am Render-Thread misst, nicht am Frame-Zähler des Compositors.
     private var lastQueryReturn: CFAbsoluteTime?
+    // M4b.4-N2: vorhergesagte Präsentationszeit des Vorframes; das Spiel-Delta ist die Differenz
+    // der Präsentationszeiten (festes Raster des Compositors), nicht die Wanduhr
+    private var lastPredictedPresentation: TimeInterval?
+    private var predictedPresentation: TimeInterval?
     // M4b.2: Near-Ebene des Layers einmal an Celeste gemeldet (vor dem ersten Update auf dem Render-Thread).
     private var depthNearSent = false
     private var statWallMin = Double.greatestFiniteMagnitude
@@ -994,6 +1001,21 @@ nonisolated final class Renderer: @unchecked Sendable {
         // Celestes eigene Ziele pro Frame, present 0; Delta ist der Frame-Takt. Noch kein Bild in
         // die Drawables, die kommen erst nach startSubmission (M4a verschiebt den Render-Teil
         // dorthin oder reicht die Drawable-Texturen vorher als Ausgabeziele).
+        // M4b.4-N2: Präsentationszeit dieses Frames vor dem Update (predictTiming darf jederzeit
+        // vor queryDrawables gerufen werden, frame.h:57-69); Delta = Differenz zum Vorframe,
+        // verlorene Frames geben 22,2 ms, die Obergrenze 1/30 s setzt der Tick. Nach Start und
+        // Fortsetzen (Bezug nil) nimmt der Tick 1/90 s wie bisher.
+        var presentationDelta: TimeInterval?
+        predictedPresentation = nil
+        if let predicted = frame.predictTiming() {
+            let presentation = predicted.presentationTime.timeInterval
+            predictedPresentation = presentation
+            if let last = lastPredictedPresentation, presentation > last {
+                presentationDelta = presentation - last
+            }
+            lastPredictedPresentation = presentation
+        }
+
         frame.startUpdate()
         // M4b.1: nur die Update-Hälfte (celeste_update); die Render-Hälfte folgt nach dem Device
         // Anchor (renderCelesteThisFrame). M4a.5c-4: Ist die App beim Erreichen des Updates schon
@@ -1018,7 +1040,7 @@ nonisolated final class Renderer: @unchecked Sendable {
                 depthNearSent = true
                 sendDepthNear()
             }
-            renderCelesteThisFrame = CelesteProbe.tickState.update(frameInterval: frameInterval)
+            renderCelesteThisFrame = CelesteProbe.tickState.update(frameInterval: presentationDelta, wallInterval: frameInterval)
         }
         frame.endUpdate()
 
@@ -1072,6 +1094,10 @@ nonisolated final class Renderer: @unchecked Sendable {
         // ohne Anker. Der Anker wird auf alle Drawables gesetzt.
         let primary = drawables.first(where: { $0.target == .builtIn }) ?? drawables[0]
         let presentationTime = primary.frameTiming.presentationTime.timeInterval
+        // M4b.4-N2: Vorhersage gegen die Präsentationszeit des Drawables (Statistik)
+        if let predictedPresentation {
+            CelesteProbe.tickState.notePresentation(predicted: predictedPresentation, actual: presentationTime)
+        }
         // presentationTime relativ zur Compositor-Uhr beim Erhalt der Drawables (gleiche Zeitbasis).
         let relativeToNow = presentationTime - LayerRenderer.Clock().now.timeInterval
         // Nur ein laufender Provider liefert Anker; sonst ohne Abfrage (keine Konsolenfehler),

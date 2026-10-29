@@ -384,6 +384,15 @@ nonisolated enum CelesteProbe {
         private var windowTicks = 0
         private var deltaSum = 0.0
         private var deltaMax = 0.0
+        // M4b.4-N2: Wanduhr-Intervall und Abweichung zum benutzten Delta, Vorhersage gegen Drawable
+        private var wallSum = 0.0
+        private var wallMax = 0.0
+        private var devSum = 0.0
+        private var devMax = 0.0
+        private var wallCount = 0
+        private var predSum = 0.0
+        private var predMax = 0.0
+        private var predCount = 0
         // M4b.1: Update und Render getrennt gemessen (CPU, Render-Thread).
         private var updateMsSum = 0.0
         private var updateMsMax = 0.0
@@ -420,8 +429,8 @@ nonisolated enum CelesteProbe {
         /// M4b.1: die Update-Hälfte (celeste_update) in der Update-Phase des Frames; liefert
         /// true, wenn das Update lief (dann folgt render() im selben Frame).
         @discardableResult
-        func update(frameInterval: TimeInterval?) -> Bool {
-            let (ran, reason) = updateLocked(frameInterval: frameInterval)
+        func update(frameInterval: TimeInterval?, wallInterval: TimeInterval? = nil) -> Bool {
+            let (ran, reason) = updateLocked(frameInterval: frameInterval, wallInterval: wallInterval)
             if let reason {
                 CelesteProbe.requestExit(reason: reason)
             }
@@ -429,11 +438,21 @@ nonisolated enum CelesteProbe {
         }
 
         /// Das Update unter dem Lock; gibt zurück, ob es lief, und den Grund für ein Ende.
-        private func updateLocked(frameInterval: TimeInterval?) -> (Bool, String?) {
+        private func updateLocked(frameInterval: TimeInterval?, wallInterval: TimeInterval?) -> (Bool, String?) {
             lock.lock()
             defer { lock.unlock() }
             guard ready, !stopped else { return (false, nil) }
+            // M4b.4-N2: frameInterval ist die Differenz der Präsentationszeiten (Raster), die
+            // Wanduhr dient nur noch der Statistik
             let delta = min(max(frameInterval ?? CelesteProbe.tickDelta, 0.001), 1.0 / 30.0)
+            if let wallInterval {
+                wallSum += wallInterval
+                wallMax = max(wallMax, wallInterval)
+                let dev = abs(wallInterval - delta)
+                devSum += dev
+                devMax = max(devMax, dev)
+                wallCount += 1
+            }
             let now = CFAbsoluteTimeGetCurrent()
             if !firstLogged {
                 firstLogged = true
@@ -540,6 +559,16 @@ nonisolated enum CelesteProbe {
             return rc
         }
 
+        /// M4b.4-N2: Abweichung der vorhergesagten von der Präsentationszeit des Drawables.
+        func notePresentation(predicted: TimeInterval, actual: TimeInterval) {
+            lock.withLock {
+                let dev = abs(actual - predicted)
+                predSum += dev
+                predMax = max(predMax, dev)
+                predCount += 1
+            }
+        }
+
         /// Statistik einmal pro Sekunde (unter dem Lock): Frames, Updates, Renders, Delta,
         /// Update- und Render-CPU-Zeit, GPU-Zeit von Celestes Buffern.
         private func logStatsIfDue(now: CFAbsoluteTime) {
@@ -556,12 +585,18 @@ nonisolated enum CelesteProbe {
             let passText = String(format: " worldFrames=%d gpuPass(ms/frame) world=%.3f edge=%.3f sprites=%.3f rest=%.3f canvas=%.3f unlabelled=%d pending=%d",
                                   windowWorldFrames, perWorld("world"), perWorld("edge"), perWorld("sprites"), perWorld("rest"),
                                   (passes.sums["canvas"] ?? 0) / canvasFrames * 1000, passes.unlabelled, passes.pending)
+            let wallText = wallCount > 0
+                ? String(format: " wall(ms) mean=%.2f max=%.2f dev(ms) mean=%.3f max=%.3f", wallSum / Double(wallCount) * 1000, wallMax * 1000, devSum / Double(wallCount) * 1000, devMax * 1000)
+                : ""
+            let predText = predCount > 0
+                ? String(format: " predVsActual(ms) mean=%.3f max=%.3f", predSum / Double(predCount) * 1000, predMax * 1000)
+                : ""
             c64Record(String(format: "[c64-celeste] tick-stats frames=%d ticks=%d renders=%d updatesPerFrame=%.2f compositor=%.1f Hz delta(ms) mean=%.2f max=%.2f update(ms) mean=%.2f max=%.2f render(ms) mean=%.2f max=%.2f celesteGpu(ms) mean=%.3f max=%.3f n=%d total=%d",
                              windowFrames, windowTicks, windowRenders, updatesPerFrame, Double(windowFrames) / elapsed,
                              deltaSum / Double(windowTicks) * 1000, deltaMax * 1000,
                              updateMsSum / Double(windowTicks), updateMsMax,
                              renderMsSum / Double(renders), renderMsMax,
-                             gpu.mean * 1000, gpu.max * 1000, gpu.count, totalTicks) + passText)
+                             gpu.mean * 1000, gpu.max * 1000, gpu.count, totalTicks) + wallText + predText + passText)
             windowStart = now
             windowFrames = 0
             windowTicks = 0
@@ -569,6 +604,14 @@ nonisolated enum CelesteProbe {
             windowWorldFrames = 0
             deltaSum = 0
             deltaMax = 0
+            wallSum = 0
+            wallMax = 0
+            devSum = 0
+            devMax = 0
+            wallCount = 0
+            predSum = 0
+            predMax = 0
+            predCount = 0
             updateMsSum = 0
             updateMsMax = 0
             renderMsSum = 0

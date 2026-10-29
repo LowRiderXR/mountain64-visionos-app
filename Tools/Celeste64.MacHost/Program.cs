@@ -3,6 +3,8 @@
 // Tick(delta) pro Frame der eigenen Uhr, End().
 //
 //   --hz N              Takt und Delta (90, 100, 120; Standard 90), delta = 1/N s
+//   --jitter-ms J       M4b.4-N2: vor jedem Tick zufällig bis J ms schlafen (unruhige Wanduhr wie
+//                       auf der Brille); das Delta bleibt das Raster 1/N, fosterDelta konstant
 //   --seconds S         Laufzeit (Standard 30); 0 = bis Escape im Spiel
 //   --gap-ms M          einmalige Lücke von M ms nach 5 s (Pause, kein Nachholen)
 //   --no-present        Fenster versteckt, Tick ohne Present (Kommandos werden trotzdem abgeschickt)
@@ -109,6 +111,8 @@ using Vec3 = System.Numerics.Vector3;
 using Vec4 = System.Numerics.Vector4;
 
 int hz = 90;
+double jitterMs = 0;
+var jitterRng = new Random(12345);
 double seconds = 30;
 double gapMs = 0;
 bool noPresent = false;
@@ -158,6 +162,7 @@ for (int i = 0; i < args.Length; i++)
 	switch (args[i])
 	{
 		case "--hz": hz = int.Parse(args[++i]); break;
+		case "--jitter-ms": jitterMs = double.Parse(args[++i], System.Globalization.CultureInfo.InvariantCulture); break;
 		case "--seconds": seconds = double.Parse(args[++i], System.Globalization.CultureInfo.InvariantCulture); break;
 		case "--gap-ms": gapMs = double.Parse(args[++i], System.Globalization.CultureInfo.InvariantCulture); break;
 		case "--no-present": noPresent = true; break;
@@ -687,6 +692,10 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 	// K6f.4: Tastensonde F7, Druck vor Tick N, Loslassen vor Tick N+2
 	if (keyProbeAt >= 0 && totalTicks == keyProbeAt) PushKey(true, SDL_Scancode.SDL_SCANCODE_F7);
 	if (keyProbeAt >= 0 && totalTicks == keyProbeAt + 2) PushKey(false, SDL_Scancode.SDL_SCANCODE_F7);
+
+	// M4b.4-N2: unruhige Wanduhr simulieren; der Tick bekommt trotzdem das Raster-Delta
+	if (jitterMs > 0)
+		Thread.Sleep(TimeSpan.FromMilliseconds(jitterRng.NextDouble() * jitterMs));
 
 	var frameBefore = game.Time.Frame;
 	// K6f.3: Fenster minimieren und zurückholen (SDL-Fensterhandle über SDL_GetWindows, Foster
