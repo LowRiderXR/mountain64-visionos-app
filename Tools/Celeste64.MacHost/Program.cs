@@ -76,6 +76,11 @@
 //                       gegen die Zwischenschicht A (VisionOSKit.Intermediate) vergleichen: nur
 //                       Umrisspixel dürfen abweichen (unter 10 %); mit C64_STEREO_NEGATIVE=logical-uv
 //                       und --rate-map muss der Anteil gross werden (Negativtest Map am Kantenpass)
+//   --stereo-selftest   M4b.4: Rechenprobe ohne Bild (VisionOSKit.DebugProject): Spielkamera im
+//                       Ursprung nach +Y, Augen ±0,032 m, symmetrische Projektion (Tangenten 1),
+//                       1000 px: Punkt in 2 m ergibt Disparität 16 px (±10 %), Achsmarken vorne
+//                       (mittig), rechts (x ≈ 750) und oben (y ≈ 250); linkes Auge sieht den
+//                       Punkt rechts der Mitte
 //   --depth-check N     alle N Ticks drei Testquads in 1, 5 und 30 m vor der Kamera (im Blickraum)
 //                       in das Welt-Ziel zeichnen, die Tiefe zurücklesen: near/d muss den Abstand
 //                       auf 1 % treffen; dazu die kleinste Tiefe des Bildes (Himmel: > 0, im
@@ -133,7 +138,8 @@ long keyProbeSeenDown = -1, keyProbeSeenUp = -1;
 bool vrDepth = false, testProjection = false;
 int depthCheck = 0;
 // M4b.3a: Stereo-Weltpass, interne Auflösung, Schicht-Dumps, Vergleich Drawable gegen A
-bool vrWorld = false, vrCheck = false;
+bool vrWorld = false, vrCheck = false, stereoSelftest = false;
+const float StereoIpd = 0.064f;
 int resW = 0, resH = 0;
 string? layerDump = null;
 long vrWorldFrames = 0, vrCanvasFrames = 0;
@@ -181,6 +187,7 @@ for (int i = 0; i < args.Length; i++)
 		case "--depth-check": depthCheck = int.Parse(args[++i]); break;
 		case "--vr-world": vrWorld = true; vrDepth = true; break;
 		case "--vr-check": vrCheck = true; break;
+		case "--stereo-selftest": stereoSelftest = true; break;
 		case "--res":
 		{
 			var parts = args[++i].Split('x');
@@ -271,6 +278,35 @@ using var game = new Game(new(
 ));
 if (kitProperties != 0)
 	SDL_DestroyProperties(kitProperties);
+
+if (stereoSelftest)
+{
+	// M4b.4: Umrechnung Kopfpose → Celeste ohne Bild prüfen
+	var cam = Vec3.Zero; var look = new Vec3(0, 1, 0);
+	var proj = VisionOSKit.CreateProjectionFromTangents(1f, 1f, 1f, 1f);
+	var left = Matrix.CreateTranslation(-StereoIpd / 2, 0, 0);
+	var right = Matrix.CreateTranslation(StereoIpd / 2, 0, 0);
+	const int W = 1000, H = 1000;
+	var s = VisionOSKit.WorldScale;
+	var pFront = new Vec3(0, 2 * s, 0); var pRight = new Vec3(1 * s, 2 * s, 0); var pUp = new Vec3(0, 2 * s, 1 * s);
+	var fl = VisionOSKit.DebugProject(cam, look, left, proj, pFront, W, H);
+	var fr = VisionOSKit.DebugProject(cam, look, right, proj, pFront, W, H);
+	var disparity = fl.X - fr.X;
+	var expected = (W / 2f) * (StereoIpd / 2f);   // f = W / (l + r) = 500 px per tangent unit, tangent IPD / distance
+	var okDisp = Math.Abs(disparity - expected) <= expected * 0.10f && fl.X > W / 2f;
+	var rl = VisionOSKit.DebugProject(cam, look, left, proj, pRight, W, H);
+	var ul = VisionOSKit.DebugProject(cam, look, left, proj, pUp, W, H);
+	var okAxes = Math.Abs(fl.Y - H / 2f) < 1 && Math.Abs(fl.X - (W / 2f + expected / 2f)) < 1
+		&& Math.Abs(rl.X - (W / 2f + W / 4f + expected / 2f)) < 1 && Math.Abs(rl.Y - H / 2f) < 1
+		&& Math.Abs(ul.Y - (H / 2f - H / 4f)) < 1 && Math.Abs(ul.X - fl.X) < 1;
+	Log.Info($"[machost] stereo selftest: point 2 m ahead left=({fl.X:F1},{fl.Y:F1}) right=({fr.X:F1},{fr.Y:F1}) disparity={disparity:F2} px expected={expected:F2} ({(okDisp ? "ok" : "FEHLER")}); axes: right mark left-eye=({rl.X:F1},{rl.Y:F1}) up mark=({ul.X:F1},{ul.Y:F1}) ({(okAxes ? "ok" : "FEHLER")}); scale={s}");
+	// with a yawed game camera (looking +X) the forward mark must stay centred
+	var fy = VisionOSKit.DebugProject(cam, new Vec3(1, 0, 0), Matrix.Identity, proj, new Vec3(2 * s, 0, 0), W, H);
+	var fyUp = VisionOSKit.DebugProject(cam, new Vec3(1, 0, 0), Matrix.Identity, proj, new Vec3(2 * s, 0, 1 * s), W, H);
+	var okYaw = Math.Abs(fy.X - W / 2f) < 1 && Math.Abs(fy.Y - H / 2f) < 1 && Math.Abs(fyUp.Y - (H / 2f - H / 4f)) < 1;
+	Log.Info($"[machost] stereo selftest: yawed camera (+X) forward=({fy.X:F1},{fy.Y:F1}) up=({fyUp.X:F1},{fyUp.Y:F1}) ({(okYaw ? "ok" : "FEHLER")})");
+	if (!(okDisp && okAxes && okYaw)) return 2;
+}
 
 var delta = TimeSpan.FromSeconds(1.0 / hz);
 game.Begin();
@@ -675,9 +711,12 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 		var eye0 = VisionOSKit.CreateProjectionFromTangents(1.732f, 1.0f, 1.0f, 1.192f);
 		var eye1 = VisionOSKit.CreateProjectionFromTangents(1.0f, 1.732f, 1.0f, 1.192f);
 		var hasMap = rateMapPtr != 0;
+		// M4b.4: eyes 0.064 m apart (left eye at -x), head at O, culling from the union of both eyes
 		VisionOSKit.BeginVRFrame(game.GraphicsDevice, mtlColor, mtlDepth, LayerW, LayerH, LayerCount, colorSrgb: false,
 			hasMap ? rateMapPtr : 0, hasMap ? logicalW : LayerW, hasMap ? logicalH : LayerH, hasMap ? (int)physW : LayerW, hasMap ? (int)physH : LayerH,
-			eye0, eye1);
+			eye0, eye1,
+			Matrix.CreateTranslation(-StereoIpd / 2, 0, 0), Matrix.CreateTranslation(StereoIpd / 2, 0, 0), Matrix.Identity,
+			VisionOSKit.UnionProjection(eye0, eye1), originReset: totalTicks == 0);
 	}
 	try
 	{

@@ -173,6 +173,8 @@ nonisolated final class Renderer: @unchecked Sendable {
         }
         c64Record("[c64-loop] tMs=\(LaunchClock.tMs) Fortsetzen; \(pauseReasonText) provider=\(Self.name(worldTracking.state))")
         CelesteProbe.AliveProbe.shared.end(resumeMs: LaunchClock.elapsedMs)
+        // M4b.4: Bezugspunkt O nach dem Fortsetzen neu, sobald die Pose ruhig ist
+        CelesteProbe.StereoOrigin.shared.requestSettle("Fortsetzen")
 
         if game {
             resumeAudioIfPossible(trigger: "resume")
@@ -872,7 +874,7 @@ nonisolated final class Renderer: @unchecked Sendable {
     /// Spaltenreihenfolge wie simd; Celeste setzt ihre Near-Ebene in Einheiten selbst), die
     /// View-Transformationen (für M4b.4) und die Near-Ebene des Layers. false, wenn das Drawable
     /// nicht die Form hat (weniger als zwei Views oder keine Array-Textur).
-    private static func fillVRFrame(_ frame: inout celeste_vr_frame, drawable: LayerRenderer.Drawable,
+    private static func fillVRFrame(_ frame: inout celeste_vr_frame, drawable: LayerRenderer.Drawable, layerFrame: LayerRenderer.Frame,
                                     deviceAnchor: DeviceAnchor?, configuration: LayerRenderer.Configuration) -> Bool {
         let views = drawable.views
         guard views.count >= 2 else { return false }
@@ -902,23 +904,45 @@ nonisolated final class Renderer: @unchecked Sendable {
             frame.physical_width = frame.width
             frame.physical_height = frame.height
         }
-        let anchorTransform = deviceAnchor?.originFromAnchorTransform ?? matrix_identity_float4x4
-        for slot in 0..<2 {
-            var projection = drawable.computeProjection(viewIndex: slot)
-            var viewTransform = anchorTransform * views[slot].transform
-            withUnsafeMutableBytes(of: &frame.projection) { dst in
-                withUnsafeBytes(of: &projection) { src in
-                    dst.baseAddress!.advanced(by: slot * 64).copyMemory(from: src.baseAddress!, byteCount: 64)
-                }
-            }
-            withUnsafeMutableBytes(of: &frame.view_transform) { dst in
-                withUnsafeBytes(of: &viewTransform) { src in
-                    dst.baseAddress!.advanced(by: slot * 64).copyMemory(from: src.baseAddress!, byteCount: 64)
-                }
+        // M4b.4: Kopf und Augen relativ zum Bezugspunkt O (StereoOrigin); ohne Pose Identität
+        // (Celeste nimmt dann die Spielkamera für beide Augen). Culling-Matrix des Compositors
+        // für beide Augen mit weiteren Tangenten, Tiefenbereich weiter als beim Rendern.
+        var relativeHead = matrix_identity_float4x4
+        var originReset = false
+        if let deviceAnchor {
+            let result = CelesteProbe.StereoOrigin.shared.update(anchor: deviceAnchor.originFromAnchorTransform, frameIndex: layerFrame.frameIndex)
+            relativeHead = result.relative
+            originReset = result.reset
+        }
+        var culling = layerFrame.binocularFrustumMatrixForDrawableTarget(drawableTarget: drawable.target,
+                                                                           increaseTangents: SIMD4<Float>(repeating: 0.15),
+                                                                           depthRange: SIMD2<Float>(Float.infinity, 0.05))
+        func copy(_ m: inout simd_float4x4, into dst: UnsafeMutableRawBufferPointer, offset: Int) {
+            withUnsafeBytes(of: &m) { src in
+                dst.baseAddress!.advanced(by: offset).copyMemory(from: src.baseAddress!, byteCount: 64)
             }
         }
+        for slot in 0..<2 {
+            var projection = drawable.computeProjection(viewIndex: slot)
+            var viewTransform = relativeHead * views[slot].transform
+            withUnsafeMutableBytes(of: &frame.projection) { dst in copy(&projection, into: dst, offset: slot * 64) }
+            withUnsafeMutableBytes(of: &frame.view_transform) { dst in copy(&viewTransform, into: dst, offset: slot * 64) }
+        }
+        withUnsafeMutableBytes(of: &frame.head_transform) { dst in copy(&relativeHead, into: dst, offset: 0) }
+        withUnsafeMutableBytes(of: &frame.culling_projection) { dst in copy(&culling, into: dst, offset: 0) }
+        frame.origin_reset = originReset ? 1 : 0
         frame.near_meters = Double(configuration.defaultDepthRange.y)
         return true
+    }
+
+    private var lastHeadLog: CFAbsoluteTime = 0
+
+    /// [c64-head] einmal pro Sekunde: Versatz und Gieren zu O.
+    private func logHeadIfDue() {
+        let now = CFAbsoluteTimeGetCurrent()
+        guard now - lastHeadLog >= 1.0 else { return }
+        lastHeadLog = now
+        c64Record("[c64-head] tMs=\(LaunchClock.tMs) \(CelesteProbe.StereoOrigin.shared.line)")
     }
 
     private var lastStereoRc: Int32 = -3
@@ -1082,10 +1106,11 @@ nonisolated final class Renderer: @unchecked Sendable {
                 celesteRenderedThisFrame = true
                 var worldFrame = celeste_vr_frame()
                 if CelesteProbe.stereoWorld,
-                   Self.fillVRFrame(&worldFrame, drawable: primary, deviceAnchor: deviceAnchor, configuration: layerRenderer.configuration) {
+                   Self.fillVRFrame(&worldFrame, drawable: primary, layerFrame: frame, deviceAnchor: deviceAnchor, configuration: layerRenderer.configuration) {
                     let rc = CelesteProbe.tickState.renderVR(&worldFrame)
                     worldDrawnThisFrame = rc == 1
                     noteStereoFrame(rc: rc, frame: worldFrame, frameIndex: frame.frameIndex)
+                    if rc == 1 { logHeadIfDue() }
                 } else {
                     CelesteProbe.tickState.render()
                 }

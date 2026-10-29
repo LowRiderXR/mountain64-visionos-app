@@ -404,6 +404,14 @@ int main(int argc, char **argv)
         vr_projection(g_frame.projection, 1.732f, 1.0f, 1.0f, 1.192f);
         vr_projection(g_frame.projection + 16, 1.0f, 1.732f, 1.0f, 1.192f);
         g_frame.near_meters = 0.1;
+        /* head pose (M4b.4): head at O, eyes 0.064 m apart, binocular culling from the union */
+        for (int v = 0; v < 2; v++) {
+            float *m = g_frame.view_transform + v * 16;
+            m[0] = m[5] = m[10] = m[15] = 1.0f;
+            m[12] = v == 0 ? -0.032f : 0.032f;
+        }
+        g_frame.head_transform[0] = g_frame.head_transform[5] = g_frame.head_transform[10] = g_frame.head_transform[15] = 1.0f;
+        vr_projection(g_frame.culling_projection, 1.732f, 1.732f, 1.0f, 1.192f);
         printf("mac-check: vr frame: drawable 1280x720x2 RGBA8 + Depth32Float, test projections per view\n");
     }
     if (celeste_capabilities_get(&caps) != 0) {

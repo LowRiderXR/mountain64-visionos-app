@@ -126,14 +126,16 @@ struct ImmersiveContent: CompositorContent {
             c64Record("[c64-launch] tMs=\(LaunchClock.tMs) layer closure; \(CelesteProbe.lifecycleLine)")
             Renderer.start(layerRenderer: layerRenderer, appModel: appModel)
         }
-        // M4b.1b: System-Recenter (Crown lang) nur protokollieren, mit der letzten Kopfpose vor dem
-        // Ereignis; ob das Ereignis im CompositorLayer-Raum ankommt, zeigt der Test (M4b.4 setzt
-        // hier den Bezugspunkt neu).
+        // M4b.1b: System-Recenter (Crown lang) protokollieren, mit der letzten Kopfpose vor dem
+        // Ereignis. M4b.4: bei ended den Bezugspunkt O neu setzen lassen, einige Frames später
+        // (bei ended zeigt die Pose noch die alten Werte, Probe 2026-10-27).
         .onWorldRecenter { phase in
             let name: String
             switch phase {
             case .began: name = "began"
-            case .ended: name = "ended"
+            case .ended:
+                name = "ended"
+                CelesteProbe.StereoOrigin.shared.recenterEnded()
             @unknown default: name = "phase\(phase)"
             }
             c64Record("[c64-recenter] tMs=\(LaunchClock.tMs) phase=\(name) \(CelesteProbe.headPose.line)")

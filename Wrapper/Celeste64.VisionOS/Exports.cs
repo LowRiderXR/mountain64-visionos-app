@@ -51,6 +51,10 @@ public unsafe struct CelesteVRFrame
 	public fixed float Projection[32];
 	public fixed float ViewTransform[32];
 	public double NearMeters;
+	public fixed float HeadTransform[16];
+	public fixed float CullingProjection[16];
+	public int OriginReset;
+	public int Reserved2;
 	public int DrewWorld;
 	public int Flushes;
 }
@@ -618,9 +622,25 @@ public static unsafe class Exports
 			float* p = frame->Projection;
 			var projection0 = *(System.Numerics.Matrix4x4*)p;
 			var projection1 = *(System.Numerics.Matrix4x4*)(p + 16);
+			float* v = frame->ViewTransform;
+			var eye0 = *(System.Numerics.Matrix4x4*)v;
+			var eye1 = *(System.Numerics.Matrix4x4*)(v + 16);
+			float* h = frame->HeadTransform;
+			var head = *(System.Numerics.Matrix4x4*)h;
+			float* c = frame->CullingProjection;
+			var culling = *(System.Numerics.Matrix4x4*)c;
+			// a host without a head pose (all zero) means identity: the game camera for both eyes
+			if (head.M11 == 0 && head.M22 == 0 && head.M33 == 0 && head.M44 == 0)
+			{
+				head = System.Numerics.Matrix4x4.Identity;
+				eye0 = System.Numerics.Matrix4x4.Identity;
+				eye1 = System.Numerics.Matrix4x4.Identity;
+			}
+			if (culling.M11 == 0 && culling.M22 == 0)
+				culling = VisionOSKit.UnionProjection(projection0, projection1);
 			VisionOSKit.BeginVRFrame(game.GraphicsDevice, frame->ColorTexture, frame->DepthTexture, frame->Width, frame->Height, frame->ViewCount,
 				frame->ColorSrgb != 0, frame->RateMap, frame->LogicalWidth, frame->LogicalHeight, frame->PhysicalWidth, frame->PhysicalHeight,
-				projection0, projection1);
+				projection0, projection1, eye0, eye1, head, culling, frame->OriginReset != 0);
 			bool rendered;
 			int flushes;
 			try

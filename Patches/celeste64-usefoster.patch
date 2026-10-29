@@ -944,8 +944,45 @@ index 3b98afe..111db92 100644
  
  		batch.Rect(new Rect(bounds.X, bounds.Y, bounds.Width, BarSize * ease), Color.Black);
  		batch.Rect(new Rect(bounds.X, bounds.Bottom - BarSize * ease, bounds.Width, BarSize * ease), Color.Black);
+diff --git a/Source/Actors/Snow.cs b/Source/Actors/Snow.cs
+index 623a700..2b52833 100644
+--- a/Source/Actors/Snow.cs
++++ b/Source/Actors/Snow.cs
+@@ -20,16 +20,31 @@ public class Snow : Actor, IHaveSprites
+ 	}
+ 	public void CollectSprites(List<Sprite> populate)
+ 	{
++#if VISIONOS_KIT
++		// visionOS port (M4b.4): snow around the viewer (the head in a stereo frame)
++		var cameraPosition = World.Camera.ViewPosition;
++		var cameraFrustum = World.Camera.Frustum;
++		var cammeraNormal = World.Camera.ViewForward;
++#else
+ 		var cameraPosition = World.Camera.Position;
+ 		var cameraFrustum = World.Camera.Frustum;
+ 		var cammeraNormal = World.Camera.Normal;
++#endif
++		var area = 100;
+ 		var box = cameraFrustum.GetBoundingBox();
++#if VISIONOS_KIT
++		// visionOS port (M4b.4-N1): without a far plane the frustum's box spans the whole world and
++		// the cell loop below would run for ever (8e12 cells at far 1e6). The snow itself reaches
++		// 300 units around the viewer and 200 units below it (the distance checks in the loop),
++		// so the box is clamped to that range; cells outside it never produce a sprite anyway.
++		var reach = new BoundingBox(cameraPosition - new Vec3(300 + area, 300 + area, 200 + area), cameraPosition + new Vec3(300 + area, 300 + area, area));
++		box = new BoundingBox(Vec3.Max(box.Min, reach.Min), Vec3.Min(box.Max, reach.Max));
++#endif
+ 
+ 		var size = new Vec3(box.Max.X - box.Min.X,box.Max.Y - box.Min.Y,box.Max.Z - box.Min.Z);
+ 		if (size.X <= 0 || size.Y <= 0 || size.Z <= 0)
+ 			return;
+ 
+-		var area = 100;
+ 		var subtex = Assets.Subtextures["circle"];
+ 		var time = World.GeneralTimer;
+ 
 diff --git a/Source/Audio/Audio.cs b/Source/Audio/Audio.cs
-index bbbc4b0..345e2c2 100644
+index bbbc4b0..595e068 100644
 --- a/Source/Audio/Audio.cs
 +++ b/Source/Audio/Audio.cs
 @@ -65,6 +65,10 @@ public static class Audio
@@ -959,7 +996,42 @@ index bbbc4b0..345e2c2 100644
  				else
  					throw new PlatformNotSupportedException();
  
-@@ -98,6 +102,24 @@ public static class Audio
+@@ -76,15 +80,25 @@ public static class Audio
+ 	public static void SetListener(in Camera camera)
+ 	{
+ 		FMOD.ATTRIBUTES_3D attr = new();
+-		attr.forward.x = camera.Forward.X;
+-		attr.forward.y = camera.Forward.Y;
+-		attr.forward.z = camera.Forward.Z;
+-		attr.up.x = camera.Up.X;
+-		attr.up.y = camera.Up.Y;
+-		attr.up.z = camera.Up.Z;
+-		attr.position.x = camera.Position.X;
+-		attr.position.y = camera.Position.Y;
+-		attr.position.z = camera.Position.Z;
++#if VISIONOS_KIT
++		// visionOS port (M4b.4): the listener is the viewer (the head in a stereo frame)
++		var forward = camera.ViewForward;
++		var up = camera.ViewUp;
++		var position = camera.ViewPosition;
++#else
++		var forward = camera.Forward;
++		var up = camera.Up;
++		var position = camera.Position;
++#endif
++		attr.forward.x = forward.X;
++		attr.forward.y = forward.Y;
++		attr.forward.z = forward.Z;
++		attr.up.x = up.X;
++		attr.up.y = up.Y;
++		attr.up.z = up.Z;
++		attr.position.x = position.X;
++		attr.position.y = position.Y;
++		attr.position.z = position.Z;
+ 		attr.velocity.x = 0;
+ 		attr.velocity.y = 0;
+ 		attr.velocity.z = 0;
+@@ -98,6 +112,24 @@ public static class Audio
  		system.update();
  	}
  
@@ -984,7 +1056,7 @@ index bbbc4b0..345e2c2 100644
  	public static void Shutdown()
  	{
  		Unload();
-@@ -126,7 +148,11 @@ public static class Audio
+@@ -126,7 +158,11 @@ public static class Audio
  
  	public static void LoadBank(string path)
  	{
@@ -1224,20 +1296,24 @@ index 312df59..6c9dbde 100644
  
  	private FMOD.RESULT MusicTimelineCallback(FMOD.Studio.EVENT_CALLBACK_TYPE type, IntPtr _event, IntPtr parameters)
 diff --git a/Source/Graphics/Camera.cs b/Source/Graphics/Camera.cs
-index e184bbf..b6a828c 100644
+index e184bbf..ae0bad5 100644
 --- a/Source/Graphics/Camera.cs
 +++ b/Source/Graphics/Camera.cs
-@@ -14,6 +14,9 @@ public struct Camera()
+@@ -14,6 +14,13 @@ public struct Camera()
  	private Matrix? view;
  	private Matrix? projection;
  	private Matrix? viewProjection;
 +#if VISIONOS_KIT
 +	private Matrix? viewProjectionEye1;
++	// stereo (M4b.4): matrices from the head pose, dropped when the pose version changes
++	private int stereoVersion = -1;
++	private Matrix? stereoView0, stereoView1, stereoWorldFromHead;
++	private BoundingFrustum? stereoFrustum;
 +#endif
  	private Quaternion? rotation;
  	private Vec3? upwards;
  	private Vec3? leftwards;
-@@ -117,6 +120,18 @@ public struct Camera()
+@@ -117,6 +124,18 @@ public struct Camera()
  		}
  	}
  
@@ -1256,7 +1332,7 @@ index e184bbf..b6a828c 100644
  	public Matrix Projection
  	{
  		get
-@@ -125,6 +140,18 @@ public struct Camera()
+@@ -125,6 +144,18 @@ public struct Camera()
  			{
  				var width = target.WidthInPixels;
  				var height = target.HeightInPixels;
@@ -1275,15 +1351,27 @@ index e184bbf..b6a828c 100644
  				projection = Matrix.CreatePerspectiveFieldOfView(MathF.PI / 4.0f * fovMultiplier, width / (float)height, nearPlane, farPlane);
  			}
  			return projection.Value;
-@@ -141,6 +168,31 @@ public struct Camera()
+@@ -135,12 +166,154 @@ public struct Camera()
+ 	{
+ 		get
+ 		{
++#if VISIONOS_KIT
++			// visionOS port (M4b.4): the stereo world renders with the left eye's view, the game
++			// camera gives only position and yaw
++			if (StereoActive)
++				return ViewProjectionFor(0);
++#endif
+ 			if (!viewProjection.HasValue)
+ 				viewProjection = View * Projection;
+ 			return viewProjection.Value;
  		}
  	}
  
 +#if VISIONOS_KIT
 +	/// <summary>
 +	/// visionOS port: projection of one eye for a camera that renders the stereo world (target A
-+	/// or the drawable; the host's matrices, both with this camera's view). Every other camera
-+	/// (title, overworld) uses <see cref="Projection"/> for both eyes.
++	/// or the drawable; the host's matrices). Every other camera (title, overworld) uses
++	/// <see cref="Projection"/> for both eyes.
 +	/// </summary>
 +	public Matrix ProjectionFor(int eye)
 +	{
@@ -1293,21 +1381,132 @@ index e184bbf..b6a828c 100644
 +		return Projection;
 +	}
 +
-+	/// <summary>visionOS port: view times the projection of one eye, see <see cref="ProjectionFor"/>.</summary>
++	/// <summary>
++	/// visionOS port (M4b.4): the head pose applies to this camera: a pose exists, the target is
++	/// the stereo world's (A or a drawable) and the selftest does not pin the game camera.
++	/// </summary>
++	private readonly bool StereoActive
++		=> VisionOSKit.StereoSession != null && VisionOSKit.MatrixSelftest != "identity" && VisionOSKit.IsStereoTarget(target);
++
++	private void EnsureStereoCache()
++	{
++		var version = VisionOSKit.StereoSession?.Version ?? -1;
++		if (version == stereoVersion)
++			return;
++		stereoVersion = version;
++		stereoView0 = null;
++		stereoView1 = null;
++		stereoWorldFromHead = null;
++		stereoFrustum = null;
++		viewProjectionEye1 = null;
++	}
++
++	/// <summary>World-from-head in Celeste's world: the host's head pose relative to O on the base of this camera.</summary>
++	private Matrix StereoWorldFromHead
++	{
++		get
++		{
++			EnsureStereoCache();
++			stereoWorldFromHead ??= VisionOSKit.WorldFromRelative(VisionOSKit.StereoSession!.Head, Position, VisionOSKit.BaseYaw(Position, LookAt));
++			return stereoWorldFromHead.Value;
++		}
++	}
++
++	/// <summary>
++	/// visionOS port (M4b.4): view of one eye. With the head pose: inverse of world-from-eye
++	/// (eye relative to O, converted on this camera's base); otherwise the game camera's view.
++	/// </summary>
++	public Matrix ViewFor(int eye)
++	{
++		if (!StereoActive)
++			return View;
++		EnsureStereoCache();
++		var session = VisionOSKit.StereoSession!;
++		if (eye == 0)
++		{
++			if (!stereoView0.HasValue)
++			{
++				Matrix.Invert(VisionOSKit.WorldFromRelative(session.Eye0, Position, VisionOSKit.BaseYaw(Position, LookAt)), out var v);
++				stereoView0 = v;
++			}
++			return stereoView0.Value;
++		}
++		if (!stereoView1.HasValue)
++		{
++			Matrix.Invert(VisionOSKit.WorldFromRelative(session.Eye1, Position, VisionOSKit.BaseYaw(Position, LookAt)), out var v);
++			stereoView1 = v;
++		}
++		return stereoView1.Value;
++	}
++
++	/// <summary>visionOS port: view times the projection of one eye, see <see cref="ViewFor"/> and <see cref="ProjectionFor"/>.</summary>
 +	public Matrix ViewProjectionFor(int eye)
 +	{
++		if (StereoActive)
++		{
++			EnsureStereoCache();
++			if (eye == 0)
++			{
++				if (!viewProjection.HasValue)
++					viewProjection = ViewFor(0) * ProjectionFor(0);
++				return viewProjection.Value;
++			}
++			if (!viewProjectionEye1.HasValue)
++				viewProjectionEye1 = ViewFor(1) * ProjectionFor(1);
++			return viewProjectionEye1.Value;
++		}
 +		if (eye == 0 || VisionOSKit.StereoFrameFor(target) == null)
 +			return ViewProjection;
 +		if (!viewProjectionEye1.HasValue)
 +			viewProjectionEye1 = View * ProjectionFor(1);
 +		return viewProjectionEye1.Value;
 +	}
++
++	/// <summary>
++	/// visionOS port (M4b.4): where the viewer is: the head in Celeste's world with the head
++	/// pose, else the game camera. For sorting, the sky dome, snow, particles and the listener;
++	/// the player's input stays relative to <see cref="Position"/>.
++	/// </summary>
++	public Vec3 ViewPosition
++	{
++		get
++		{
++			if (!StereoActive)
++				return Position;
++			var m = StereoWorldFromHead;
++			return new Vec3(m.M41, m.M42, m.M43);
++		}
++	}
++
++	/// <summary>visionOS port (M4b.4): the viewer's forward (head with the head pose, else the game camera).</summary>
++	public Vec3 ViewForward
++	{
++		get
++		{
++			if (!StereoActive)
++				return Forward;
++			var m = StereoWorldFromHead;
++			return -new Vec3(m.M31, m.M32, m.M33);
++		}
++	}
++
++	/// <summary>visionOS port (M4b.4): the viewer's up (head with the head pose, else the game camera).</summary>
++	public Vec3 ViewUp
++	{
++		get
++		{
++			if (!StereoActive)
++				return Up;
++			var m = StereoWorldFromHead;
++			return new Vec3(m.M21, m.M22, m.M23);
++		}
++	}
 +#endif
 +
  	public Quaternion Rotation
  	{
  		get
-@@ -156,7 +208,20 @@ public struct Camera()
+@@ -156,7 +329,33 @@ public struct Camera()
  		get
  		{
  			if (!frustum.HasValue)
@@ -1316,6 +1515,19 @@ index e184bbf..b6a828c 100644
 +				// visionOS port: the infinite reverse-Z projection has no far plane for the culling
 +				// frustum; build it from a finite standard-Z projection with the same shape. For
 +				// the camera of the stereo world the shape is the union of both eyes (this camera's view).
++				if (StereoActive)
++				{
++					// M4b.4: the head's view times the host's binocular culling matrix (both eyes,
++					// widened tangents), with a finite far plane; also used by the update of the
++					// next frame (the pose of the previous frame on the current camera base)
++					EnsureStereoCache();
++					if (!stereoFrustum.HasValue)
++					{
++						Matrix.Invert(StereoWorldFromHead, out var headView);
++						stereoFrustum = new BoundingFrustum(headView * VisionOSKit.CullingProjection(VisionOSKit.StereoSession!.Culling, ProjectionNearPlane, farPlane));
++					}
++					return stereoFrustum.Value;
++				}
 +				if (VisionOSKit.ReverseZ)
 +				{
 +					var shape = VisionOSKit.StereoFrameFor(target) is { } frame ? VisionOSKit.UnionProjection(frame.Projection0, frame.Projection1) : Projection;
@@ -1328,16 +1540,37 @@ index e184bbf..b6a828c 100644
  			return frustum.Value;
  		}
  	}
-@@ -189,6 +254,9 @@ public struct Camera()
+@@ -189,6 +388,13 @@ public struct Camera()
  		view = null;
  		projection = null;
  		viewProjection = null;
 +#if VISIONOS_KIT
 +		viewProjectionEye1 = null;
++		stereoView0 = null;
++		stereoView1 = null;
++		stereoWorldFromHead = null;
++		stereoFrustum = null;
 +#endif
  		rotation = null;
  		upwards = null;
  		leftwards = null;
+diff --git a/Source/Graphics/ParticleSystem.cs b/Source/Graphics/ParticleSystem.cs
+index f67add2..2ae99a8 100644
+--- a/Source/Graphics/ParticleSystem.cs
++++ b/Source/Graphics/ParticleSystem.cs
+@@ -75,7 +75,12 @@ public class ParticleSystem
+ 
+ 	public void CollectSprites(Vec3 source, World world, List<Sprite> populate)
+ 	{
++#if VISIONOS_KIT
++		// visionOS port (M4b.4): distance from the viewer (the head in a stereo frame)
++		if ((world.Camera.ViewPosition - source).LengthSquared() > MaximumDistance * MaximumDistance)
++#else
+ 		if ((world.Camera.Position - source).LengthSquared() > MaximumDistance * MaximumDistance)
++#endif
+ 			return;
+ 
+ 		for (int i = particles.Count - 1; i >= 0; i--)
 diff --git a/Source/Graphics/RenderState.cs b/Source/Graphics/RenderState.cs
 index 03f2db1..07b8289 100644
 --- a/Source/Graphics/RenderState.cs
@@ -1665,7 +1898,7 @@ index 33da870..7590a36 100644
  			CutoutMode = false,
  		};
 diff --git a/Source/Scenes/World.cs b/Source/Scenes/World.cs
-index bdfb740..0c3ded7 100644
+index bdfb740..91e3055 100644
 --- a/Source/Scenes/World.cs
 +++ b/Source/Scenes/World.cs
 @@ -70,9 +70,20 @@ public class World : Scene
@@ -1728,8 +1961,34 @@ index bdfb740..0c3ded7 100644
  			state.DepthMask = true;
  			state.VerticalFogColor = 0xdceaf0;
  		}
-@@ -712,10 +745,15 @@ public class World : Scene
+@@ -698,9 +731,17 @@ public class World : Scene
+ 			}
+ 
+ 			// sort models by distance (for transparency)
++#if VISIONOS_KIT
++			// visionOS port (M4b.4): sort by the viewer's position (the head in a stereo frame)
++			var viewPosition = Camera.ViewPosition;
++			models.Sort((a, b) =>
++				(int)((b.Actor.Position - viewPosition).LengthSquared() -
++				 (a.Actor.Position - viewPosition).LengthSquared()));
++#else
+ 			models.Sort((a, b) =>
+ 				(int)((b.Actor.Position - Camera.Position).LengthSquared() -
+ 				 (a.Actor.Position - Camera.Position).LengthSquared()));
++#endif
+ 
+ 			// perp all models
+ 			foreach (var it in models)
+@@ -709,13 +750,23 @@ public class World : Scene
+ 
+ 		// draw the skybox first
+ 		{
++#if VISIONOS_KIT
++			// visionOS port (M4b.4): the sky dome is centred on the viewer (the head in a stereo frame)
++			var shift = Camera.ViewPosition;
++#else
  			var shift = new Vec3(Camera.Position.X, Camera.Position.Y, Camera.Position.Z);
++#endif
  			for (int i = 0; i < skyboxes.Count; i++)
  			{
 -				skyboxes[i].Render(Camera, 
@@ -1745,7 +2004,7 @@ index bdfb740..0c3ded7 100644
  			}
  		}
  
-@@ -725,7 +763,11 @@ public class World : Scene
+@@ -725,7 +776,11 @@ public class World : Scene
  		// render silhouettes
  		{
  			var it = state;
@@ -1757,7 +2016,7 @@ index bdfb740..0c3ded7 100644
  			it.DepthMask = false;
  			it.Silhouette = true;
  			RenderModels(ref it, models, ModelFlags.Silhouette);
-@@ -735,8 +777,21 @@ public class World : Scene
+@@ -735,8 +790,21 @@ public class World : Scene
  
  		// render main models
  		RenderModels(ref state, models, ModelFlags.Default);
@@ -1780,7 +2039,7 @@ index bdfb740..0c3ded7 100644
  		ApplyPostEffects();
  
  		// render alpha threshold transparent stuff
-@@ -762,22 +817,49 @@ public class World : Scene
+@@ -762,22 +830,49 @@ public class World : Scene
  		// strawberry collect effect
  		if (models.Any((it) => it.Model.Flags.Has(ModelFlags.StrawberryGetEffect)))
  		{
@@ -1840,7 +2099,7 @@ index bdfb740..0c3ded7 100644
  		// ui
  		{
  			batch.PushSampler(new TextureSampler(TextureFilter.Linear, TextureWrap.Clamp, TextureWrap.Clamp));
-@@ -872,9 +954,29 @@ public class World : Scene
+@@ -872,9 +967,29 @@ public class World : Scene
  			// apply post fx
  			postMaterial.CopyFrom(Assets.Materials["Edge"]);
  			postMaterial.Fragment.Samplers[1] = new(target.Attachments[1], new(TextureFilter.Nearest, TextureWrap.Clamp, TextureWrap.Clamp));
@@ -1871,7 +2130,7 @@ index bdfb740..0c3ded7 100644
  				Edge = new Color(0x110d33).ToVector4()
  			});
  			batch.PushMaterial(postMaterial);
-@@ -889,6 +991,69 @@ public class World : Scene
+@@ -889,6 +1004,69 @@ public class World : Scene
  		}
  	}
  
@@ -1956,10 +2215,10 @@ index 650a35e..68b1c05 100644
  	private const float EaseClosePercent = 0.3f; // how long (in percent) it eases the entire screen
 diff --git a/Source/VisionOSKit.cs b/Source/VisionOSKit.cs
 new file mode 100644
-index 0000000..8bb70e1
+index 0000000..e34fb14
 --- /dev/null
 +++ b/Source/VisionOSKit.cs
-@@ -0,0 +1,570 @@
+@@ -0,0 +1,689 @@
 +#if VISIONOS_KIT
 +// VisionOSKit.cs — Schalter des visionOS-Ports für Mac-Läufe (K6b, nur mit UseLocalFoster gebaut).
 +//
@@ -2211,19 +2470,20 @@ index 0000000..8bb70e1
 +	}
 +
 +	/// <summary>
-+	/// Finite standard-Z projection with the same x and y rows as the given projection, for the
-+	/// culling frustum: an infinite reverse-Z matrix has no far plane and its near plane row
-+	/// extracts as a zero normal (BoundingFrustum.CreatePlanes), so the frustum is built from
-+	/// this one with near and far in world units instead.
++	/// Finite standard-Z version of a reverse-Z infinite matrix, for the culling frustum: an
++	/// infinite reverse-Z matrix has no far plane and its near plane row extracts as a zero
++	/// normal (BoundingFrustum.CreatePlanes). Clip z becomes range * z_view + near * range with
++	/// z_view = -clip w, so column 2 is rebuilt from column 3 (clip w): this holds for a pure
++	/// projection and for a projection times a rigid view (the binocular culling matrix).
 +	/// </summary>
 +	public static Matrix CullingProjection(Matrix projection, float near, float far)
 +	{
 +		var m = projection;
 +		var range = far / (near - far);
-+		m.M33 = range;
-+		m.M34 = -1f;
-+		m.M43 = near * range;
-+		m.M44 = 0f;
++		m.M13 = -range * m.M14;
++		m.M23 = -range * m.M24;
++		m.M33 = -range * m.M34;
++		m.M43 = -range * m.M44 + near * range;
 +		return m;
 +	}
 +
@@ -2245,10 +2505,11 @@ index 0000000..8bb70e1
 +	}
 +
 +	/// <summary>
-+	/// C64_FAR=off: no far limit on the reverse-Z path (no fade, no discard, culling without a
-+	/// distance limit); default 800 units like the reference.
++	/// No far limit on the reverse-Z path (the default since M4b.4-N1: no fade, no discard,
++	/// culling without a far plane; the game's far plane only decided by view depth, so distant
++	/// objects popped in when the head turned). C64_FAR=800 restores the reference limit.
 +	/// </summary>
-+	public static bool FarOff { get; } = Environment.GetEnvironmentVariable("C64_FAR") == "off";
++	public static bool FarOff { get; } = Environment.GetEnvironmentVariable("C64_FAR") != "800";
 +
 +	/// <summary>Far plane of the world camera: 800, or practically infinite with C64_FAR=off on the reverse-Z path.</summary>
 +	public static float WorldFarPlane => ReverseZ && FarOff ? 1_000_000f : 800f;
@@ -2298,6 +2559,98 @@ index 0000000..8bb70e1
 +		public nint RateMap;
 +	}
 +
++	// ---- Head pose (M4b.4) ----
++	//
++	// The host hands over the eye and head transforms relative to its reference O (position and
++	// yaw of the device anchor at the reference time) in visionOS space (Y up, -Z forward,
++	// metres) and a binocular culling matrix (projection times the view from the device space
++	// into the binocular camera, CompositorServices). Celeste converts at one place
++	// (WorldFromRelative): axes (x, y, z) -> (x, -z, y), scale WorldScale, then the base of the
++	// game camera (position and yaw of LookAt - Position, no pitch). The pose stays available
++	// after the frame (StereoSession), so the update of the next frame culls and sorts with it.
++
++	/// <summary>The last head pose the host handed over, in visionOS space relative to O.</summary>
++	public sealed class StereoPose
++	{
++		/// <summary>Eye transforms (O-from-eye), row-vector layout as copied from simd (rows = axes right, up, back, position).</summary>
++		public Matrix Eye0, Eye1;
++		/// <summary>Head transform (O-from-anchor), same layout.</summary>
++		public Matrix Head;
++		/// <summary>Binocular culling matrix (device space to clip, reverse-Z), from the host.</summary>
++		public Matrix Culling;
++		/// <summary>Changes with every BeginVRFrame; cameras drop their cached stereo matrices when it does.</summary>
++		public int Version;
++	}
++
++	/// <summary>The head pose of the last stereo frame (null before the first); the camera of the world uses it.</summary>
++	public static StereoPose? StereoSession { get; private set; }
++
++	/// <summary>Diagnostics C64_MATRIX_SELFTEST: identity (game camera for both eyes, the M4b.3a image), shift (head 0.5 m to the right), none.</summary>
++	public static string MatrixSelftest { get; } = Environment.GetEnvironmentVariable("C64_MATRIX_SELFTEST") switch
++	{
++		"identity" => "identity",
++		"shift" => "shift",
++		_ => "none",
++	};
++
++	/// <summary>True for a target the stereo world renders into (A or an imported drawable), also outside a frame.</summary>
++	public static bool IsStereoTarget(IDrawableTarget? target)
++	{
++		if (target == null)
++			return false;
++		if (ReferenceEquals(target, Intermediate))
++			return true;
++		foreach (var imported in imports.Values)
++			if (ReferenceEquals(target, imported.Target))
++				return true;
++		return false;
++	}
++
++	/// <summary>Yaw of the game camera's forward (LookAt - Position) in the XY plane: forward = Rz(yaw) * +Y.</summary>
++	public static float BaseYaw(Vec3 position, Vec3 lookAt)
++	{
++		var f = lookAt - position;
++		if (MathF.Abs(f.X) < 1e-6f && MathF.Abs(f.Y) < 1e-6f)
++			return 0;
++		return MathF.Atan2(-f.X, f.Y);
++	}
++
++	/// <summary>
++	/// visionOS direction (Y up, -Z forward) to Celeste direction (Z up, +Y forward): a rotation
++	/// of -90 degrees about X, (x, y, z) -> (x, -z, y).
++	/// </summary>
++	public static Vec3 ToCelesteDirection(Vec3 v) => new(v.X, -v.Z, v.Y);
++
++	/// <summary>
++	/// World-from-eye (or world-from-head) in Celeste's world from a transform relative to the
++	/// host's reference O: axes through ToCelesteDirection, the position scaled with WorldScale,
++	/// both rotated by the game camera's yaw and placed at its position. Row-vector layout.
++	/// </summary>
++	public static Matrix WorldFromRelative(in Matrix relative, Vec3 basePosition, float baseYaw)
++	{
++		var rz = Matrix.CreateRotationZ(baseYaw);
++		var right = Vec3.TransformNormal(ToCelesteDirection(new Vec3(relative.M11, relative.M12, relative.M13)), rz);
++		var up = Vec3.TransformNormal(ToCelesteDirection(new Vec3(relative.M21, relative.M22, relative.M23)), rz);
++		var back = Vec3.TransformNormal(ToCelesteDirection(new Vec3(relative.M31, relative.M32, relative.M33)), rz);
++		var position = basePosition + Vec3.TransformNormal(ToCelesteDirection(new Vec3(relative.M41, relative.M42, relative.M43)) * WorldScale, rz);
++		return new Matrix(
++			right.X, right.Y, right.Z, 0,
++			up.X, up.Y, up.Z, 0,
++			back.X, back.Y, back.Z, 0,
++			position.X, position.Y, position.Z, 1);
++	}
++
++	/// <summary>
++	/// Diagnostics for the Mac host: pixel of a world point for one eye, from the game camera
++	/// (position, look-at), the eye's transform relative to O, a projection and the image size.
++	/// </summary>
++	public static Vec2 DebugProject(Vec3 cameraPosition, Vec3 cameraLookAt, in Matrix eyeRelative, in Matrix projection, Vec3 worldPoint, int width, int height)
++	{
++		Matrix.Invert(WorldFromRelative(eyeRelative, cameraPosition, BaseYaw(cameraPosition, cameraLookAt)), out var view);
++		var clip = Vec4.Transform(new Vec4(worldPoint, 1), view * projection);
++		return new Vec2((clip.X / clip.W + 1) / 2 * width, (1 - clip.Y / clip.W) / 2 * height);
++	}
++
 +	/// <summary>The current stereo frame, null outside of one (then World renders to its own target).</summary>
 +	public static VRFrame? Frame { get; private set; }
 +
@@ -2325,6 +2678,7 @@ index 0000000..8bb70e1
 +	private const int ImportKeepFrames = 120;
 +	private static long frameCounter;
 +	private static bool projectionShapeLogged;
++	private static bool headPoseLogged;
 +
 +	/// <summary>True when the target is the sRGB-encoded drawable of the current stereo frame.</summary>
 +	public static bool IsSrgbTarget(IDrawableTarget? target)
@@ -2350,7 +2704,8 @@ index 0000000..8bb70e1
 +	/// </summary>
 +	public static void BeginVRFrame(GraphicsDevice device, nint colorTexture, nint depthTexture, int width, int height, int layers,
 +		bool colorSrgb, nint rateMap, int logicalWidth, int logicalHeight, int physicalWidth, int physicalHeight,
-+		Matrix projection0, Matrix projection1)
++		Matrix projection0, Matrix projection1,
++		Matrix eye0Relative, Matrix eye1Relative, Matrix headRelative, Matrix cullingProjection, bool originReset)
 +	{
 +		if (!ReverseZ)
 +			throw new InvalidOperationException("the stereo world pass needs the reverse-Z path (celeste_init_options.reverse_z = 1)");
@@ -2438,6 +2793,29 @@ index 0000000..8bb70e1
 +			var (l0, r0, t0, b0) = Tangents(projection0);
 +			var (l1, r1, t1, b1) = Tangents(projection1);
 +			Log.Info($"[c64-stereo] projections eye0 tangents l={l0:F3} r={r0:F3} t={t0:F3} b={b0:F3} eye1 l={l1:F3} r={r1:F3} t={t1:F3} b={b1:F3} M33={projection0.M33:F3}/{projection1.M33:F3} (0 = infinite far) near={NearUnits:F2} units");
++		}
++
++		// head pose relative to O (M4b.4); the shift selftest moves head and eyes 0.5 m to the right
++		if (MatrixSelftest == "shift")
++		{
++			var shift = Matrix.CreateTranslation(0.5f, 0, 0);
++			eye0Relative = shift;
++			eye1Relative = shift;
++			headRelative = shift;
++		}
++		StereoSession = new StereoPose
++		{
++			Eye0 = eye0Relative,
++			Eye1 = eye1Relative,
++			Head = headRelative,
++			Culling = cullingProjection,
++			Version = (StereoSession?.Version ?? 0) + 1,
++		};
++		if (originReset || !headPoseLogged)
++		{
++			headPoseLogged = true;
++			var h = headRelative;
++			Log.Info($"[c64-head] pose relative to O: head=({h.M41:F3}, {h.M42:F3}, {h.M43:F3}) m eye0=({eye0Relative.M41:F3}, {eye0Relative.M42:F3}, {eye0Relative.M43:F3}) eye1=({eye1Relative.M41:F3}, {eye1Relative.M42:F3}, {eye1Relative.M43:F3}) selftest={MatrixSelftest} originReset={(originReset ? 1 : 0)}");
 +		}
 +
 +		Frame = new VRFrame

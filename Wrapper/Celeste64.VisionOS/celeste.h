@@ -146,8 +146,11 @@ int32_t celeste_set_depth_near(double near_meters);
  * compositor's for the drawable or NULL; logical_* is its screen size and physical_* its
  * physical size of layer 0 (the texture size without a map). projection holds one reverse-Z
  * infinite projection per view, 16 floats each, column-major as simd_float4x4 (the game uses
- * them with its own near plane in world units); view_transform the origin-from-view transforms
- * (unused in M4b.3a). drew_world and flushes are outputs. */
+ * them with its own near plane in world units); view_transform and head_transform the eye and
+ * head transforms relative to the host's reference O, culling_projection the binocular culling
+ * matrix (all 16 floats column-major as simd_float4x4). The game converts them to its world at
+ * one place: axes (x, y, z) -> (x, -z, y), scale (10 units per metre), on the base of its game
+ * camera (position and yaw). drew_world and flushes are outputs. */
 typedef struct celeste_vr_frame {
     int32_t size;                     /* sizeof(celeste_vr_frame) */
     int32_t view_count;               /* 2 */
@@ -163,8 +166,14 @@ typedef struct celeste_vr_frame {
     int32_t physical_width;
     int32_t physical_height;
     float projection[32];             /* view 0: 0..15, view 1: 16..31 */
-    float view_transform[32];
+    float view_transform[32];         /* O-from-eye per view (M4b.4): inverse(O) * anchor * views[i].transform */
     double near_meters;               /* near plane of the layer in metres (as celeste_set_depth_near) */
+    /* Head pose (M4b.4), visionOS space (Y up, -Z forward, metres), relative to the host's
+     * reference O (position and yaw of the device anchor when the reference was set): */
+    float head_transform[16];         /* O-from-anchor */
+    float culling_projection[16];     /* binocular culling matrix (device space to clip, reverse-Z, widened tangents) */
+    int32_t origin_reset;             /* 1 in the frame the host set O anew (logged by the game) */
+    int32_t reserved2;
     int32_t drew_world;               /* out: 1 when the world was rendered into the drawable */
     int32_t flushes;                  /* out: command buffer submissions the game made for its passes (2 buffers each) */
 } celeste_vr_frame;

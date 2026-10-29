@@ -1006,6 +1006,126 @@ nonisolated enum CelesteProbe {
 
     static let headPose = HeadPose()
 
+    /// M4b.4: Bezugspunkt O für die Kopfpose: Position und Gieren des Device Anchors zu einem
+    /// Referenzzeitpunkt. Gesetzt nach `settleFrames` Frames ab Start oder Fortsetzen (Pose soll
+    /// ruhig sein), `recenterFrames` Frames nach onWorldRecenter ended (bei ended zeigt die Pose
+    /// noch die alten Werte, Probe 2026-10-27) und sofort bei einem Sprung (über 0,5 m oder 10°
+    /// in einem Frame). Liefert pro Frame die Pose relativ zu O (inverse(O) · anchor). Render-
+    /// Thread schreibt, Hauptthread meldet den Recenter.
+    nonisolated final class StereoOrigin: @unchecked Sendable {
+        static let shared = StereoOrigin()
+        static let settleFrames = 90
+        static let recenterFrames = 20
+        private let lock = NSLock()
+        private var reference: simd_float4x4?
+        private var referenceInverse = matrix_identity_float4x4
+        private var settleRemaining = StereoOrigin.settleFrames
+        private var settleReason = "Start"
+        private var recenterRemaining = -1
+        private var firstPoseAfterRecenter: String?
+        private var lastAnchor: simd_float4x4?
+        private var resets = 0
+        private var lastRelative = matrix_identity_float4x4
+
+        /// Rotation um Y (Gieren) plus Position des Anchors; Nicken und Rollen fallen weg.
+        static func yawOnly(_ anchor: simd_float4x4) -> simd_float4x4 {
+            let backFlat = SIMD3<Float>(anchor.columns.2.x, 0, anchor.columns.2.z)
+            let length = simd_length(backFlat)
+            let back = length > 1e-4 ? backFlat / length : SIMD3<Float>(0, 0, 1)
+            let up = SIMD3<Float>(0, 1, 0)
+            let right = simd_cross(up, back)
+            return simd_float4x4(columns: (SIMD4(right, 0), SIMD4(up, 0), SIMD4(back, 0), anchor.columns.3))
+        }
+
+        /// Gieren in Grad, 0 = −Z, positiv nach rechts (wie HeadPose).
+        static func yawDegrees(_ m: simd_float4x4) -> Float {
+            let forward = -SIMD3<Float>(m.columns.2.x, m.columns.2.y, m.columns.2.z)
+            return atan2(forward.x, -forward.z) * 180 / .pi
+        }
+
+        static func position(_ m: simd_float4x4) -> SIMD3<Float> {
+            SIMD3(m.columns.3.x, m.columns.3.y, m.columns.3.z)
+        }
+
+        func recenterEnded() {
+            lock.withLock {
+                recenterRemaining = Self.recenterFrames
+                firstPoseAfterRecenter = nil
+            }
+        }
+
+        func requestSettle(_ reason: String) {
+            lock.withLock {
+                settleRemaining = Self.settleFrames
+                settleReason = reason
+            }
+        }
+
+        /// Pose dieses Frames relativ zu O; reset = O wurde in diesem Frame gesetzt.
+        func update(anchor: simd_float4x4, frameIndex: UInt64) -> (relative: simd_float4x4, reset: Bool) {
+            lock.lock()
+            defer { lock.unlock() }
+            var reset = false
+            var reason = ""
+            // Sprung gegenüber dem Vorframe
+            if let last = lastAnchor {
+                let jump = simd_length(Self.position(anchor) - Self.position(last))
+                var dYaw = abs(Self.yawDegrees(anchor) - Self.yawDegrees(last))
+                if dYaw > 180 { dYaw = 360 - dYaw }
+                if jump > 0.5 || dYaw > 10 {
+                    reset = true
+                    reason = String(format: "Sprung %.2f m, %.1f°", jump, dYaw)
+                }
+            }
+            lastAnchor = anchor
+            // Ruhephase nach Start oder Fortsetzen
+            if settleRemaining > 0 {
+                settleRemaining -= 1
+                if settleRemaining == 0 {
+                    reset = true
+                    reason = "\(settleReason), \(Self.settleFrames) Frames"
+                }
+            }
+            // Recenter: erst einige Frames nach ended
+            if recenterRemaining >= 0 {
+                if recenterRemaining == Self.recenterFrames - 1 || firstPoseAfterRecenter == nil {
+                    firstPoseAfterRecenter = String(format: "(%.2f, %.2f, %.2f) yaw=%.1f°", Self.position(anchor).x, Self.position(anchor).y, Self.position(anchor).z, Self.yawDegrees(anchor))
+                }
+                recenterRemaining -= 1
+                if recenterRemaining < 0 {
+                    reset = true
+                    reason = "Recenter, \(Self.recenterFrames) Frames nach ended, erste Pose danach \(firstPoseAfterRecenter ?? "-")"
+                }
+            }
+            if reset || reference == nil {
+                let o = Self.yawOnly(anchor)
+                if reset {
+                    reference = o
+                    referenceInverse = o.inverse
+                    resets += 1
+                    c64Record(String(format: "[c64-recenter] tMs=%@ frame=%llu O neu gesetzt (%@): O=(%.2f, %.2f, %.2f) yaw=%.1f° resets=%d",
+                                     LaunchClock.tMs, frameIndex, reason, Self.position(o).x, Self.position(o).y, Self.position(o).z, Self.yawDegrees(o), resets))
+                } else {
+                    // noch kein O: vorläufig die eigene Pose als Bezug (kopffest bis zur Ruhephase)
+                    lastRelative = o.inverse * anchor
+                    return (lastRelative, false)
+                }
+            }
+            lastRelative = referenceInverse * anchor
+            return (lastRelative, reset)
+        }
+
+        /// [c64-head]: Versatz zu O in Metern und Gieren relativ zu O.
+        var line: String {
+            lock.withLock {
+                guard let reference else { return "O=- (noch nicht gesetzt, settle=\(settleRemaining))" }
+                let p = Self.position(lastRelative)
+                return String(format: "offset=(%.2f, %.2f, %.2f) m yawRel=%.1f° O=(%.2f, %.2f, %.2f) yawO=%.1f° resets=%d",
+                              p.x, p.y, p.z, Self.yawDegrees(lastRelative), Self.position(reference).x, Self.position(reference).y, Self.position(reference).z, Self.yawDegrees(reference), resets)
+            }
+        }
+    }
+
     /// Lebenszeichen-Sonde (M4a.5c-6): ein eigener Thread «c64-alive», geweckt vom Hintergrund-
     /// Flag, schreibt einmal pro Sekunde eine Zeile in die Probe, höchstens 600 je Pause; beim
     /// Fortsetzen eine Zeile mit der Lücke seit dem letzten Lebenszeichen. Ein vom System
