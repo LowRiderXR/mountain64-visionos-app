@@ -83,6 +83,14 @@
 //                       1000 px: Punkt in 2 m ergibt Disparität 16 px (±10 %), Achsmarken vorne
 //                       (mittig), rechts (x ≈ 750) und oben (y ≈ 250); linkes Auge sieht den
 //                       Punkt rechts der Mitte
+//   --layer-size WxH    Grösse der externen Schichten (Standard 1280x720; 2624x2560 wie das
+//                       Drawable der M5 bei Qualität 1,0)
+//   --gpu-passes        M4b Leistung: eigener Completion-Rückruf; je Command Buffer GPU-Start und
+//                       -Ende, je Sekunde inklusive und exklusive Zeit je Pass (world, edge,
+//                       sprites, rest, canvas) und die Summe pro Welt-Frame
+//   --metal-capture PATH:TICK
+//                       Metal-Aufnahme des Ticks TICK als .gputrace nach PATH (Prozess braucht
+//                       METAL_CAPTURE_ENABLED=1), in Xcode öffnen
 //   --depth-check N     alle N Ticks drei Testquads in 1, 5 und 30 m vor der Kamera (im Blickraum)
 //                       in das Welt-Ziel zeichnen, die Tiefe zurücklesen: near/d muss den Abstand
 //                       auf 1 % treffen; dazu die kleinste Tiefe des Bildes (Himmel: > 0, im
@@ -101,6 +109,7 @@
 // gemeldet), Callbacks.
 
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using Celeste64;
 using Foster.Framework;
@@ -143,6 +152,9 @@ bool vrDepth = false, testProjection = false;
 int depthCheck = 0;
 // M4b.3a: Stereo-Weltpass, interne Auflösung, Schicht-Dumps, Vergleich Drawable gegen A
 bool vrWorld = false, vrCheck = false, stereoSelftest = false;
+bool gpuPasses = false;
+string? metalCapturePath = null; long metalCaptureTick = -1;
+int layerSizeW = 1280, layerSizeH = 720;
 const float StereoIpd = 0.064f;
 int resW = 0, resH = 0;
 string? layerDump = null;
@@ -193,6 +205,19 @@ for (int i = 0; i < args.Length; i++)
 		case "--vr-world": vrWorld = true; vrDepth = true; break;
 		case "--vr-check": vrCheck = true; break;
 		case "--stereo-selftest": stereoSelftest = true; break;
+		case "--gpu-passes": gpuPasses = true; break;
+		case "--layer-size":
+		{
+			var parts = args[++i].Split('x');
+			layerSizeW = int.Parse(parts[0]); layerSizeH = int.Parse(parts[1]);
+			break;
+		}
+		case "--metal-capture":
+		{
+			var parts = args[++i].Split(':');
+			metalCapturePath = parts[0]; metalCaptureTick = long.Parse(parts[1]);
+			break;
+		}
 		case "--res":
 		{
 			var parts = args[++i].Split('x');
@@ -257,6 +282,19 @@ if (layers == "external")
 	SDL_SetPointerProperty(kitProperties, SDL_PROP_GPU_DEVICE_CREATE_METAL_DEVICE_POINTER, hostDevice);
 	SDL_SetPointerProperty(kitProperties, SDL_PROP_GPU_DEVICE_CREATE_METAL_COMMAND_QUEUE_POINTER, hostQueue);
 	Log.Info($"[machost] Host-Device 0x{hostDevice:x} und Queue 0x{hostQueue:x} als P1-Properties gesetzt");
+}
+unsafe
+{
+	if (gpuPasses)
+	{
+		// M4b Leistung: eigener Rückruf statt des Zählers aus VisionOSKit (überschreibt ihn)
+		if (kitProperties == 0)
+			kitProperties = SDL_CreateProperties();
+		delegate* unmanaged[Cdecl]<nint, nint, void> cb = &GpuPassTimer.OnCompleted;
+		SDL_SetPointerProperty(kitProperties, SDL_PROP_GPU_DEVICE_CREATE_METAL_COMMAND_BUFFER_COMPLETED_CALLBACK_POINTER, (nint)cb);
+		SDL_SetPointerProperty(kitProperties, SDL_PROP_GPU_DEVICE_CREATE_METAL_COMMAND_BUFFER_COMPLETED_USERDATA_POINTER, nint.Zero);
+		Log.Info("[machost] gpu passes: completion callback set (GPUStartTime/GPUEndTime per command buffer)");
+	}
 }
 
 var flags = VisionOSKit.Flags | (noPresent ? AppFlags.HiddenWindow : AppFlags.None);
@@ -358,7 +396,8 @@ if (passSelftest)
 }
 
 // ---- K6d.1: Ausgabeziel mit zwei Schichten ----
-const int LayerW = 1280, LayerH = 720, LayerCount = 2;
+int LayerW = layerSizeW, LayerH = layerSizeH;
+const int LayerCount = 2;
 Texture? layerColor = null, layerDepthTex = null, previewLeft = null, previewRight = null;
 Target? composeCheck = null;
 Target? layer0 = null, layer1 = null;
@@ -379,13 +418,13 @@ if (layers != "none")
 		else
 		{
 			// vorhandene MTLTexture des Hosts: Farbe lesbar (für die Vorschau-Blits), Tiefe nur Ziel
-			mtlColor = K6dMetal.k6d_metal_array_texture(hostDevice, LayerW, LayerH, LayerCount, 0);
+			mtlColor = K6dMetal.k6d_metal_array_texture(hostDevice, (uint)LayerW, (uint)LayerH, LayerCount, 0);
 			extColorProps = SDL_CreateProperties();
 			SDL_SetPointerProperty(extColorProps, SDL_PROP_GPU_TEXTURE_CREATE_METAL_TEXTURE_POINTER, mtlColor);
 			layerColor = new Texture(gd, LayerW, LayerH, TextureFormat.Color, LayerCount, TextureFlags.RenderTarget | TextureFlags.Sampled, extColorProps, "k6d-ext-color");
 			if (layerDepth)
 			{
-				mtlDepth = K6dMetal.k6d_metal_array_texture(hostDevice, LayerW, LayerH, LayerCount, depthFormat == "d16" ? 1 : 2);
+				mtlDepth = K6dMetal.k6d_metal_array_texture(hostDevice, (uint)LayerW, (uint)LayerH, LayerCount, depthFormat == "d16" ? 1 : 2);
 				extDepthProps = SDL_CreateProperties();
 				SDL_SetPointerProperty(extDepthProps, SDL_PROP_GPU_TEXTURE_CREATE_METAL_TEXTURE_POINTER, mtlDepth);
 				layerDepthTex = new Texture(gd, LayerW, LayerH, depthFormat == "d16" ? TextureFormat.Depth16 : TextureFormat.Depth32, LayerCount, TextureFlags.RenderTarget, extDepthProps, "k6d-ext-depth");
@@ -697,6 +736,11 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 	if (jitterMs > 0)
 		Thread.Sleep(TimeSpan.FromMilliseconds(jitterRng.NextDouble() * jitterMs));
 
+	if (metalCapturePath != null && totalTicks == metalCaptureTick)
+	{
+		var ok = K6dMetal.k6d_metal_capture_start(hostDevice != 0 ? hostDevice : K6dMetal.k6d_metal_device(), metalCapturePath);
+		Log.Info($"[machost] metal capture tick={totalTicks} path={metalCapturePath} started={ok}");
+	}
 	var frameBefore = game.Time.Frame;
 	// K6f.3: Fenster minimieren und zurückholen (SDL-Fensterhandle über SDL_GetWindows, Foster
 	// zeigt es nicht); ohne Swapchain-Bild darf kein Pass scheitern
@@ -745,6 +789,18 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 		var (rendered, flushes) = VisionOSKit.EndVRFrame();
 		if (rendered) { if (vrWorldFrames++ == 0) Log.Info($"[machost] vr world: first world frame at tick {totalTicks} (frame {game.Time.Frame}), flushes={flushes}"); }
 		else vrCanvasFrames++;
+		// M4b Leistung: Etiketten der Buffer dieses Ticks (je Abschicken Upload und Render)
+		if (gpuPasses)
+		{
+			if (rendered && flushes == 3) GpuPassTimer.Expect(["world", "world", "edge", "edge", "sprites", "sprites", "rest", "rest"], rendered);
+			else if (!rendered && flushes == 0) GpuPassTimer.Expect(["canvas", "canvas"], rendered);
+			else { var l = new List<string>(); for (int i = 0; i <= flushes; i++) { l.Add($"pass{i}"); l.Add($"pass{i}"); } GpuPassTimer.Expect(l, rendered); }
+		}
+	}
+	if (metalCapturePath != null && totalTicks == metalCaptureTick)
+	{
+		K6dMetal.k6d_metal_capture_stop();
+		Log.Info($"[machost] metal capture stopped: {metalCapturePath}");
 	}
 
 	// K6e.2: Messbild auswerten, beide Schichten, Soll aus der Map
@@ -1079,6 +1135,8 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 	var elapsedSecond = (clock.Elapsed - secondStart).TotalSeconds;
 	if (elapsedSecond >= 1.0)
 	{
+		if (gpuPasses)
+			GpuPassTimer.Report();
 		var callbacks = VisionOSKit.CompletedTotal - callbacksAtSecondStart;
 		Log.Info($"[machost] t={clock.Elapsed.TotalSeconds:F1}s ticks={ticks} updates={updates} updates/tick={(double)updates / ticks:F2} maxUpdates/tick={maxUpdatesPerTick} delta={delta.TotalMilliseconds:F3}ms fosterDelta={lastReportedDelta * 1000:F3}ms frame={game.Time.Frame} renderFrame={game.Time.RenderFrame} callbacks={(gpuTiming ? callbacks.ToString() : "-")}");
 		secondStart = clock.Elapsed;
@@ -1134,9 +1192,87 @@ static unsafe void PushKey(bool down, SDL_Scancode scancode = SDL_Scancode.SDL_S
 	SDL_PushEvent(ref ev);
 }
 
+/// <summary>
+/// M4b Leistung: GPU-Zeit je Command Buffer über den Completion-Rückruf des Kits; die Etiketten
+/// kommen nach jedem Tick in Commit-Reihenfolge (zwei Buffer je Abschicken). Exklusive Zeit eines
+/// Buffers = Ende minus max(Start, Ende des Vorgängers), weil die Queue seriell ausführt, der
+/// Start aber schon beim Einreihen gesetzt wird; die inklusive Zeit ist Ende minus Start.
+/// </summary>
+static unsafe class GpuPassTimer
+{
+	private static readonly object gate = new();
+	private static readonly Queue<(string Label, bool World)> labels = new();
+	private static readonly List<(double Start, double End)> completed = [];
+	private static double previousEnd;
+	private static readonly Dictionary<string, (double Incl, double Excl, int Count)> sums = [];
+	private static int worldFrames, canvasFrames, unlabelled;
+	private static double frameTotalSum; private static int frameTotalCount; private static double frameStart = -1, frameEnd;
+
+	[UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+	public static void OnCompleted(nint userdata, nint commandBuffer)
+	{
+		if (K6dMetal.k6d_metal_command_buffer_times(commandBuffer, out var start, out var end) == 0)
+			return;
+		lock (gate)
+			completed.Add((start, end));
+	}
+
+	public static void Expect(IEnumerable<string> frameLabels, bool world)
+	{
+		lock (gate)
+		{
+			foreach (var l in frameLabels) labels.Enqueue((l, world));
+			if (world) worldFrames++; else canvasFrames++;
+		}
+	}
+
+	/// <summary>Pairs completed buffers with labels and accumulates inclusive and exclusive times.</summary>
+	private static void Drain()
+	{
+		lock (gate)
+		{
+			foreach (var (start, end) in completed)
+			{
+				if (end <= 0 || start <= 0) continue;
+				var excl = end - Math.Max(start, previousEnd);
+				if (excl < 0) excl = 0;
+				previousEnd = Math.Max(previousEnd, end);
+				string label; bool world = false;
+				if (labels.Count > 0) { var e = labels.Dequeue(); label = e.Label; world = e.World; } else { label = "unlabelled"; unlabelled++; }
+				var s = sums.GetValueOrDefault(label);
+				sums[label] = (s.Incl + (end - start), s.Excl + excl, s.Count + 1);
+				// Gesamtzeit eines Welt-Frames: vom ersten Start (world) bis zum letzten Ende (rest)
+				if (world)
+				{
+					if (label == "world" && frameStart < 0) frameStart = start;
+					if (label == "rest") { frameEnd = end; if (frameStart >= 0) { frameTotalSum += frameEnd - frameStart; frameTotalCount++; } frameStart = -1; }
+				}
+			}
+			completed.Clear();
+		}
+	}
+
+	public static void Report()
+	{
+		Drain();
+		lock (gate)
+		{
+			var wf = Math.Max(worldFrames, 1); var cf = Math.Max(canvasFrames, 1);
+			string Part(string label) => sums.TryGetValue(label, out var s) ? $"{label}={s.Excl / (label == "canvas" ? cf : wf) * 1000:F3}/{s.Incl / (label == "canvas" ? cf : wf) * 1000:F3}" : $"{label}=-";
+			var exclSum = 0.0;
+			foreach (var l in new[] { "world", "edge", "sprites", "rest" }) if (sums.TryGetValue(l, out var s)) exclSum += s.Excl;
+			Log.Info($"[machost] gpu passes (ms/frame exclusive/inclusive) {Part("world")} {Part("edge")} {Part("sprites")} {Part("rest")} {Part("canvas")} exclusiveSum={exclSum / wf * 1000:F3} frameSpan={(frameTotalCount > 0 ? frameTotalSum / frameTotalCount * 1000 : 0):F3} worldFrames={worldFrames} canvasFrames={canvasFrames} unlabelled={unlabelled} pending={labels.Count}");
+			sums.Clear(); worldFrames = 0; canvasFrames = 0; unlabelled = 0; frameTotalSum = 0; frameTotalCount = 0;
+		}
+	}
+}
+
 /// <summary>Nativer Helfer native/k6d_metal.m (libk6dmetal.dylib neben dem Programm).</summary>
 static partial class K6dMetal
 {
+	[DllImport("k6dmetal")] public static extern int k6d_metal_command_buffer_times(nint commandBuffer, out double start, out double end);
+	[DllImport("k6dmetal")] public static extern int k6d_metal_capture_start(nint device, [MarshalAs(UnmanagedType.LPStr)] string path);
+	[DllImport("k6dmetal")] public static extern void k6d_metal_capture_stop();
 	[DllImport("k6dmetal")] public static extern nint k6d_metal_device();
 	[DllImport("k6dmetal")] public static extern nint k6d_metal_queue(nint device);
 	[DllImport("k6dmetal")] public static extern nint k6d_metal_array_texture(nint device, uint width, uint height, uint layers, int kind);

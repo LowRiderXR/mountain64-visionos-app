@@ -298,6 +298,10 @@ nonisolated final class Renderer: @unchecked Sendable {
     private var lastPresentationTime: TimeInterval?
     private var lastFrameIndex: UInt64?
     private var totalFrames: UInt64 = 0
+    // M4b Leistung N3: Raster-Intervall für presentGaps (Mittel des letzten Fensters) und die
+    // einmalige Zeile zur Zeitbasis von gpuEndTime gegen die Compositor-Uhr.
+    private var presentRasterInterval: TimeInterval = 1.0 / 90.0
+    private var timebaseLogged = false
 
     // Wanduhr-Intervall zwischen aufeinanderfolgenden Rückkehren von queryNextFrame.
     // Zeigt den Block, weil es am Render-Thread misst, nicht am Frame-Zähler des Compositors.
@@ -1080,13 +1084,6 @@ nonisolated final class Renderer: @unchecked Sendable {
             return
         }
         commandBuffer.label = "c64-frame \(frame.frameIndex)"
-        let frameIndexForHandler = frame.frameIndex
-        // M4a.5c-4: nach dem Fortsetzen die ersten drei Frames mit Buffer-Status loggen.
-        let logResume = resumeFramesToLog > 0
-        if logResume { resumeFramesToLog -= 1 }
-        commandBuffer.addCompletedHandler { [weak self] buffer in
-            self?.noteCommandBufferCompletion(buffer, frameIndex: frameIndexForHandler, logResume: logResume)
-        }
 
         // Pose und Timing aus dem Drawable für das eingebaute Display (target builtIn,
         // drawable.h:36-44, Vorrang laut drawable.h:428-429), Rückfall auf das erste.
@@ -1094,6 +1091,29 @@ nonisolated final class Renderer: @unchecked Sendable {
         // ohne Anker. Der Anker wird auf alle Drawables gesetzt.
         let primary = drawables.first(where: { $0.target == .builtIn }) ?? drawables[0]
         let presentationTime = primary.frameTiming.presentationTime.timeInterval
+
+        // M4b Leistung N3: Termin des Frames (frame_timing.h:45-56, «finish all CPU and GPU work
+        // by the returned time») an den Completed-Handler des Host-Buffers, der als letzter Buffer
+        // des Frames auf der seriellen Queue das GPU-Ende markiert. Zeitbasis einmal belegen:
+        // gpuEndTime liegt in der Basis von CACurrentMediaTime (Host-Zeit, Mach), die Compositor-
+        // Uhr zählt Mach-Ticks seit ihrer Epoche (cp_types.h:27-33); der Versatz wird gemessen
+        // und beim Vergleich abgezogen, die Zeile zeigt, ob er praktisch 0 ist.
+        let renderingDeadline = primary.frameTiming.renderingDeadline.timeInterval
+        if !timebaseLogged {
+            timebaseLogged = true
+            let compositorNow = LayerRenderer.Clock().now.timeInterval
+            let mediaNow = CACurrentMediaTime()
+            if let offset = CelesteProbe.frameTiming.calibrate(compositorNow: compositorNow, mediaTime: mediaNow) {
+                c64Record(String(format: "[c64-deadline] timebase CACurrentMediaTime−compositorClock=%+.3f ms (compositor=%.3f s media=%.3f s); margin = renderingDeadline − (gpuEndTime − offset)", offset * 1000, compositorNow, mediaNow))
+            }
+        }
+        let frameIndexForHandler = frame.frameIndex
+        // M4a.5c-4: nach dem Fortsetzen die ersten drei Frames mit Buffer-Status loggen.
+        let logResume = resumeFramesToLog > 0
+        if logResume { resumeFramesToLog -= 1 }
+        commandBuffer.addCompletedHandler { [weak self] buffer in
+            self?.noteCommandBufferCompletion(buffer, frameIndex: frameIndexForHandler, renderingDeadline: renderingDeadline, logResume: logResume)
+        }
         // M4b.4-N2: Vorhersage gegen die Präsentationszeit des Drawables (Statistik)
         if let predictedPresentation {
             CelesteProbe.tickState.notePresentation(predicted: predictedPresentation, actual: presentationTime)
@@ -1481,11 +1501,13 @@ nonisolated final class Renderer: @unchecked Sendable {
 
     /// Completed-Handler (Metal-Thread): Status ungleich .completed oder gesetzter Fehler zählt
     /// als Fehler; Zeile [c64-cmderr] höchstens einmal pro Sekunde, auch in die Datei.
-    private func noteCommandBufferCompletion(_ buffer: MTLCommandBuffer, frameIndex: UInt64, logResume: Bool = false) {
+    private func noteCommandBufferCompletion(_ buffer: MTLCommandBuffer, frameIndex: UInt64, renderingDeadline: TimeInterval, logResume: Bool = false) {
         let status = buffer.status
         let error = buffer.error
         if status == .completed {
-            let gpuSeconds = buffer.gpuEndTime - buffer.gpuStartTime
+            let gpuStart = buffer.gpuStartTime
+            let gpuEnd = buffer.gpuEndTime
+            let gpuSeconds = gpuEnd - gpuStart
             if gpuSeconds > 0 {
                 cmdErrLock.lock()
                 gpuTimeSum += gpuSeconds
@@ -1493,6 +1515,10 @@ nonisolated final class Renderer: @unchecked Sendable {
                 gpuTimeCount += 1
                 cmdErrLock.unlock()
             }
+            // M4b Leistung N3: exklusive Zeit des Host-Buffers (schliesst das Frame ab) und
+            // der Termin-Abstand; nur Zahlen, keine Allokation.
+            CelesteProbe.celesteGpuPasses.recordHost(start: gpuStart, end: gpuEnd)
+            CelesteProbe.frameTiming.noteHostBuffer(gpuEnd: gpuEnd, deadline: renderingDeadline)
         }
         if logResume {
             // M4a.5c-4: die ersten drei Frames nach dem Fortsetzen, Status und GPU-Zeit.
@@ -1608,6 +1634,11 @@ nonisolated final class Renderer: @unchecked Sendable {
                 statIntervalCount += 1
                 intervalTotalSum += interval
                 intervalTotalCount += 1
+                // M4b Leistung N3: Sprung der presentationTime über 1,5 Raster-Intervalle; das
+                // Raster ist das mittlere Intervall des letzten Fensters (Start 1/90 s).
+                if interval > 1.5 * presentRasterInterval {
+                    CelesteProbe.frameTiming.noteGap()
+                }
             }
         }
         lastPresentationTime = presentationTime
@@ -1657,6 +1688,9 @@ nonisolated final class Renderer: @unchecked Sendable {
             Task { @MainActor [appModel] in
                 appModel.frameLine = line
             }
+            // M4b Leistung N3: Raster für presentGaps aus dem Fenster; Sprünge drücken das
+            // Mittel nur wenig (ein 22-ms-Sprung unter 90 Frames: +0,12 ms).
+            if mean > 0 { presentRasterInterval = mean }
             statWindowStart = now
             statFrames = 0
             statFramesWithoutAnchor = 0

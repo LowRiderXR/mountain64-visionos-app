@@ -268,3 +268,48 @@ int k6d_metal_write_canvas(void *queue, void *texture, const char *png_path, con
         return ok;
     }
 }
+
+/* ---- M4b performance analysis: command buffer GPU times and a Metal capture ---- */
+
+/* GPU start and end time of a completed command buffer (seconds, Metal GPU clock). */
+int k6d_metal_command_buffer_times(void *command_buffer, double *start, double *end)
+{
+    if (!command_buffer) {
+        return 0;
+    }
+    id<MTLCommandBuffer> cb = (__bridge id<MTLCommandBuffer>)command_buffer;
+    if (start) *start = cb.GPUStartTime;
+    if (end) *end = cb.GPUEndTime;
+    return 1;
+}
+
+/* Starts a Metal capture of everything on the device into a .gputrace package at path (the
+   process needs METAL_CAPTURE_ENABLED=1); open the result in Xcode. Returns 1 on success. */
+int k6d_metal_capture_start(void *device, const char *path)
+{
+    @autoreleasepool {
+        if (!device || !path) {
+            return 0;
+        }
+        MTLCaptureManager *manager = [MTLCaptureManager sharedCaptureManager];
+        if (![manager supportsDestination:MTLCaptureDestinationGPUTraceDocument]) {
+            fprintf(stderr, "k6d: GPU trace documents are not supported (METAL_CAPTURE_ENABLED=1 missing?)\n");
+            return 0;
+        }
+        MTLCaptureDescriptor *desc = [MTLCaptureDescriptor new];
+        desc.captureObject = (__bridge id<MTLDevice>)device;
+        desc.destination = MTLCaptureDestinationGPUTraceDocument;
+        desc.outputURL = [NSURL fileURLWithPath:[NSString stringWithUTF8String:path]];
+        NSError *error = nil;
+        if (![manager startCaptureWithDescriptor:desc error:&error]) {
+            fprintf(stderr, "k6d: capture failed: %s\n", error.localizedDescription.UTF8String);
+            return 0;
+        }
+        return 1;
+    }
+}
+
+void k6d_metal_capture_stop(void)
+{
+    [[MTLCaptureManager sharedCaptureManager] stopCapture];
+}

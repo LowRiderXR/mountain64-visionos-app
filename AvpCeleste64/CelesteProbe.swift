@@ -102,9 +102,10 @@ nonisolated enum CelesteProbe {
         guard let raw else { return }
         let buffer = Unmanaged<AnyObject>.fromOpaque(raw).takeUnretainedValue()
         guard let commandBuffer = buffer as? MTLCommandBuffer else { return }
-        let seconds = commandBuffer.gpuEndTime - commandBuffer.gpuStartTime
-        CelesteProbe.celesteGpu.add(seconds)
-        CelesteProbe.celesteGpuPasses.record(max(seconds, 0))
+        let start = commandBuffer.gpuStartTime
+        let end = commandBuffer.gpuEndTime
+        CelesteProbe.celesteGpu.add(end - start)
+        CelesteProbe.celesteGpuPasses.record(start: start, end: end)
     }
 
     /// M4a.3: Celestes Endbild in die Leinwand (celeste_set_canvas), auf dem Hauptthread nach
@@ -271,32 +272,161 @@ nonisolated enum CelesteProbe {
     /// Rückruf an; renderVR legt nach jedem Aufruf die Etiketten der erwarteten Buffer in eine
     /// Warteschlange (je Abschicken zwei Buffer: Upload und Render, GraphicsDeviceSDL.cs:464-465),
     /// der Rückruf ordnet die Zeit dem vordersten Etikett zu.
+    /// M4b Leistung N3: dazu die exklusive Zeit je Buffer wie im MacHost, Ende − max(Start, Ende
+    /// des Vorgängers) auf der gemeinsamen seriellen Queue (Celestes Buffer und der Host-Buffer,
+    /// der als letzter im Frame kommt und das Frame abschliesst). Je Pass die Summe pro Frame
+    /// (mean) und das grösste Frame (max); die Summe aller Buffer eines Frames ebenso. Im
+    /// Rückruf nur Zahlen in festen Feldern, keine Allokation (Etiketten als Indizes).
     nonisolated final class GpuPassStats: @unchecked Sendable {
+        enum Label: Int { case world = 0, edge, sprites, rest, canvas, host, other }
+        static let count = Label.other.rawValue + 1
         private let lock = NSLock()
-        private var pending: [String] = []
-        private var sums: [String: Double] = [:]
+        private var pending: [Int] = []
+        // inklusiv (gpuEnd − gpuStart) je Etikett
+        private var sums = [Double](repeating: 0, count: GpuPassStats.count)
+        // exklusiv je Etikett: Summe, laufender Frame-Wert, Buffer im laufenden Frame, Maximum je Frame
+        private var exclSums = [Double](repeating: 0, count: GpuPassStats.count)
+        private var exclFrame = [Double](repeating: 0, count: GpuPassStats.count)
+        private var exclFrameBuffers = [Int](repeating: 0, count: GpuPassStats.count)
+        private var exclMax = [Double](repeating: 0, count: GpuPassStats.count)
+        // Summe aller Buffer eines Frames (bis einschliesslich Host-Buffer)
+        private var frameTotal = 0.0
+        private var frameTotalSum = 0.0
+        private var frameTotalMax = 0.0
+        private var frameTotalCount = 0
+        private var previousEnd = 0.0
         private var unlabelled = 0
-        func expect(_ labels: [String]) { lock.withLock { pending.append(contentsOf: labels) } }
-        func record(_ seconds: Double) {
+
+        init() { pending.reserveCapacity(64) }
+
+        func expect(_ labels: [Label]) {
+            lock.withLock { for label in labels { pending.append(label.rawValue) } }
+        }
+
+        /// Ein Celeste-Buffer (Kit-Rückruf, Metal-Completion-Thread).
+        func record(start: Double, end: Double) {
             lock.withLock {
+                let index: Int
                 if pending.isEmpty {
                     unlabelled += 1
-                    sums["unlabelled", default: 0] += seconds
+                    index = Label.other.rawValue
                 } else {
-                    sums[pending.removeFirst(), default: 0] += seconds
+                    index = pending.removeFirst()
                 }
+                add(index: index, start: start, end: end, buffersPerFrame: 2)
             }
         }
-        func take() -> (sums: [String: Double], unlabelled: Int, pending: Int) {
+
+        /// Der Host-Buffer des Frames (Completed-Handler des Renderers), schliesst das Frame ab.
+        func recordHost(start: Double, end: Double) {
             lock.withLock {
-                let result = (sums, unlabelled, pending.count)
-                sums = [:]
+                add(index: Label.host.rawValue, start: start, end: end, buffersPerFrame: 1)
+                frameTotalSum += frameTotal
+                frameTotalMax = max(frameTotalMax, frameTotal)
+                frameTotalCount += 1
+                frameTotal = 0
+            }
+        }
+
+        private func add(index: Int, start: Double, end: Double, buffersPerFrame: Int) {
+            let inclusive = max(end - start, 0)
+            let exclusive = max(end - max(start, previousEnd), 0)
+            previousEnd = max(previousEnd, end)
+            sums[index] += inclusive
+            exclSums[index] += exclusive
+            frameTotal += exclusive
+            exclFrame[index] += exclusive
+            exclFrameBuffers[index] += 1
+            if exclFrameBuffers[index] >= buffersPerFrame {
+                exclMax[index] = max(exclMax[index], exclFrame[index])
+                exclFrame[index] = 0
+                exclFrameBuffers[index] = 0
+            }
+        }
+
+        struct Window {
+            var inclusive: [Double]
+            var exclusive: [Double]
+            var exclusiveMax: [Double]
+            var frameTotalMean: Double
+            var frameTotalMax: Double
+            var frames: Int
+            var unlabelled: Int
+            var pending: Int
+            func inclusive(_ label: Label) -> Double { inclusive[label.rawValue] }
+            func exclusive(_ label: Label) -> Double { exclusive[label.rawValue] }
+            func exclusiveMax(_ label: Label) -> Double { exclusiveMax[label.rawValue] }
+        }
+
+        func take() -> Window {
+            lock.withLock {
+                let result = Window(inclusive: sums, exclusive: exclSums, exclusiveMax: exclMax,
+                                    frameTotalMean: frameTotalCount > 0 ? frameTotalSum / Double(frameTotalCount) : 0,
+                                    frameTotalMax: frameTotalMax, frames: frameTotalCount,
+                                    unlabelled: unlabelled, pending: pending.count)
+                for i in 0..<GpuPassStats.count { sums[i] = 0; exclSums[i] = 0; exclMax[i] = 0 }
+                frameTotalSum = 0
+                frameTotalMax = 0
+                frameTotalCount = 0
                 unlabelled = 0
                 return result
             }
         }
     }
     static let celesteGpuPasses = GpuPassStats()
+
+    /// M4b Leistung N3: Termine und Compositor-Raster. Je Frame margin = renderingDeadline −
+    /// gpuEndTime des Host-Buffers (beide in der Zeitbasis der Compositor-Uhr; gpuEndTime kommt
+    /// in der Basis von CACurrentMediaTime, der einmal gemessene Versatz wird abgezogen). Dazu
+    /// die Sprünge der presentationTime über 1,5 Intervalle (presentGaps). Nur Zahlen, ein Lock.
+    nonisolated final class FrameTimingStats: @unchecked Sendable {
+        private let lock = NSLock()
+        private var offsetMediaMinusCompositor = 0.0
+        private var calibrated = false
+        private var marginSum = 0.0
+        private var marginMin = Double.greatestFiniteMagnitude
+        private var marginCount = 0
+        private var missed = 0
+        private var presentGaps = 0
+
+        /// Einmalige Belegung der Zeitbasis: beide Uhren unmittelbar nacheinander gelesen.
+        /// Liefert den Versatz in Sekunden, nil wenn schon kalibriert.
+        func calibrate(compositorNow: TimeInterval, mediaTime: TimeInterval) -> TimeInterval? {
+            lock.withLock {
+                guard !calibrated else { return nil }
+                calibrated = true
+                offsetMediaMinusCompositor = mediaTime - compositorNow
+                return offsetMediaMinusCompositor
+            }
+        }
+
+        /// Host-Buffer fertig (Completed-Handler): gpuEnd in der Basis von CACurrentMediaTime.
+        func noteHostBuffer(gpuEnd: Double, deadline: TimeInterval) {
+            lock.withLock {
+                let margin = deadline - (gpuEnd - offsetMediaMinusCompositor)
+                marginSum += margin
+                marginMin = min(marginMin, margin)
+                marginCount += 1
+                if margin < 0 { missed += 1 }
+            }
+        }
+
+        func noteGap() { lock.withLock { presentGaps += 1 } }
+
+        func take() -> (missed: Int, frames: Int, marginMin: Double, marginMean: Double, presentGaps: Int) {
+            lock.withLock {
+                let result = (missed, marginCount, marginCount > 0 ? marginMin : 0,
+                              marginCount > 0 ? marginSum / Double(marginCount) : 0, presentGaps)
+                marginSum = 0
+                marginMin = Double.greatestFiniteMagnitude
+                marginCount = 0
+                missed = 0
+                presentGaps = 0
+                return result
+            }
+        }
+    }
+    static let frameTiming = FrameTimingStats()
 
     /// Die Leinwandtextur des Hosts; der Renderer übernimmt sie beim Start des ImmersiveSpace.
     @MainActor static var canvasTexture: MTLTexture?
@@ -509,7 +639,7 @@ nonisolated enum CelesteProbe {
             renderMsSum += renderMs
             renderMsMax = max(renderMsMax, renderMs)
             // ein Abschicken am Frame-Ende (RenderFrame → Flush): zwei Buffer
-            CelesteProbe.celesteGpuPasses.expect(["canvas", "canvas"])
+            CelesteProbe.celesteGpuPasses.expect([.canvas, .canvas])
             if !snapshotDone, totalTicks >= Self.snapshotAtTicks, let queue = snapshotQueue, let texture = snapshotTexture {
                 snapshotDone = true
                 CelesteProbe.writeCanvasSnapshot(queue: queue, texture: texture, label: "tick\(totalTicks)")
@@ -539,17 +669,17 @@ nonisolated enum CelesteProbe {
             // Etiketten der Buffer dieses Frames: je FlushPass (Welt, Kante, Sprites) und das
             // Abschicken am Frame-Ende zwei Buffer; Leinwand-Frames nur das Frame-Ende
             let flushes = Int(frame.pointee.flushes)
-            var labels: [String] = []
+            var labels: [GpuPassStats.Label] = []
             if rc == 1 {
                 windowWorldFrames += 1
                 if flushes == 3 {
-                    labels = ["world", "world", "edge", "edge", "sprites", "sprites", "rest", "rest"]
+                    labels = [.world, .world, .edge, .edge, .sprites, .sprites, .rest, .rest]
                 }
             } else if rc == 0, flushes == 0 {
-                labels = ["canvas", "canvas"]
+                labels = [.canvas, .canvas]
             }
             if labels.isEmpty {
-                for index in 0...flushes { labels += ["pass\(index)", "pass\(index)"] }
+                for _ in 0...flushes { labels += [.other, .other] }
             }
             CelesteProbe.celesteGpuPasses.expect(labels)
             if !snapshotDone, totalTicks >= Self.snapshotAtTicks, let queue = snapshotQueue, let texture = snapshotTexture {
@@ -581,10 +711,21 @@ nonisolated enum CelesteProbe {
             let passes = CelesteProbe.celesteGpuPasses.take()
             let worldFrames = Double(max(windowWorldFrames, 1))
             let canvasFrames = Double(max(windowRenders - windowWorldFrames, 1))
-            func perWorld(_ key: String) -> Double { (passes.sums[key] ?? 0) / worldFrames * 1000 }
+            let hostFrames = Double(max(passes.frames, 1))
+            func perWorld(_ label: GpuPassStats.Label) -> Double { passes.inclusive(label) / worldFrames * 1000 }
+            // M4b Leistung N3: exklusive Zeit je Pass (mean je Welt-Frame, max eines Frames), Host-Buffer
+            // je Frame, und die Summe aller Buffer eines Frames; die inklusiven Werte bleiben.
+            func excl(_ label: GpuPassStats.Label, per frames: Double) -> String {
+                String(format: "%.3f/%.3f", passes.exclusive(label) / frames * 1000, passes.exclusiveMax(label) * 1000)
+            }
             let passText = String(format: " worldFrames=%d gpuPass(ms/frame) world=%.3f edge=%.3f sprites=%.3f rest=%.3f canvas=%.3f unlabelled=%d pending=%d",
-                                  windowWorldFrames, perWorld("world"), perWorld("edge"), perWorld("sprites"), perWorld("rest"),
-                                  (passes.sums["canvas"] ?? 0) / canvasFrames * 1000, passes.unlabelled, passes.pending)
+                                  windowWorldFrames, perWorld(.world), perWorld(.edge), perWorld(.sprites), perWorld(.rest),
+                                  passes.inclusive(.canvas) / canvasFrames * 1000, passes.unlabelled, passes.pending)
+                + " gpuExcl(ms/frame mean/max) world=\(excl(.world, per: worldFrames)) edge=\(excl(.edge, per: worldFrames)) sprites=\(excl(.sprites, per: worldFrames)) rest=\(excl(.rest, per: worldFrames)) host=\(excl(.host, per: hostFrames))"
+                + String(format: " sum=%.3f/%.3f", passes.frameTotalMean * 1000, passes.frameTotalMax * 1000)
+            let timing = CelesteProbe.frameTiming.take()
+            let timingText = String(format: " deadlineMissed=%d/%d deadlineMargin(ms) min=%+.2f mean=%+.2f presentGaps=%d",
+                                    timing.missed, timing.frames, timing.marginMin * 1000, timing.marginMean * 1000, timing.presentGaps)
             let wallText = wallCount > 0
                 ? String(format: " wall(ms) mean=%.2f max=%.2f dev(ms) mean=%.3f max=%.3f", wallSum / Double(wallCount) * 1000, wallMax * 1000, devSum / Double(wallCount) * 1000, devMax * 1000)
                 : ""
@@ -596,7 +737,7 @@ nonisolated enum CelesteProbe {
                              deltaSum / Double(windowTicks) * 1000, deltaMax * 1000,
                              updateMsSum / Double(windowTicks), updateMsMax,
                              renderMsSum / Double(renders), renderMsMax,
-                             gpu.mean * 1000, gpu.max * 1000, gpu.count, totalTicks) + wallText + predText + passText)
+                             gpu.mean * 1000, gpu.max * 1000, gpu.count, totalTicks) + wallText + predText + timingText + passText)
             windowStart = now
             windowFrames = 0
             windowTicks = 0
