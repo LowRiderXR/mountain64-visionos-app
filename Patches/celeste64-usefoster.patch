@@ -1898,7 +1898,7 @@ index 33da870..7590a36 100644
  			CutoutMode = false,
  		};
 diff --git a/Source/Scenes/World.cs b/Source/Scenes/World.cs
-index bdfb740..91e3055 100644
+index bdfb740..4080d6c 100644
 --- a/Source/Scenes/World.cs
 +++ b/Source/Scenes/World.cs
 @@ -70,9 +70,20 @@ public class World : Scene
@@ -2130,7 +2130,7 @@ index bdfb740..91e3055 100644
  				Edge = new Color(0x110d33).ToVector4()
  			});
  			batch.PushMaterial(postMaterial);
-@@ -889,6 +1004,69 @@ public class World : Scene
+@@ -889,6 +1004,77 @@ public class World : Scene
  		}
  	}
  
@@ -2144,12 +2144,20 @@ index bdfb740..91e3055 100644
 +	/// amplification); the EdgeVRArray fragment reads A at its physical pixel (same map, same
 +	/// physical layout), draws the outline and copies A's depth into the drawable, so the sprite
 +	/// and transparent passes test against the world and the compositor gets the world depth.
-+	/// Depth write with Always; no clear of the drawable, the quad covers every pixel.
++	/// Depth write with Always. The drawable is cleared first: the clear turns the pass's load
++	/// actions from LOAD into CLEAR (Foster: load_op CLEAR when the pass begins with a clear),
++	/// which is free on a tile-based GPU, while a LOAD reads the whole colour and depth of the
++	/// previous frame only to overwrite it. Nothing of the clear stays visible: the quad spans
++	/// the whole logical size (the rate map maps it onto every physical pixel), the edge shader
++	/// has no discard, writes depth with Always and its colour alpha is A's alpha, which the
++	/// world pass fills with opaque clear colour, sky and solid geometry (Premultiply with
++	/// alpha 1 ignores the destination).
 +	/// </summary>
 +	private void ApplyPostEffectsStereo(VisionOSKit.VRFrame vr)
 +	{
 +		var a = VisionOSKit.Intermediate!;
 +		var drawable = vr.Drawable;
++		drawable.Clear(Color.Black, VisionOSKit.DepthClearValue, 0, ClearMask.All);
 +		var size = new Point2(vr.LogicalWidth, vr.LogicalHeight);
 +		if (stereoQuad == null || stereoQuadSize != size)
 +		{
