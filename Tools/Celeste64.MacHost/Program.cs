@@ -85,6 +85,17 @@
 //                       (VisionOSKit.PixelDensity, Standard 12; 8 und 16 zum Vergleich)
 //   --pixel-msaa N      Pixel-Look: 0 oder 4 Samples im Welt-Pass nach A (memoryless, nur
 //                       aufgelöst, Tiefe mit max; VisionOSKit.PixelMsaa, Standard 4)
+//   --edge-deg D        Pixel-Look in der Welt (C64_PIXEL_LOOK=world, Standard): Umrissbreite in
+//                       Grad (VisionOSKit.EdgeAngleDegrees, Standard 0,12). Der vr-check prüft dann
+//                       wie M4b.3a (Drawable gegen A, nur Umrisspixel verschieden) und misst die
+//                       Umrissbreite als häufigste Lauflänge waagrechter Umrissläufe in der Bildmitte
+//                       und am Rand gegen die Erwartung Winkel·(1+x²+y²)·k/Rate in physischen Pixeln;
+//                       mit C64_STEREO_NEGATIVE=no-angle und --rate-map muss der Rand abweichen
+//   --head-jitter D     M4b R1: Kopf und Augen je Tick um zufälliges Gieren und Nicken in ±D Grad
+//                       drehen (fester Seed), Kopfzittern der Brille; Celeste meldet je Sekunde
+//                       [c64-still] changedB=… (veränderte Pixel der Bildmitte von B zwischen zwei
+//                       Frames) und die Kopfdrehung je Frame; mit C64_HEAD_FREEZE=1 muss changedB
+//                       auf das Grundrauschen ohne Jitter fallen
 //   --coarse-dump PFX   beim vr-check die aufgelöste Farbe von A, Schicht 0, als
 //                       PFX-A-L0-<frame>.rgba schreiben (MSAA-Kanten: Lauf mit 4 gegen Lauf
 //                       mit 0 vergleichen, der Anteil abweichender Pixel muss > 0 sein; zwei
@@ -166,6 +177,9 @@ bool vrWorld = false, vrCheck = false, stereoSelftest = false;
 float pixelDensity = 0;
 int pixelMsaa = -1;
 string? coarseDump = null;
+float headJitter = 0;
+var jitterRandom = new Random(12345);
+float edgeDeg = 0;
 bool gpuPasses = false;
 string? metalCapturePath = null; long metalCaptureTick = -1;
 int layerSizeW = 1280, layerSizeH = 720;
@@ -221,6 +235,8 @@ for (int i = 0; i < args.Length; i++)
 		case "--pixel-density": pixelDensity = float.Parse(args[++i], System.Globalization.CultureInfo.InvariantCulture); break;
 		case "--pixel-msaa": pixelMsaa = int.Parse(args[++i]); break;
 		case "--coarse-dump": coarseDump = args[++i]; break;
+		case "--head-jitter": headJitter = float.Parse(args[++i], System.Globalization.CultureInfo.InvariantCulture); break;
+		case "--edge-deg": edgeDeg = float.Parse(args[++i], System.Globalization.CultureInfo.InvariantCulture); break;
 		case "--stereo-selftest": stereoSelftest = true; break;
 		case "--gpu-passes": gpuPasses = true; break;
 		case "--layer-size":
@@ -259,6 +275,8 @@ if (pixelDensity > 0)
 	VisionOSKit.PixelDensity = pixelDensity;
 if (pixelMsaa >= 0)
 	VisionOSKit.PixelMsaa = pixelMsaa;
+if (edgeDeg > 0)
+	VisionOSKit.EdgeAngleDegrees = edgeDeg;
 if (resW > 0 && resH > 0)
 {
 	VisionOSKit.InternalWidth = resW;
@@ -785,11 +803,20 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 		var eye0 = VisionOSKit.CreateProjectionFromTangents(1.732f, 1.0f, 1.0f, 1.192f);
 		var eye1 = VisionOSKit.CreateProjectionFromTangents(1.0f, 1.732f, 1.0f, 1.192f);
 		var hasMap = rateMapPtr != 0;
+		// M4b R1: --head-jitter rotates head and eyes each tick by a random yaw and pitch within
+		// ±D degrees (fixed seed), the head tremor of the device in the measurement
+		var headRot = Matrix.Identity;
+		if (headJitter > 0)
+		{
+			var yaw = (float)((jitterRandom.NextDouble() * 2 - 1) * headJitter * Math.PI / 180);
+			var pitch = (float)((jitterRandom.NextDouble() * 2 - 1) * headJitter * Math.PI / 180);
+			headRot = Matrix.CreateRotationX(pitch) * Matrix.CreateRotationY(yaw);
+		}
 		// M4b.4: eyes 0.064 m apart (left eye at -x), head at O, culling from the union of both eyes
 		VisionOSKit.BeginVRFrame(game.GraphicsDevice, mtlColor, mtlDepth, LayerW, LayerH, LayerCount, colorSrgb: false,
 			hasMap ? rateMapPtr : 0, hasMap ? logicalW : LayerW, hasMap ? logicalH : LayerH, hasMap ? (int)physW : LayerW, hasMap ? (int)physH : LayerH,
 			eye0, eye1,
-			Matrix.CreateTranslation(-StereoIpd / 2, 0, 0), Matrix.CreateTranslation(StereoIpd / 2, 0, 0), Matrix.Identity,
+			Matrix.CreateTranslation(-StereoIpd / 2, 0, 0) * headRot, Matrix.CreateTranslation(StereoIpd / 2, 0, 0) * headRot, headRot,
 			VisionOSKit.UnionProjection(eye0, eye1), originReset: totalTicks == 0);
 	}
 	try
@@ -1043,6 +1070,98 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 		// Mittelspalte). Jeder Drawable-Pixel muss exakt seinen Texel tragen; an Klotzgrenzen darf
 		// die Rundung den Nachbartexel treffen. Dazu die Klotzbreite entlang der Mittelzeile in
 		// logischen Pixeln: über das Bild gleich, Erwartung logische Breite / Breite von B.
+		// Pixel-Look in der Welt (kein B): Drawable-Schicht 0 gegen A wie in M4b.3a (nur Umrisspixel
+		// verschieden), dazu die Umrissbreite: waagrechte Läufe von Umrisspixeln (Drawable in allen
+		// Kanälen dunkler als A), häufigste Lauflänge in der Bildmitte (±15 % der logischen Breite)
+		// und am Rand (äussere 25 %), Erwartung Winkel·(1+x²+y²)·k_logisch/Rate in physischen Pixeln
+		// (Rate = logische je physischem Pixel aus dem Decoder, ohne Map 1)
+		if (vrCheck && vrWorldFrames > 0 && VisionOSKit.Composite == null && VisionOSKit.Intermediate is { } worldA)
+		{
+			vrChecks++;
+			var checkRect = rateMapPtr != 0 ? new RectInt(0, 0, (int)physW, (int)physH) : rect;
+			int w = checkRect.Width, h = checkRect.Height;
+			var aPixels = new Color[w * h];
+			var dPixels = new Color[w * h];
+			worldA.Attachments[0].GetData<Color>(aPixels, checkRect, 0);
+			layerColor.GetData<Color>(dPixels, checkRect, 0);
+			float logW = rateMapPtr != 0 ? logicalW : LayerW, logH = rateMapPtr != 0 ? logicalH : LayerH;
+			var sx = new float[w + 1];
+			var sy = new float[h];
+			for (int px = 0; px <= w; px++) { sx[px] = px + 0.5f; if (rateMapPtr != 0) K6dMetal.k6d_metal_rate_map_physical_to_screen(rateMapPtr, 0, px + 0.5f, h / 2 + 0.5f, out sx[px], out _); }
+			for (int py = 0; py < h; py++) { sy[py] = py + 0.5f; if (rateMapPtr != 0) K6dMetal.k6d_metal_rate_map_physical_to_screen(rateMapPtr, 0, w / 2 + 0.5f, py + 0.5f, out _, out sy[py]); }
+			const float tanL = 1.732f, tanR = 1.0f, tanT = 1.0f, tanB = 1.192f;
+			var edgeRad = VisionOSKit.EdgeAngleDegrees * MathF.PI / 180f;
+			var kx = logW / (tanL + tanR);
+			int differing = 0, outlined = 0;
+			// drei Zonen in logischen Koordinaten: links (äussere 25 %), Mitte (±15 %), rechts (äussere
+			// 25 %); je Zone Histogramm der Lauflängen und mittlere Erwartung (die Map des MacHost hat
+			// links Rate 1 und rechts Rate 2, die Zonen dürfen nicht gemischt werden)
+			var hists = new[] { new int[41], new int[41], new int[41] };
+			var expSum = new double[3]; var expN = new int[3];
+			var zoneNames = new[] { "left", "centre", "right" };
+			bool IsOutline(Color d, Color a) => d.R < a.R && d.G < a.G && d.B < a.B && (a.R - d.R >= 8 || a.G - d.G >= 8 || a.B - d.B >= 8);
+			for (int py = 0; py < h; py++)
+			{
+				var yt = tanT - sy[py] / logH * (tanT + tanB);
+				int runStart = -1;
+				for (int px = 0; px <= w; px++)
+				{
+					bool outline = false;
+					if (px < w)
+					{
+						var a = aPixels[py * w + px]; var d = dPixels[py * w + px];
+						if (a != d) { differing++; if (d.R <= a.R && d.G <= a.G && d.B <= a.B) outlined++; }
+						outline = IsOutline(d, a);
+					}
+					if (outline) { if (runStart < 0) runStart = px; continue; }
+					if (runStart < 0) continue;
+					int len = px - runStart, mid = (runStart + px) / 2;
+					runStart = -1;
+					if (len > 40) continue;
+					var x = sx[Math.Min(mid, w - 1)];
+					var rate = Math.Max(sx[Math.Min(mid + 1, w)] - sx[Math.Min(mid, w - 1)], 1e-3f);
+					var xt = -tanL + x / logW * (tanL + tanR);
+					var expected = edgeRad * (1 + xt * xt + yt * yt) * kx / rate;
+					int zone = x < 0.25f * logW ? 0 : Math.Abs(x - logW / 2) < 0.15f * logW ? 1 : x > 0.75f * logW ? 2 : -1;
+					if (zone < 0) continue;
+					hists[zone][len]++; expSum[zone] += expected; expN[zone]++;
+				}
+			}
+			// Diagnose (C64_STEREO_TESTFILL=rate): die vom Shader gemalte Rate (rot = x/4) gegen die
+			// Rate des Decoders an fünf Spalten der Mittelzeile
+			if (VisionOSKit.StereoTestRate)
+			{
+				var parts = new List<string>();
+				foreach (var f in new[] { 0.05f, 0.25f, 0.5f, 0.75f, 0.95f })
+				{
+					int px = Math.Clamp((int)(f * w), 0, w - 1);
+					var d = dPixels[(h / 2) * w + px];
+					var cpuRate = sx[px + 1] - sx[px];
+					parts.Add($"x={px}: gpu={d.R / 255f * 4:F2} cpu={cpuRate:F2}");
+				}
+				Log.Info($"[machost] rate probe (shader vs decoder, logical px per physical px): {string.Join(" | ", parts)}");
+			}
+			int Mode(int[] hist) { int best = 0; for (int i = 1; i < hist.Length; i++) if (hist[i] > hist[best]) best = i; return best; }
+			string Hist(int[] hist) => string.Join(",", hist.Skip(1).Take(10));
+			var fraction = differing / (double)(w * h) * 100;
+			// je Zone: häufigste Lauflänge gegen die Erwartung, Toleranz 0,75 px oder 30 %. Beurteilt
+			// werden Mitte und rechts (dort hat die Szene bei Frame 900 viele senkrechte Kanten, das
+			// Histogramm einen klaren Gipfel); links ist das Histogramm flach (schräge Kanten, wenige
+			// Läufe) und wird nur ausgegeben. Zonen mit weniger als 100 Läufen zählen nicht.
+			var widthOk = true; var zoneText = new List<string>();
+			for (int z = 0; z < 3; z++)
+			{
+				var mode = Mode(hists[z]);
+				var expected = expN[z] > 0 ? expSum[z] / expN[z] : 0;
+				var judged = z > 0 && expN[z] >= 100;
+				var ok = !judged || Math.Abs(mode - expected) <= Math.Max(0.75, 0.3 * expected);
+				if (!ok) widthOk = false;
+				zoneText.Add($"{zoneNames[z]} mode={mode} expected={expected:F2} n={expN[z]} hist1..10=[{Hist(hists[z])}]{(judged ? "" : " (nicht beurteilt)")}");
+			}
+			var vrOk = fraction < 10 && widthOk;
+			if (!vrOk) vrChecksFailed++;
+			Log.Info($"[machost] vr check #{vrChecks} frame={game.Time.Frame} world region={w}x{h} msaa={VisionOSKit.PixelMsaa} differing={differing} ({fraction:F2}%) outlineLike={outlined} edge={VisionOSKit.EdgeAngleDegrees:F3}deg width(phys px) {string.Join(" | ", zoneText)} negative={(VisionOSKit.StereoNegativeNoAngle ? 1 : 0)} ({(vrOk ? "ok" : "FEHLER")})");
+		}
 		if (vrCheck && VisionOSKit.Composite is { } composite && vrWorldFrames > 0)
 		{
 			vrChecks++;

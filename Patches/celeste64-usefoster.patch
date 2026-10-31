@@ -197,10 +197,10 @@ index 0000000..f77834d
 +{ "samplers": 2, "storage_textures": 0, "storage_buffers": 0, "uniform_buffers": 1, "inputs": [{ "name": "in.var.TEXCOORD0", "type": "float2", "location": 0 }], "outputs": [{ "name": "out.var.SV_Target0", "type": "float4", "location": 0 }] }
 diff --git a/Content/Shaders/Compiled/EdgeVR.fragment.msl b/Content/Shaders/Compiled/EdgeVR.fragment.msl
 new file mode 100644
-index 0000000..2c7c067
+index 0000000..c98ad58
 --- /dev/null
 +++ b/Content/Shaders/Compiled/EdgeVR.fragment.msl
-@@ -0,0 +1,37 @@
+@@ -0,0 +1,43 @@
 +#include <metal_stdlib>
 +#include <simd/simd.h>
 +
@@ -216,7 +216,13 @@ index 0000000..2c7c067
 +    float Threshold;
 +    float SrgbOut;
 +    float TestFill;
-+    packed_float3 Pad;
++    float EdgeAngle;
++    float AngularMode;
++    float TestRate;
++    float4 Tangents0;
++    float4 Tangents1;
++    float2 LogicalSize;
++    float2 Pad2;
 +};
 +
 +struct fragment_main_out
@@ -291,17 +297,17 @@ index 0000000..a62474e
 +
 diff --git a/Content/Shaders/Compiled/EdgeVRArray.fragment.json b/Content/Shaders/Compiled/EdgeVRArray.fragment.json
 new file mode 100644
-index 0000000..03673e6
+index 0000000..cd2d83e
 --- /dev/null
 +++ b/Content/Shaders/Compiled/EdgeVRArray.fragment.json
 @@ -0,0 +1 @@
-+{ "samplers": 2, "storage_textures": 0, "storage_buffers": 0, "uniform_buffers": 1, "inputs": [{ "name": "in.var.TEXCOORD5", "type": "uint", "location": 3 }], "outputs": [{ "name": "out.var.SV_Target0", "type": "float4", "location": 0 }] }
++{ "samplers": 2, "storage_textures": 0, "storage_buffers": 0, "uniform_buffers": 1, "inputs": [{ "name": "in.var.TEXCOORD0", "type": "float2", "location": 0 }, { "name": "in.var.TEXCOORD5", "type": "uint", "location": 3 }], "outputs": [{ "name": "out.var.SV_Target0", "type": "float4", "location": 0 }] }
 diff --git a/Content/Shaders/Compiled/EdgeVRArray.fragment.msl b/Content/Shaders/Compiled/EdgeVRArray.fragment.msl
 new file mode 100644
-index 0000000..6f8f639
+index 0000000..a14555d
 --- /dev/null
 +++ b/Content/Shaders/Compiled/EdgeVRArray.fragment.msl
-@@ -0,0 +1,47 @@
+@@ -0,0 +1,70 @@
 +#include <metal_stdlib>
 +#include <simd/simd.h>
 +
@@ -317,7 +323,13 @@ index 0000000..6f8f639
 +    float Threshold;
 +    float SrgbOut;
 +    float TestFill;
-+    packed_float3 Pad;
++    float EdgeAngle;
++    float AngularMode;
++    float TestRate;
++    float4 Tangents0;
++    float4 Tangents1;
++    float2 LogicalSize;
++    float2 Pad2;
 +};
 +
 +struct fragment_main_out
@@ -328,24 +340,41 @@ index 0000000..6f8f639
 +
 +struct fragment_main_in
 +{
++    float2 in_var_TEXCOORD0 [[user(locn0)]];
 +    uint in_var_TEXCOORD5 [[user(locn3)]];
 +};
 +
 +fragment fragment_main_out fragment_main(fragment_main_in in [[stage_in]], constant type_FragmentUniforms& FragmentUniforms [[buffer(0)]], texture2d_array<float> Texture [[texture(0)]], texture2d_array<float> Depth [[texture(1)]], sampler TextureSampler [[sampler(0)]], sampler DepthSampler [[sampler(1)]], float4 gl_FragCoord [[position]])
 +{
 +    fragment_main_out out = {};
-+    float3 _72 = float3(gl_FragCoord.xy / FragmentUniforms.PhysicalSize, float(in.in_var_TEXCOORD5));
-+    float4 _76 = Depth.sample(DepthSampler, _72.xy, uint(rint(_72.z)));
-+    float _77 = _76.x;
-+    float3 _88 = _72 + float3(FragmentUniforms.Pixel.x, 0.0, 0.0);
-+    float3 _99 = _72 + float3(-FragmentUniforms.Pixel.x, 0.0, 0.0);
-+    float3 _112 = _72 + float3(0.0, FragmentUniforms.Pixel.y, 0.0);
-+    float3 _124 = _72 + float3(0.0, -FragmentUniforms.Pixel.y, 0.0);
-+    float4 _142 = Texture.sample(TextureSampler, _72.xy, uint(rint(_72.z)));
-+    float3 _156 = mix(mix(_142.xyz, FragmentUniforms.EdgeColor.xyz, float3(step(FragmentUniforms.Threshold, (0.25 * (((precise::min(FragmentUniforms.Near / precise::max(Depth.sample(DepthSampler, _88.xy, uint(rint(_88.z))).x, 1.0000000116860974230803549289703e-07), FragmentUniforms.Far) + precise::min(FragmentUniforms.Near / precise::max(Depth.sample(DepthSampler, _99.xy, uint(rint(_99.z))).x, 1.0000000116860974230803549289703e-07), FragmentUniforms.Far)) + precise::min(FragmentUniforms.Near / precise::max(Depth.sample(DepthSampler, _112.xy, uint(rint(_112.z))).x, 1.0000000116860974230803549289703e-07), FragmentUniforms.Far)) + precise::min(FragmentUniforms.Near / precise::max(Depth.sample(DepthSampler, _124.xy, uint(rint(_124.z))).x, 1.0000000116860974230803549289703e-07), FragmentUniforms.Far))) - precise::min(FragmentUniforms.Near / precise::max(_77, 1.0000000116860974230803549289703e-07), FragmentUniforms.Far)) * 0.699999988079071044921875)), select(float3(0.0, 1.0, 0.0), float3(1.0, 0.0, 0.0), bool3(in.in_var_TEXCOORD5 == 0u)), float3(FragmentUniforms.TestFill));
-+    float3 _166 = mix(_156, mix(_156 * float3(0.077399380505084991455078125), powr((_156 + float3(0.054999999701976776123046875)) * float3(0.947867333889007568359375), float3(2.400000095367431640625)), step(float3(0.040449999272823333740234375), _156)), float3(FragmentUniforms.SrgbOut));
-+    out.out_var_SV_Target0 = float4(_166, mix(_142.w, 1.0, FragmentUniforms.TestFill));
-+    out.gl_FragDepth = _77;
++    float3 _83 = float3(gl_FragCoord.xy / FragmentUniforms.PhysicalSize, float(in.in_var_TEXCOORD5));
++    bool _84 = in.in_var_TEXCOORD5 == 0u;
++    float4 _92;
++    if (_84)
++    {
++        _92 = FragmentUniforms.Tangents0;
++    }
++    else
++    {
++        _92 = FragmentUniforms.Tangents1;
++    }
++    float2 _104 = precise::max(abs(float2(dfdx(in.in_var_TEXCOORD0.x), dfdy(in.in_var_TEXCOORD0.y))) * FragmentUniforms.LogicalSize, float2(9.9999997473787516355514526367188e-05));
++    float _107 = _92.x + _92.y;
++    float _112 = _92.z + _92.w;
++    float2 _115 = float2((in.in_var_TEXCOORD0.x * _107) - _92.x, _92.z - (in.in_var_TEXCOORD0.y * _112));
++    float2 _131 = mix(FragmentUniforms.Pixel, (((FragmentUniforms.LogicalSize / float2(_107, _112)) * (FragmentUniforms.EdgeAngle * (1.0 + dot(_115, _115)))) / _104) / FragmentUniforms.PhysicalSize, float2(FragmentUniforms.AngularMode));
++    float4 _135 = Depth.sample(DepthSampler, _83.xy, uint(rint(_83.z)));
++    float _136 = _135.x;
++    float _144 = _131.x;
++    float3 _146 = _83 + float3(_144, 0.0, 0.0);
++    float3 _157 = _83 + float3(-_144, 0.0, 0.0);
++    float _167 = _131.y;
++    float3 _169 = _83 + float3(0.0, _167, 0.0);
++    float3 _181 = _83 + float3(0.0, -_167, 0.0);
++    float4 _199 = Texture.sample(TextureSampler, _83.xy, uint(rint(_83.z)));
++    float3 _221 = mix(mix(mix(_199.xyz, FragmentUniforms.EdgeColor.xyz, float3(step(FragmentUniforms.Threshold, (0.25 * (((precise::min(FragmentUniforms.Near / precise::max(Depth.sample(DepthSampler, _146.xy, uint(rint(_146.z))).x, 1.0000000116860974230803549289703e-07), FragmentUniforms.Far) + precise::min(FragmentUniforms.Near / precise::max(Depth.sample(DepthSampler, _157.xy, uint(rint(_157.z))).x, 1.0000000116860974230803549289703e-07), FragmentUniforms.Far)) + precise::min(FragmentUniforms.Near / precise::max(Depth.sample(DepthSampler, _169.xy, uint(rint(_169.z))).x, 1.0000000116860974230803549289703e-07), FragmentUniforms.Far)) + precise::min(FragmentUniforms.Near / precise::max(Depth.sample(DepthSampler, _181.xy, uint(rint(_181.z))).x, 1.0000000116860974230803549289703e-07), FragmentUniforms.Far))) - precise::min(FragmentUniforms.Near / precise::max(_136, 1.0000000116860974230803549289703e-07), FragmentUniforms.Far)) * 0.699999988079071044921875)), select(float3(0.0, 1.0, 0.0), float3(1.0, 0.0, 0.0), bool3(_84)), float3(FragmentUniforms.TestFill)), float3(_104.x * 0.25, _104.y * 0.25, 0.0), float3(FragmentUniforms.TestRate));
++    out.out_var_SV_Target0 = float4(mix(_221, mix(_221 * float3(0.077399380505084991455078125), powr((_221 + float3(0.054999999701976776123046875)) * float3(0.947867333889007568359375), float3(2.400000095367431640625)), step(float3(0.040449999272823333740234375), _221)), float3(FragmentUniforms.SrgbOut)), mix(_199.w, 1.0, FragmentUniforms.TestFill));
++    out.gl_FragDepth = _136;
 +    return out;
 +}
 +
@@ -723,7 +752,7 @@ index 0000000..22bc376
 +#define VISIONOS_VR 1
 +#include "Default.hlsl"
 diff --git a/Content/Shaders/Edge.hlsl b/Content/Shaders/Edge.hlsl
-index 428d06b..2454f7c 100644
+index 428d06b..d963a53 100644
 --- a/Content/Shaders/Edge.hlsl
 +++ b/Content/Shaders/Edge.hlsl
 @@ -1,3 +1,7 @@
@@ -769,7 +798,7 @@ index 428d06b..2454f7c 100644
  
  // Fragment Shader
  
-@@ -37,8 +59,76 @@ cbuffer FragmentUniforms : register(b0, space3)
+@@ -37,8 +59,102 @@ cbuffer FragmentUniforms : register(b0, space3)
  {
      float4 EdgeColor;
  	float2 Pixel;
@@ -787,7 +816,19 @@ index 428d06b..2454f7c 100644
 +	float Threshold;
 +	float SrgbOut;
 +	float TestFill;
-+	float3 Pad;
++	// world pixel look: outline width as an angle (radians), converted per fragment into
++	// physical pixels through the local rate of the rasterization rate map (derivatives of the
++	// logical texture coordinate) and the tangent Jacobian 1 + x² + y²; AngularMode 0 keeps the
++	// fixed Pixel offset (raster look: one coarse pixel)
++	float EdgeAngle;
++	float AngularMode;
++	// diagnostics: 1 paints the local rate (logical pixels per physical pixel) as colour, x in
++	// red and y in green, each divided by 4
++	float TestRate;
++	float4 Tangents0;
++	float4 Tangents1;
++	float2 LogicalSize;
++	float2 Pad2;
 +#endif
 +};
 +
@@ -822,19 +863,33 @@ index 428d06b..2454f7c 100644
 +	// the physical pixel of this fragment; the intermediate has the same physical layout
 +	float2 uv = input.Position.xy / PhysicalSize;
 +	float3 at = float3(uv, input.View);
++	// outline offset: fixed (Pixel) or from the angular width. The logical texture coordinate is
++	// interpolated in the logical space of the map, so its derivatives per physical pixel are the
++	// local rate (logical pixels per physical pixel); the angle becomes a tangent width through
++	// 1 + x² + y² at the fragment's view direction, then logical pixels through the pixels per
++	// unit tangent, then physical pixels through the rate
++	float4 tangents = input.View == 0 ? Tangents0 : Tangents1;
++	float2 rate = max(abs(float2(ddx(input.TexCoord.x), ddy(input.TexCoord.y))) * LogicalSize, 1e-4);
++	float2 view = float2(-tangents.x + input.TexCoord.x * (tangents.x + tangents.y),
++	                     tangents.z - input.TexCoord.y * (tangents.z + tangents.w));
++	float2 perTangent = LogicalSize / float2(tangents.x + tangents.y, tangents.z + tangents.w);
++	float widthTangent = EdgeAngle * (1.0 + dot(view, view));
++	float2 angularPixel = widthTangent * perTangent / rate / PhysicalSize;
++	float2 pixel = lerp(Pixel, angularPixel, AngularMode);
 +	float raw = rawDepth(at);
 +	float it = min(ViewDistanceReverseZ(raw, Near), Far);
 +	float other =
-+		depth(at + float3(Pixel.x, 0, 0)) * 0.25 +
-+		depth(at + float3(-Pixel.x, 0, 0)) * 0.25 +
-+		depth(at + float3(0, Pixel.y, 0)) * 0.25 +
-+		depth(at + float3(0, -Pixel.y, 0)) * 0.25;
++		depth(at + float3(pixel.x, 0, 0)) * 0.25 +
++		depth(at + float3(-pixel.x, 0, 0)) * 0.25 +
++		depth(at + float3(0, pixel.y, 0)) * 0.25 +
++		depth(at + float3(0, -pixel.y, 0)) * 0.25;
 +	float edge = step(Threshold, other - it);
 +
 +	float4 col = Texture.Sample(TextureSampler, at);
 +	float3 res = lerp(col.rgb, EdgeColor.rgb, edge * 0.70);
-+	// diagnostics: solid colour per view
++	// diagnostics: solid colour per view, or the local rate of the map
 +	res = lerp(res, input.View == 0 ? float3(1, 0, 0) : float3(0, 1, 0), TestFill);
++	res = lerp(res, float3(rate.x / 4.0, rate.y / 4.0, 0), TestRate);
 +	res = lerp(res, SrgbToLinear(res), SrgbOut);
 +
 +	EdgeOutput output;
@@ -846,7 +901,7 @@ index 428d06b..2454f7c 100644
  Texture2D Texture : register(t0, space2);
  SamplerState TextureSampler : register(s0, space2);
  
-@@ -47,25 +137,42 @@ SamplerState DepthSampler : register(s1, space2);
+@@ -47,25 +163,42 @@ SamplerState DepthSampler : register(s1, space2);
  
  float depth(float2 uv)
  {
@@ -1852,7 +1907,7 @@ index aae3c23..1a2a566 100644
  				IndexOffset = batch.Index,
  				IndexCount = batch.Count
 diff --git a/Source/Graphics/UniformBuffers.cs b/Source/Graphics/UniformBuffers.cs
-index ff1be6e..f8ce155 100644
+index ff1be6e..4c399ec 100644
 --- a/Source/Graphics/UniformBuffers.cs
 +++ b/Source/Graphics/UniformBuffers.cs
 @@ -9,6 +9,13 @@ public unsafe struct DefaultVertex
@@ -1880,7 +1935,7 @@ index ff1be6e..f8ce155 100644
  }
  
  [StructLayout(LayoutKind.Sequential, Pack = 1)]
-@@ -42,16 +53,78 @@ public struct EdgeFragment
+@@ -42,16 +53,88 @@ public struct EdgeFragment
  	public Vec2 Pixel;
  }
  
@@ -1903,7 +1958,17 @@ index ff1be6e..f8ce155 100644
 +	public float Threshold;
 +	public float SrgbOut;
 +	public float TestFill;
-+	public float Pad0, Pad1, Pad2;
++	// world pixel look: outline width as an angle (radians) converted per fragment through the
++	// local rate of the rasterization rate map; AngularMode 0 keeps the fixed Pixel offset
++	public float EdgeAngle;
++	public float AngularMode;
++	// diagnostics: 1 paints the local rate of the map (x red, y green, each / 4)
++	public float TestRate;
++	// view tangents per eye (left, right, top, bottom) and the logical size of the pass
++	public Vec4 Tangents0;
++	public Vec4 Tangents1;
++	public Vec2 LogicalSize;
++	public float Pad1, Pad2;
 +}
 +
 +/// <summary>
@@ -2106,7 +2171,7 @@ index 33da870..7590a36 100644
  			CutoutMode = false,
  		};
 diff --git a/Source/Scenes/World.cs b/Source/Scenes/World.cs
-index bdfb740..afae7f6 100644
+index bdfb740..3d7f59d 100644
 --- a/Source/Scenes/World.cs
 +++ b/Source/Scenes/World.cs
 @@ -70,9 +70,20 @@ public class World : Scene
@@ -2224,7 +2289,7 @@ index bdfb740..afae7f6 100644
  			it.DepthMask = false;
  			it.Silhouette = true;
  			RenderModels(ref it, models, ModelFlags.Silhouette);
-@@ -735,8 +790,21 @@ public class World : Scene
+@@ -735,8 +790,22 @@ public class World : Scene
  
  		// render main models
  		RenderModels(ref state, models, ModelFlags.Default);
@@ -2239,7 +2304,8 @@ index bdfb740..afae7f6 100644
 +			VisionOSKit.FlushPass(GraphicsDevice, "world");
 +			ApplyPostEffectsStereo(vr);
 +			VisionOSKit.FlushPass(GraphicsDevice, "edge");
-+			Camera.Target = VisionOSKit.Composite!;
++			// world pixel look: the rest of the frame draws into the drawable; raster: into B
++			Camera.Target = VisionOSKit.Composite ?? vr.Drawable;
 +			state.Camera = Camera;
 +		}
 +		else
@@ -2247,7 +2313,7 @@ index bdfb740..afae7f6 100644
  		ApplyPostEffects();
  
  		// render alpha threshold transparent stuff
-@@ -762,21 +830,50 @@ public class World : Scene
+@@ -762,21 +831,53 @@ public class World : Scene
  		// strawberry collect effect
  		if (models.Any((it) => it.Model.Flags.Has(ModelFlags.StrawberryGetEffect)))
  		{
@@ -2298,7 +2364,10 @@ index bdfb740..afae7f6 100644
 +			// stereo frame: sprites and transparent models submitted, then the coarse composite is
 +			// enlarged into the drawable (submitted with the frame's final flush); no 2D UI (M4b.3b)
 +			VisionOSKit.FlushPass(GraphicsDevice, "sprites");
-+			UpscaleStereo(vr);
++			// diagnosis of the unrest: changed pixels of B between two frames, once per second
++			VisionOSKit.SampleStillness();
++			if (VisionOSKit.Composite != null)
++				UpscaleStereo(vr);
 +			VisionOSKit.FrameRendered = true;
 +			lastDebugRndTime = debugRndTimer.Elapsed;
 +			debugRndTimer.Stop();
@@ -2308,7 +2377,7 @@ index bdfb740..afae7f6 100644
  
  		// ui
  		{
-@@ -872,9 +969,29 @@ public class World : Scene
+@@ -872,9 +973,29 @@ public class World : Scene
  			// apply post fx
  			postMaterial.CopyFrom(Assets.Materials["Edge"]);
  			postMaterial.Fragment.Samplers[1] = new(target.Attachments[1], new(TextureFilter.Nearest, TextureWrap.Clamp, TextureWrap.Clamp));
@@ -2339,7 +2408,7 @@ index bdfb740..afae7f6 100644
  				Edge = new Color(0x110d33).ToVector4()
  			});
  			batch.PushMaterial(postMaterial);
-@@ -889,6 +1006,125 @@ public class World : Scene
+@@ -889,6 +1010,140 @@ public class World : Scene
  		}
  	}
  
@@ -2378,9 +2447,12 @@ index bdfb740..afae7f6 100644
 +	private void ApplyPostEffectsStereo(VisionOSKit.VRFrame vr)
 +	{
 +		var a = VisionOSKit.Intermediate!;
-+		var b = VisionOSKit.Composite!;
-+		b.Clear(Color.Black, VisionOSKit.DepthClearValue, 0, ClearMask.All);
-+		var size = new Point2(a.Width, a.Height);
++		// raster look: into the coarse B over its own pixel grid; world look: into the drawable
++		// over the logical size under the compositor's map (the quad covers every physical pixel)
++		var world = VisionOSKit.Composite == null;
++		var target = VisionOSKit.Composite ?? vr.Drawable;
++		target.Clear(Color.Black, VisionOSKit.DepthClearValue, 0, ClearMask.All);
++		var size = world ? new Point2(vr.LogicalWidth, vr.LogicalHeight) : new Point2(a.Width, a.Height);
 +		var quad = StereoQuad(ref stereoQuad, ref stereoQuadSize, size, "stereo-edge-quad");
 +
 +		postMaterial.CopyFrom(Assets.Materials["EdgeVRArray"]);
@@ -2391,6 +2463,12 @@ index bdfb740..afae7f6 100644
 +		var nearest = new TextureSampler(TextureFilter.Nearest, TextureWrap.Clamp, TextureWrap.Clamp);
 +		postMaterial.Fragment.Samplers[0] = new(a.Attachments[0], nearest);
 +		postMaterial.Fragment.Samplers[1] = new(a.Attachments[1], nearest);
++		var (l0, r0, t0, b0) = VisionOSKit.Tangents(vr.Projection0);
++		var (l1, r1, t1, b1) = VisionOSKit.Tangents(vr.Projection1);
++		// world look: the outline has a fixed angular width (negative test: one physical pixel
++		// everywhere, too narrow wherever the angle asks for more); raster look: one coarse pixel
++		var angular = world && !VisionOSKit.StereoNegativeNoAngle;
++		var edgeRadians = VisionOSKit.EdgeAngleDegrees * MathF.PI / 180f;
 +		var lineWidth = (float)VisionOSKit.StereoLineWidth;
 +		postMaterial.Fragment.SetUniformBuffer(new UniformBuffers.EdgeFragmentVR()
 +		{
@@ -2400,10 +2478,16 @@ index bdfb740..afae7f6 100644
 +			Far = VisionOSKit.EdgeClampFar(Camera.FarPlane),
 +			PhysicalSize = new Vec2(a.Width, a.Height),
 +			Threshold = VisionOSKit.EdgeThreshold,
-+			SrgbOut = VisionOSKit.IsSrgbTarget(b) ? 1 : 0,
++			SrgbOut = VisionOSKit.IsSrgbTarget(target) ? 1 : 0,
 +			TestFill = VisionOSKit.StereoTestFill ? 1 : 0,
++			EdgeAngle = edgeRadians,
++			AngularMode = angular ? 1 : 0,
++			TestRate = VisionOSKit.StereoTestRate ? 1 : 0,
++			Tangents0 = new Vec4(l0, r0, t0, b0),
++			Tangents1 = new Vec4(l1, r1, t1, b1),
++			LogicalSize = new Vec2(size.X, size.Y),
 +		});
-+		GraphicsDevice.Draw(new DrawCommand(b, quad, postMaterial)
++		GraphicsDevice.Draw(new DrawCommand(target, quad, postMaterial)
 +		{
 +			BlendMode = BlendMode.Premultiply,
 +			DepthTestEnabled = true,
@@ -2480,10 +2564,10 @@ index 650a35e..68b1c05 100644
  	private const float EaseClosePercent = 0.3f; // how long (in percent) it eases the entire screen
 diff --git a/Source/VisionOSKit.cs b/Source/VisionOSKit.cs
 new file mode 100644
-index 0000000..8ee99f5
+index 0000000..36a1ca0
 --- /dev/null
 +++ b/Source/VisionOSKit.cs
-@@ -0,0 +1,798 @@
+@@ -0,0 +1,990 @@
 +#if VISIONOS_KIT
 +// VisionOSKit.cs — Schalter des visionOS-Ports für Mac-Läufe (K6b, nur mit UseLocalFoster gebaut).
 +//
@@ -2794,6 +2878,9 @@ index 0000000..8ee99f5
 +	/// <summary>C64_STEREO_TESTFILL=1: the edge pass paints view 0 red and view 1 green.</summary>
 +	public static bool StereoTestFill { get; } = Environment.GetEnvironmentVariable("C64_STEREO_TESTFILL") == "1";
 +
++	/// <summary>C64_STEREO_TESTFILL=rate: the edge pass paints the local rate of the map it computes (x red, y green, each / 4), for the Mac check of the angular outline width.</summary>
++	public static bool StereoTestRate { get; } = Environment.GetEnvironmentVariable("C64_STEREO_TESTFILL") == "rate";
++
 +	/// <summary>
 +	/// C64_STEREO_NEGATIVE=physical-uv: negative test of the Mac check. The upscale pass samples the
 +	/// coarse composite with the physical instead of the logical position, which is wrong under a
@@ -2828,6 +2915,58 @@ index 0000000..8ee99f5
 +	/// <summary>Fraction of the coarse texture the current frame uses per eye (the tangents fluctuate, the texture stays).</summary>
 +	public static Vec2 CoarseUsed0 { get; private set; } = Vec2.One;
 +	public static Vec2 CoarseUsed1 { get; private set; } = Vec2.One;
++
++	/// <summary>The two renderings of the stereo world: pixel look in the world (full resolution) or in the image (coarse raster).</summary>
++	public enum PixelLookMode { World, Raster }
++
++	/// <summary>
++	/// C64_PIXEL_LOOK=world|raster (default world). World: A has the physical size of the drawable
++	/// under the compositor's rate map, the edge pass writes the drawable with the depth copy and
++	/// the sprites follow into the drawable; the pixel look lives in the nearest-sampled textures
++	/// and the outline of fixed angular width. Raster: the coarse targets A and B and the nearest
++	/// upscale (pixel look in the image).
++	/// </summary>
++	public static PixelLookMode PixelLook { get; } = Environment.GetEnvironmentVariable("C64_PIXEL_LOOK") == "raster" ? PixelLookMode.Raster : PixelLookMode.World;
++
++	/// <summary>
++	/// C64_EDGE_DEG: outline width in degrees for the world pixel look (default 0.12). The original
++	/// draws one pixel of its 640x360 image: 1/435 of a unit tangent, 0.13° at the centre of its
++	/// 45° view, 0.085° at its border. The edge pass converts the angle at every fragment into
++	/// physical pixels through the local rate of the compositor's map.
++	/// </summary>
++	public static float EdgeAngleDegrees { get; set; } =
++		float.TryParse(Environment.GetEnvironmentVariable("C64_EDGE_DEG"), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var edgeDeg) && edgeDeg > 0 ? edgeDeg : 0.12f;
++
++	/// <summary>
++	/// C64_STEREO_NEGATIVE=no-angle: negative test of the Mac check in the world pixel look. The
++	/// outline keeps a fixed offset in physical pixels (the centre value) instead of the angular
++	/// width through the map's rate; under a rate map the outline must then come out too narrow in
++	/// logical pixels towards the border.
++	/// </summary>
++	public static bool StereoNegativeNoAngle { get; } = Environment.GetEnvironmentVariable("C64_STEREO_NEGATIVE") == "no-angle";
++
++	/// <summary>
++	/// C64_HEAD_FREEZE=1: diagnosis of the pixel-look unrest. From the first world frame on, the
++	/// rotation parts of head and eyes relative to O stay frozen; the translations stay live and
++	/// the upscale pass is unchanged, so the image sticks to the head. If the shimmer stops while
++	/// standing still, the per-frame re-quantisation of the world by the head rotation causes it.
++	/// </summary>
++	public static bool HeadFreeze { get; } = Environment.GetEnvironmentVariable("C64_HEAD_FREEZE") == "1";
++	private static bool freezeCaptured;
++	private static Matrix frozenHead, frozenEye0, frozenEye1;
++	private static bool lastFrameRenderedWorld;
++
++	// [c64-still] measurement: head rotation between consecutive frames and the fraction of
++	// changed pixels in a centred region of B between two consecutive frames, once per second
++	private static bool hasPreviousHead;
++	private static Matrix previousHead;
++	private static double headRotSum, headRotMax;
++	private static int headRotCount;
++	private static Color[]? stillPrevious;
++	private static Color[]? stillCurrent;
++	private static long stillPreviousFrame = -2;
++	private static long stillNextTicks;
++	private const double StillIntervalSeconds = 1.0;
 +
 +	/// <summary>Reserve of the coarse texture over the tangents of the first frame.</summary>
 +	private const float CoarseReserve = 1.03f;
@@ -3088,7 +3227,43 @@ index 0000000..8ee99f5
 +		var (tl0, tr0, tt0, tb0) = Tangents(projection0);
 +		var (tl1, tr1, tt1, tb1) = Tangents(projection1);
 +		var pixelsPerTan = PixelsPerTangent;
-+		if (Intermediate == null || coarseDensity != PixelDensity || coarseMsaa != PixelMsaa)
++		if (PixelLook == PixelLookMode.World)
++		{
++			// Pixel look in the world (M4b.3a path): A at the physical size of the drawable under the
++			// compositor's map, no B; recreated only when the physical size (render quality) or MSAA
++			// changes. The rate map is set every frame (the compositor hands out a new one).
++			if (Intermediate == null || Intermediate.Width != physW || Intermediate.Height != physH || coarseMsaa != PixelMsaa)
++			{
++				Intermediate?.Dispose();
++				Composite?.Dispose();
++				Composite = null;
++				foreach (var texture in coarseTextures)
++					texture.Dispose();
++				var aColor = new Texture(device, physW, physH, TextureFormat.Color, layers, TextureFlags.RenderTarget | TextureFlags.Sampled, 0, "stereo-world-a-color") { AllowArraySampling = true };
++				var aDepth = new Texture(device, physW, physH, TextureFormat.Depth32, layers, TextureFlags.RenderTarget | TextureFlags.Sampled, 0, "stereo-world-a-depth") { AllowArraySampling = true };
++				Intermediate = PixelMsaa > 0
++					? new Target(device, [aColor, aDepth], 0, SampleCount.Four, multiSampleStore: false, DepthResolveFilter.Max, colorMemoryless: true, depthMemoryless: true, viewCount: layers, name: "stereo-world-a")
++					: new Target(device, [aColor, aDepth], 0, SampleCount.One, true, DepthResolveFilter.Sample0, false, false, viewCount: layers, name: "stereo-world-a");
++				coarseTextures = [aColor, aDepth];
++				coarseMsaa = PixelMsaa;
++				CoarseAllocations++;
++				StereoLineWidth = 1;
++				Log.Info($"[c64-stereo] world A {physW}x{physH}x{layers} (colour and Depth32) msaa={PixelMsaa} edge={EdgeAngleDegrees:F3} deg allocations={CoarseAllocations}, drawable {width}x{height}, logical {logicalW}x{logicalH}, map={(rateMap != 0 ? 1 : 0)}");
++			}
++			if (rateMap != 0)
++			{
++				imported.Target.SetRasterizationRateMap(rateMap, logicalW, logicalH);
++				Intermediate.SetRasterizationRateMap(rateMap, logicalW, logicalH);
++			}
++			else
++			{
++				imported.Target.ClearRasterizationRateMap();
++				Intermediate.ClearRasterizationRateMap();
++			}
++			CoarseUsed0 = Vec2.One;
++			CoarseUsed1 = Vec2.One;
++		}
++		else if (Intermediate == null || coarseDensity != PixelDensity || coarseMsaa != PixelMsaa)
 +		{
 +			var coarseW = Multiple16(pixelsPerTan * MathF.Max(tl0 + tr0, tl1 + tr1) * CoarseReserve);
 +			var coarseH = Multiple16(pixelsPerTan * MathF.Max(tt0 + tb0, tt1 + tb1) * CoarseReserve);
@@ -3112,16 +3287,19 @@ index 0000000..8ee99f5
 +			Log.Info($"[c64-stereo] coarse A and B {coarseW}x{coarseH}x{layers} (colour and Depth32) density={PixelDensity:F1} px/deg k={pixelsPerTan:F1} px/tan msaa={PixelMsaa} tangents eye0 {tl0 + tr0:F3}x{tt0 + tb0:F3} reserve={CoarseReserve:F2} allocations={CoarseAllocations}, drawable {width}x{height}, logical {logicalW}x{logicalH}, outline {StereoLineWidth} px, map={(rateMap != 0 ? 1 : 0)}");
 +		}
 +
-+		// used region per eye and the widened projections (extra tangent on the right and bottom)
-+		var texTanW = Intermediate.Width / pixelsPerTan;
-+		var texTanH = Intermediate.Height / pixelsPerTan;
-+		if ((tl0 + tr0 > texTanW || tl1 + tr1 > texTanW || tt0 + tb0 > texTanH || tt1 + tb1 > texTanH) && !coarseTooSmallLogged)
++		if (PixelLook == PixelLookMode.Raster)
 +		{
-+			coarseTooSmallLogged = true;
-+			Log.Warning($"[c64-stereo] coarse texture too small for the tangents of this frame (eye0 {tl0 + tr0:F3}x{tt0 + tb0:F3}, eye1 {tl1 + tr1:F3}x{tt1 + tb1:F3}, texture {texTanW:F3}x{texTanH:F3}); the whole texture spans the frustum, the density drops below {PixelDensity:F1} px/deg");
++			// used region per eye and the widened projections (extra tangent on the right and bottom)
++			var texTanW = Intermediate.Width / pixelsPerTan;
++			var texTanH = Intermediate.Height / pixelsPerTan;
++			if ((tl0 + tr0 > texTanW || tl1 + tr1 > texTanW || tt0 + tb0 > texTanH || tt1 + tb1 > texTanH) && !coarseTooSmallLogged)
++			{
++				coarseTooSmallLogged = true;
++				Log.Warning($"[c64-stereo] coarse texture too small for the tangents of this frame (eye0 {tl0 + tr0:F3}x{tt0 + tb0:F3}, eye1 {tl1 + tr1:F3}x{tt1 + tb1:F3}, texture {texTanW:F3}x{texTanH:F3}); the whole texture spans the frustum, the density drops below {PixelDensity:F1} px/deg");
++			}
++			CoarseUsed0 = Widen(ref projection0, tl0, tr0, tt0, tb0, texTanW, texTanH);
++			CoarseUsed1 = Widen(ref projection1, tl1, tr1, tt1, tb1, texTanW, texTanH);
 +		}
-+		CoarseUsed0 = Widen(ref projection0, tl0, tr0, tt0, tb0, texTanW, texTanH);
-+		CoarseUsed1 = Widen(ref projection1, tl1, tr1, tt1, tb1, texTanW, texTanH);
 +
 +		// rate map only on the drawable (the compositor hands out a new one each frame)
 +		if (rateMap != 0)
@@ -3148,6 +3326,37 @@ index 0000000..8ee99f5
 +			eye0Relative = shift;
 +			eye1Relative = shift;
 +			headRelative = shift;
++		}
++
++		// head rotation per frame (diagnosis of the unrest): angle between this and the previous frame
++		if (hasPreviousHead)
++		{
++			var angle = RotationAngleDegrees(previousHead, headRelative);
++			headRotSum += angle;
++			headRotMax = Math.Max(headRotMax, angle);
++			headRotCount++;
++		}
++		previousHead = headRelative;
++		hasPreviousHead = true;
++
++		// frozen head rotation (C64_HEAD_FREEZE=1): captured at the first frame after a world frame,
++		// then the rotation rows of head and eyes are replaced, the position rows stay live
++		if (HeadFreeze)
++		{
++			if (!freezeCaptured && lastFrameRenderedWorld)
++			{
++				freezeCaptured = true;
++				frozenHead = headRelative;
++				frozenEye0 = eye0Relative;
++				frozenEye1 = eye1Relative;
++				Log.Info($"[c64-still] head rotation frozen at stereo frame {frameCounter} (C64_HEAD_FREEZE=1): the image now sticks to the head, translations stay live");
++			}
++			if (freezeCaptured)
++			{
++				headRelative = WithRotationOf(frozenHead, headRelative);
++				eye0Relative = WithRotationOf(frozenEye0, eye0Relative);
++				eye1Relative = WithRotationOf(frozenEye1, eye1Relative);
++			}
 +		}
 +		StereoSession = new StereoPose
 +		{
@@ -3186,9 +3395,76 @@ index 0000000..8ee99f5
 +	public static (bool Rendered, int Flushes) EndVRFrame()
 +	{
 +		var result = (FrameRendered, FlushesThisFrame);
++		lastFrameRenderedWorld = FrameRendered;
 +		Frame = null;
 +		FrameRendered = false;
 +		return result;
++	}
++
++	/// <summary>
++	/// [c64-still] measurement (diagnosis of the pixel-look unrest), called by World after the
++	/// sprites pass of a stereo frame: once per second the centred quarter of B (layer 0) is read
++	/// back in two consecutive frames and the changed pixels are counted; the line also carries
++	/// the head rotation per frame (mean and max since the last line), the freeze switch and the
++	/// number of coarse allocations. Each readback waits for the GPU to finish the frame so far
++	/// (a few milliseconds), hence only two per second.
++	/// </summary>
++	public static void SampleStillness()
++	{
++		// raster: the composite B; world: A itself (the drawable cannot be read back)
++		if ((Composite ?? Intermediate) is not { } b)
++			return;
++		var w = Math.Max(1, b.Width / 4);
++		var h = Math.Max(1, b.Height / 4);
++		var region = new RectInt((b.Width - w) / 2, (b.Height - h) / 2, w, h);
++		if (stillPrevious != null && frameCounter == stillPreviousFrame + 1)
++		{
++			if (stillCurrent == null || stillCurrent.Length != w * h)
++				stillCurrent = new Color[w * h];
++			b.Attachments[0].GetData<Color>(stillCurrent, region, 0);
++			var changed = 0;
++			for (int i = 0; i < stillCurrent.Length; i++)
++				if (stillCurrent[i] != stillPrevious[i])
++					changed++;
++			var fraction = changed / (double)stillCurrent.Length * 100;
++			var rotMean = headRotCount > 0 ? headRotSum / headRotCount : 0;
++			Log.Info($"[c64-still] changedB={fraction:F2}% region={w}x{h} frames={stillPreviousFrame},{frameCounter} headRot(deg/frame) mean={rotMean:F4} max={headRotMax:F4} n={headRotCount} freeze={(HeadFreeze && freezeCaptured ? 1 : 0)} allocations={CoarseAllocations}");
++			headRotSum = 0;
++			headRotMax = 0;
++			headRotCount = 0;
++			stillPrevious = null;
++			return;
++		}
++		var now = System.Diagnostics.Stopwatch.GetTimestamp();
++		if (now < stillNextTicks)
++			return;
++		stillNextTicks = now + (long)(StillIntervalSeconds * System.Diagnostics.Stopwatch.Frequency);
++		if (stillPrevious == null || stillPrevious.Length != w * h)
++			stillPrevious = new Color[w * h];
++		b.Attachments[0].GetData<Color>(stillPrevious, region, 0);
++		stillPreviousFrame = frameCounter;
++	}
++
++	/// <summary>Angle in degrees between the rotation parts of two transforms (rows = axes).</summary>
++	private static double RotationAngleDegrees(in Matrix a, in Matrix b)
++	{
++		// trace of Raᵀ·Rb = sum of the dot products of the matching axis rows
++		var trace = a.M11 * b.M11 + a.M12 * b.M12 + a.M13 * b.M13
++			+ a.M21 * b.M21 + a.M22 * b.M22 + a.M23 * b.M23
++			+ a.M31 * b.M31 + a.M32 * b.M32 + a.M33 * b.M33;
++		var cos = Math.Clamp((trace - 1) / 2, -1.0, 1.0);
++		return Math.Acos(cos) * 180 / Math.PI;
++	}
++
++	/// <summary>The rotation rows of one transform with the position row of another.</summary>
++	private static Matrix WithRotationOf(in Matrix rotation, in Matrix position)
++	{
++		var m = rotation;
++		m.M41 = position.M41;
++		m.M42 = position.M42;
++		m.M43 = position.M43;
++		m.M44 = position.M44;
++		return m;
 +	}
 +
 +	/// <summary>
