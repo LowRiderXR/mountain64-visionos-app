@@ -74,10 +74,21 @@
 //   --res WxH           interne Auflösung (VisionOSKit.InternalWidth/Height) und Umrissbreite auto
 //   --layer-dump PFX    bei jedem Schichtvergleich beide Schichten (physischer Bereich) als
 //                       PFX-L0-<frame>.rgba und PFX-L1-<frame>.rgba schreiben
-//   --vr-check          bei jedem Schichtvergleich im Weltpass die Farbe der Drawable-Schicht 0
-//                       gegen die Zwischenschicht A (VisionOSKit.Intermediate) vergleichen: nur
-//                       Umrisspixel dürfen abweichen (unter 10 %); mit C64_STEREO_NEGATIVE=logical-uv
-//                       und --rate-map muss der Anteil gross werden (Negativtest Map am Kantenpass)
+//   --vr-check          bei jedem Schichtvergleich im Weltpass die Drawable-Schicht 0 gegen das
+//                       grobe Ziel B (VisionOSKit.Composite) prüfen: jeder Drawable-Pixel muss
+//                       exakt den groben Texel tragen, in den seine logische Position fällt (mit
+//                       --rate-map über den Decoder physisch → logisch); an Klotzgrenzen ist der
+//                       Nachbartexel erlaubt. Dazu die Klotzbreite der Mittelzeile in logischen
+//                       Pixeln (über das Bild gleich). Mit C64_STEREO_NEGATIVE=physical-uv und
+//                       --rate-map müssen Fehltreffer auftreten (Negativtest Map am Vergrössern)
+//   --pixel-density D   Pixel-Look: Dichte der groben Ziele A und B in px/° in der Mitte
+//                       (VisionOSKit.PixelDensity, Standard 12; 8 und 16 zum Vergleich)
+//   --pixel-msaa N      Pixel-Look: 0 oder 4 Samples im Welt-Pass nach A (memoryless, nur
+//                       aufgelöst, Tiefe mit max; VisionOSKit.PixelMsaa, Standard 4)
+//   --coarse-dump PFX   beim vr-check die aufgelöste Farbe von A, Schicht 0, als
+//                       PFX-A-L0-<frame>.rgba schreiben (MSAA-Kanten: Lauf mit 4 gegen Lauf
+//                       mit 0 vergleichen, der Anteil abweichender Pixel muss > 0 sein; zwei
+//                       Läufe mit 0 müssen identisch sein)
 //   --stereo-selftest   M4b.4: Rechenprobe ohne Bild (VisionOSKit.DebugProject): Spielkamera im
 //                       Ursprung nach +Y, Augen ±0,032 m, symmetrische Projektion (Tangenten 1),
 //                       1000 px: Punkt in 2 m ergibt Disparität 16 px (±10 %), Achsmarken vorne
@@ -152,6 +163,9 @@ bool vrDepth = false, testProjection = false;
 int depthCheck = 0;
 // M4b.3a: Stereo-Weltpass, interne Auflösung, Schicht-Dumps, Vergleich Drawable gegen A
 bool vrWorld = false, vrCheck = false, stereoSelftest = false;
+float pixelDensity = 0;
+int pixelMsaa = -1;
+string? coarseDump = null;
 bool gpuPasses = false;
 string? metalCapturePath = null; long metalCaptureTick = -1;
 int layerSizeW = 1280, layerSizeH = 720;
@@ -204,6 +218,9 @@ for (int i = 0; i < args.Length; i++)
 		case "--depth-check": depthCheck = int.Parse(args[++i]); break;
 		case "--vr-world": vrWorld = true; vrDepth = true; break;
 		case "--vr-check": vrCheck = true; break;
+		case "--pixel-density": pixelDensity = float.Parse(args[++i], System.Globalization.CultureInfo.InvariantCulture); break;
+		case "--pixel-msaa": pixelMsaa = int.Parse(args[++i]); break;
+		case "--coarse-dump": coarseDump = args[++i]; break;
 		case "--stereo-selftest": stereoSelftest = true; break;
 		case "--gpu-passes": gpuPasses = true; break;
 		case "--layer-size":
@@ -238,6 +255,10 @@ if (vrWorld && (layers != "external" || views != 2))
 	Console.Error.WriteLine("--vr-world braucht --layers external --views 2");
 	return 64;
 }
+if (pixelDensity > 0)
+	VisionOSKit.PixelDensity = pixelDensity;
+if (pixelMsaa >= 0)
+	VisionOSKit.PixelMsaa = pixelMsaa;
 if (resW > 0 && resH > 0)
 {
 	VisionOSKit.InternalWidth = resW;
@@ -1015,31 +1036,98 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 			}
 		}
 
-		// M4b.3a: Drawable-Schicht 0 gegen die Zwischenschicht A (beide physisch): der Kantenpass
-		// kopiert A und dunkelt nur Umrisspixel ab; mit falscher Abtastung (Negativtest) weicht
-		// fast alles ab
-		if (vrCheck && VisionOSKit.Intermediate is { } intermediate && vrWorldFrames > 0)
+		// Pixel-Look: Drawable-Schicht 0 (physisch) gegen das grobe Ziel B. Der Vergrösserungspass
+		// nimmt je logischem Pixel den groben Texel (nearest), in den seine Position fällt; mit Map
+		// rechnet der Decoder physisch → logisch (die Map ist je Achse separierbar, Annahme wie
+		// MTLRasterizationRateLayerDescriptor: Spaltenwerte aus der Mittelzeile, Zeilenwerte aus der
+		// Mittelspalte). Jeder Drawable-Pixel muss exakt seinen Texel tragen; an Klotzgrenzen darf
+		// die Rundung den Nachbartexel treffen. Dazu die Klotzbreite entlang der Mittelzeile in
+		// logischen Pixeln: über das Bild gleich, Erwartung logische Breite / Breite von B.
+		if (vrCheck && VisionOSKit.Composite is { } composite && vrWorldFrames > 0)
 		{
 			vrChecks++;
 			var checkRect = rateMapPtr != 0 ? new RectInt(0, 0, (int)physW, (int)physH) : rect;
-			var aPixels = new Color[checkRect.Width * checkRect.Height];
-			var dPixels = new Color[checkRect.Width * checkRect.Height];
-			intermediate.Attachments[0].GetData<Color>(aPixels, checkRect, 0);
-			layerColor.GetData<Color>(dPixels, checkRect, 0);
-			int differing = 0, outlined = 0;
-			for (int i = 0; i < aPixels.Length; i++)
+			int bW = composite.Width, bH = composite.Height;
+			var bPixels = new Color[bW * bH];
+			composite.Attachments[0].GetData<Color>(bPixels, new RectInt(0, 0, bW, bH), 0);
+			// P3: die Textur ist grösser als der genutzte Bereich (feste Grösse, Reserve); der
+			// Vergrösserungspass tastet nur den genutzten Anteil ab
+			var used = VisionOSKit.CoarseUsed0;
+			float usedW = bW * used.X, usedH = bH * used.Y;
+			if (coarseDump != null && VisionOSKit.Intermediate is { } coarseA)
 			{
-				if (aPixels[i] == dPixels[i]) continue;
-				differing++;
-				// outline = the edge colour mixed in at 70 %: darker than the source in every channel
-				if (dPixels[i].R <= aPixels[i].R && dPixels[i].G <= aPixels[i].G && dPixels[i].B <= aPixels[i].B) outlined++;
+				var aPixels = new Color[bW * bH];
+				coarseA.Attachments[0].GetData<Color>(aPixels, new RectInt(0, 0, bW, bH), 0);
+				var raw = new byte[aPixels.Length * 4];
+				for (int i = 0; i < aPixels.Length; i++) { raw[i * 4] = aPixels[i].R; raw[i * 4 + 1] = aPixels[i].G; raw[i * 4 + 2] = aPixels[i].B; raw[i * 4 + 3] = aPixels[i].A; }
+				var dumpPath = $"{coarseDump}-A-L0-{game.Time.Frame}.rgba";
+				File.WriteAllBytes(dumpPath, raw);
+				Log.Info($"[machost] coarse dump {dumpPath} ({bW}x{bH}, msaa={VisionOSKit.PixelMsaa})");
 			}
-			var fraction = differing / (double)aPixels.Length * 100;
-			// sprites and transparent models are drawn into the drawable after the copy, so not every
-			// differing pixel is darker; the fraction separates the cases (negative test: over 30 %)
-			var vrOk = fraction < 10;
+			var dPixels = new Color[checkRect.Width * checkRect.Height];
+			layerColor.GetData<Color>(dPixels, checkRect, 0);
+			float logW = rateMapPtr != 0 ? logicalW : LayerW, logH = rateMapPtr != 0 ? logicalH : LayerH;
+			// logische Position der Pixelmitten je Spalte und Zeile
+			var sx = new float[checkRect.Width + 1];
+			var sy = new float[checkRect.Height];
+			for (int px = 0; px <= checkRect.Width; px++)
+			{
+				sx[px] = px + 0.5f;
+				if (rateMapPtr != 0) K6dMetal.k6d_metal_rate_map_physical_to_screen(rateMapPtr, 0, px + 0.5f, checkRect.Height / 2 + 0.5f, out sx[px], out _);
+			}
+			for (int py = 0; py < checkRect.Height; py++)
+			{
+				sy[py] = py + 0.5f;
+				if (rateMapPtr != 0) K6dMetal.k6d_metal_rate_map_physical_to_screen(rateMapPtr, 0, checkRect.Width / 2 + 0.5f, py + 0.5f, out _, out sy[py]);
+			}
+			int exact = 0, neighbour = 0, mismatch = 0;
+			for (int py = 0; py < checkRect.Height; py++)
+			{
+				int ty = Math.Clamp((int)(sy[py] / logH * usedH), 0, bH - 1);
+				for (int px = 0; px < checkRect.Width; px++)
+				{
+					int tx = Math.Clamp((int)(sx[px] / logW * usedW), 0, bW - 1);
+					var d = dPixels[py * checkRect.Width + px];
+					if (d == bPixels[ty * bW + tx]) { exact++; continue; }
+					bool near = false;
+					for (int dy = -1; dy <= 1 && !near; dy++)
+						for (int dx = -1; dx <= 1 && !near; dx++)
+						{
+							int nx = tx + dx, ny = ty + dy;
+							if (nx < 0 || ny < 0 || nx >= bW || ny >= bH) continue;
+							if (d == bPixels[ny * bW + nx]) near = true;
+						}
+					if (near) neighbour++; else mismatch++;
+				}
+			}
+			// Klotzbreite der Mittelzeile in logischen Pixeln (ganze Klötze, Rand ausgelassen)
+			float blockMin = float.MaxValue, blockMax = 0, blockSum = 0; int blocks = 0, lastTx = -1; float lastStart = 0; bool started = false;
+			for (int px = 0; px <= checkRect.Width; px++)
+			{
+				int tx = px < checkRect.Width ? Math.Clamp((int)(sx[px] / logW * usedW), 0, bW - 1) : -2;
+				if (tx == lastTx) continue;
+				if (started && lastTx >= 0 && px < checkRect.Width)
+				{
+					var width = sx[px] - lastStart;
+					blockMin = Math.Min(blockMin, width); blockMax = Math.Max(blockMax, width); blockSum += width; blocks++;
+				}
+				started = lastTx >= 0;
+				lastTx = tx; lastStart = px < checkRect.Width ? sx[px] : 0;
+			}
+			var expected = logW / usedW;
+			var blockMean = blocks > 0 ? blockSum / blocks : 0;
+			// Klotzgrenzen liegen auf physischen Pixeln: die Breite ist nur beurteilbar, wenn der
+			// gröbste physische Pixel (in logischen Pixeln) deutlich feiner ist als ein Texel; sonst
+			// misst man die Quantisierung der Map (Information, kein Fehler)
+			float physMax = 0;
+			for (int px = 0; px < checkRect.Width; px++) physMax = Math.Max(physMax, sx[px + 1] - sx[px]);
+			var blocksJudged = expected >= 2 * physMax;
+			var neighbourFraction = neighbour / (double)dPixels.Length * 100;
+			// jede Klotzgrenze rastet auf einen physischen Pixel: Spanne höchstens zwei davon
+			var blocksOk = !blocksJudged || (blocks > 0 && Math.Abs(blockMean - expected) < 0.05 * expected && blockMax - blockMin <= 2 * physMax + 0.01f);
+			var vrOk = mismatch == 0 && neighbourFraction < 2 && blocksOk;
 			if (!vrOk) vrChecksFailed++;
-			Log.Info($"[machost] vr check #{vrChecks} frame={game.Time.Frame} region={checkRect.Width}x{checkRect.Height} differing={differing} ({fraction:F2}%) outlineLike={outlined} negative={(VisionOSKit.StereoNegativeLogicalUV ? 1 : 0)} ({(vrOk ? "ok" : "FEHLER")})");
+			Log.Info($"[machost] vr check #{vrChecks} frame={game.Time.Frame} region={checkRect.Width}x{checkRect.Height} coarse={bW}x{bH} used={usedW:F1}x{usedH:F1} msaa={VisionOSKit.PixelMsaa} exact={exact} neighbour={neighbour} ({neighbourFraction:F2}%) mismatch={mismatch} block(logical px) min={blockMin:F2} mean={blockMean:F2} max={blockMax:F2} expected={expected:F2} n={blocks} physPixelMax={physMax:F2} blocksJudged={(blocksJudged ? 1 : 0)} negative={(VisionOSKit.StereoNegativePhysicalUV ? 1 : 0)} ({(vrOk ? "ok" : "FEHLER")})");
 		}
 
 		// Test-Viereck: im schwarzen Feld zählen, wie viele Pixel rein grün sind und wie viele
@@ -1148,7 +1236,7 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 Log.Info($"[machost] End: totalTicks={totalTicks} totalUpdates={totalUpdates} elapsed={clock.Elapsed.TotalSeconds:F2}s gameTime={game.Time.Elapsed.TotalSeconds:F2}s exiting={game.Exiting}" +
 	(layerColor != null ? $" layerChecks={layerChecks} failed={layerChecksFailed}" : "") +
 	(depthCheck > 0 ? $" depthChecks={depthChecks} failed={depthChecksFailed}" : "") +
-	(vrWorld ? $" vrWorldFrames={vrWorldFrames} vrCanvasFrames={vrCanvasFrames} vrChecks={vrChecks} failed={vrChecksFailed}" : ""));
+	(vrWorld ? $" vrWorldFrames={vrWorldFrames} vrCanvasFrames={vrCanvasFrames} vrChecks={vrChecks} failed={vrChecksFailed} coarseAllocations={VisionOSKit.CoarseAllocations}{(vrWorldFrames > 0 && VisionOSKit.CoarseAllocations != 1 ? " (FEHLER: genau eine Anlage erwartet)" : "")}" : ""));
 
 // Aufräumen in der Reihenfolge Ziel, Texturen, native Objekte; Foster gibt nur seine Handles frei
 VisionOSKit.Outputs = null;
