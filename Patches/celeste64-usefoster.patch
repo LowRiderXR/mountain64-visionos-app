@@ -197,10 +197,10 @@ index 0000000..f77834d
 +{ "samplers": 2, "storage_textures": 0, "storage_buffers": 0, "uniform_buffers": 1, "inputs": [{ "name": "in.var.TEXCOORD0", "type": "float2", "location": 0 }], "outputs": [{ "name": "out.var.SV_Target0", "type": "float4", "location": 0 }] }
 diff --git a/Content/Shaders/Compiled/EdgeVR.fragment.msl b/Content/Shaders/Compiled/EdgeVR.fragment.msl
 new file mode 100644
-index 0000000..c98ad58
+index 0000000..bf3f298
 --- /dev/null
 +++ b/Content/Shaders/Compiled/EdgeVR.fragment.msl
-@@ -0,0 +1,43 @@
+@@ -0,0 +1,49 @@
 +#include <metal_stdlib>
 +#include <simd/simd.h>
 +
@@ -222,7 +222,8 @@ index 0000000..c98ad58
 +    float4 Tangents0;
 +    float4 Tangents1;
 +    float2 LogicalSize;
-+    float2 Pad2;
++    float LinearCriterion;
++    float RawThreshold;
 +};
 +
 +struct fragment_main_out
@@ -238,9 +239,14 @@ index 0000000..c98ad58
 +fragment fragment_main_out fragment_main(fragment_main_in in [[stage_in]], constant type_FragmentUniforms& FragmentUniforms [[buffer(0)]], texture2d<float> Texture [[texture(0)]], texture2d<float> Depth [[texture(1)]], sampler TextureSampler [[sampler(0)]], sampler DepthSampler [[sampler(1)]])
 +{
 +    fragment_main_out out = {};
-+    float4 _119 = Texture.sample(TextureSampler, in.in_var_TEXCOORD0);
-+    float3 _126 = mix(_119.xyz, FragmentUniforms.EdgeColor.xyz, float3(step(FragmentUniforms.Threshold, (0.25 * (((precise::min(FragmentUniforms.Near / precise::max(Depth.sample(DepthSampler, (in.in_var_TEXCOORD0 + float2(FragmentUniforms.Pixel.x, 0.0))).x, 1.0000000116860974230803549289703e-07), FragmentUniforms.Far) + precise::min(FragmentUniforms.Near / precise::max(Depth.sample(DepthSampler, (in.in_var_TEXCOORD0 + float2(-FragmentUniforms.Pixel.x, 0.0))).x, 1.0000000116860974230803549289703e-07), FragmentUniforms.Far)) + precise::min(FragmentUniforms.Near / precise::max(Depth.sample(DepthSampler, (in.in_var_TEXCOORD0 + float2(0.0, FragmentUniforms.Pixel.y))).x, 1.0000000116860974230803549289703e-07), FragmentUniforms.Far)) + precise::min(FragmentUniforms.Near / precise::max(Depth.sample(DepthSampler, (in.in_var_TEXCOORD0 + float2(0.0, -FragmentUniforms.Pixel.y))).x, 1.0000000116860974230803549289703e-07), FragmentUniforms.Far))) - precise::min(FragmentUniforms.Near / precise::max(Depth.sample(DepthSampler, in.in_var_TEXCOORD0).x, 1.0000000116860974230803549289703e-07), FragmentUniforms.Far)) * 0.699999988079071044921875));
-+    out.out_var_SV_Target0 = float4(mix(_126, mix(_126 * float3(0.077399380505084991455078125), powr((_126 + float3(0.054999999701976776123046875)) * float3(0.947867333889007568359375), float3(2.400000095367431640625)), step(float3(0.040449999272823333740234375), _126)), float3(FragmentUniforms.SrgbOut)), _119.w);
++    float2 _66 = float2(FragmentUniforms.Pixel.x, 0.0);
++    float2 _67 = in.in_var_TEXCOORD0 + _66;
++    float2 _90 = float2(0.0, FragmentUniforms.Pixel.y);
++    float2 _91 = in.in_var_TEXCOORD0 + _90;
++    float4 _159 = Texture.sample(TextureSampler, in.in_var_TEXCOORD0);
++    float _164 = mix(step(FragmentUniforms.RawThreshold, Depth.sample(DepthSampler, in.in_var_TEXCOORD0).x - ((((Depth.sample(DepthSampler, _67).x + Depth.sample(DepthSampler, (in.in_var_TEXCOORD0 - _66)).x) + Depth.sample(DepthSampler, _91).x) + Depth.sample(DepthSampler, (in.in_var_TEXCOORD0 - _90)).x) * 0.25)), step(FragmentUniforms.Threshold, (0.25 * (((precise::min(FragmentUniforms.Near / precise::max(Depth.sample(DepthSampler, _67).x, 1.0000000116860974230803549289703e-07), FragmentUniforms.Far) + precise::min(FragmentUniforms.Near / precise::max(Depth.sample(DepthSampler, (in.in_var_TEXCOORD0 + float2(-FragmentUniforms.Pixel.x, 0.0))).x, 1.0000000116860974230803549289703e-07), FragmentUniforms.Far)) + precise::min(FragmentUniforms.Near / precise::max(Depth.sample(DepthSampler, _91).x, 1.0000000116860974230803549289703e-07), FragmentUniforms.Far)) + precise::min(FragmentUniforms.Near / precise::max(Depth.sample(DepthSampler, (in.in_var_TEXCOORD0 + float2(0.0, -FragmentUniforms.Pixel.y))).x, 1.0000000116860974230803549289703e-07), FragmentUniforms.Far))) - precise::min(FragmentUniforms.Near / precise::max(Depth.sample(DepthSampler, in.in_var_TEXCOORD0).x, 1.0000000116860974230803549289703e-07), FragmentUniforms.Far)), FragmentUniforms.LinearCriterion) * 0.699999988079071044921875;
++    float3 _166 = mix(_159.xyz, FragmentUniforms.EdgeColor.xyz, float3(_164));
++    out.out_var_SV_Target0 = float4(mix(_166, mix(_166 * float3(0.077399380505084991455078125), powr((_166 + float3(0.054999999701976776123046875)) * float3(0.947867333889007568359375), float3(2.400000095367431640625)), step(float3(0.040449999272823333740234375), _166)), float3(FragmentUniforms.SrgbOut)), _159.w);
 +    return out;
 +}
 +
@@ -304,10 +310,10 @@ index 0000000..cd2d83e
 +{ "samplers": 2, "storage_textures": 0, "storage_buffers": 0, "uniform_buffers": 1, "inputs": [{ "name": "in.var.TEXCOORD0", "type": "float2", "location": 0 }, { "name": "in.var.TEXCOORD5", "type": "uint", "location": 3 }], "outputs": [{ "name": "out.var.SV_Target0", "type": "float4", "location": 0 }] }
 diff --git a/Content/Shaders/Compiled/EdgeVRArray.fragment.msl b/Content/Shaders/Compiled/EdgeVRArray.fragment.msl
 new file mode 100644
-index 0000000..a14555d
+index 0000000..9db8340
 --- /dev/null
 +++ b/Content/Shaders/Compiled/EdgeVRArray.fragment.msl
-@@ -0,0 +1,70 @@
+@@ -0,0 +1,73 @@
 +#include <metal_stdlib>
 +#include <simd/simd.h>
 +
@@ -329,7 +335,8 @@ index 0000000..a14555d
 +    float4 Tangents0;
 +    float4 Tangents1;
 +    float2 LogicalSize;
-+    float2 Pad2;
++    float LinearCriterion;
++    float RawThreshold;
 +};
 +
 +struct fragment_main_out
@@ -347,34 +354,36 @@ index 0000000..a14555d
 +fragment fragment_main_out fragment_main(fragment_main_in in [[stage_in]], constant type_FragmentUniforms& FragmentUniforms [[buffer(0)]], texture2d_array<float> Texture [[texture(0)]], texture2d_array<float> Depth [[texture(1)]], sampler TextureSampler [[sampler(0)]], sampler DepthSampler [[sampler(1)]], float4 gl_FragCoord [[position]])
 +{
 +    fragment_main_out out = {};
-+    float3 _83 = float3(gl_FragCoord.xy / FragmentUniforms.PhysicalSize, float(in.in_var_TEXCOORD5));
-+    bool _84 = in.in_var_TEXCOORD5 == 0u;
-+    float4 _92;
-+    if (_84)
++    float3 _85 = float3(gl_FragCoord.xy / FragmentUniforms.PhysicalSize, float(in.in_var_TEXCOORD5));
++    bool _86 = in.in_var_TEXCOORD5 == 0u;
++    float4 _94;
++    if (_86)
 +    {
-+        _92 = FragmentUniforms.Tangents0;
++        _94 = FragmentUniforms.Tangents0;
 +    }
 +    else
 +    {
-+        _92 = FragmentUniforms.Tangents1;
++        _94 = FragmentUniforms.Tangents1;
 +    }
-+    float2 _104 = precise::max(abs(float2(dfdx(in.in_var_TEXCOORD0.x), dfdy(in.in_var_TEXCOORD0.y))) * FragmentUniforms.LogicalSize, float2(9.9999997473787516355514526367188e-05));
-+    float _107 = _92.x + _92.y;
-+    float _112 = _92.z + _92.w;
-+    float2 _115 = float2((in.in_var_TEXCOORD0.x * _107) - _92.x, _92.z - (in.in_var_TEXCOORD0.y * _112));
-+    float2 _131 = mix(FragmentUniforms.Pixel, (((FragmentUniforms.LogicalSize / float2(_107, _112)) * (FragmentUniforms.EdgeAngle * (1.0 + dot(_115, _115)))) / _104) / FragmentUniforms.PhysicalSize, float2(FragmentUniforms.AngularMode));
-+    float4 _135 = Depth.sample(DepthSampler, _83.xy, uint(rint(_83.z)));
-+    float _136 = _135.x;
-+    float _144 = _131.x;
-+    float3 _146 = _83 + float3(_144, 0.0, 0.0);
-+    float3 _157 = _83 + float3(-_144, 0.0, 0.0);
-+    float _167 = _131.y;
-+    float3 _169 = _83 + float3(0.0, _167, 0.0);
-+    float3 _181 = _83 + float3(0.0, -_167, 0.0);
-+    float4 _199 = Texture.sample(TextureSampler, _83.xy, uint(rint(_83.z)));
-+    float3 _221 = mix(mix(mix(_199.xyz, FragmentUniforms.EdgeColor.xyz, float3(step(FragmentUniforms.Threshold, (0.25 * (((precise::min(FragmentUniforms.Near / precise::max(Depth.sample(DepthSampler, _146.xy, uint(rint(_146.z))).x, 1.0000000116860974230803549289703e-07), FragmentUniforms.Far) + precise::min(FragmentUniforms.Near / precise::max(Depth.sample(DepthSampler, _157.xy, uint(rint(_157.z))).x, 1.0000000116860974230803549289703e-07), FragmentUniforms.Far)) + precise::min(FragmentUniforms.Near / precise::max(Depth.sample(DepthSampler, _169.xy, uint(rint(_169.z))).x, 1.0000000116860974230803549289703e-07), FragmentUniforms.Far)) + precise::min(FragmentUniforms.Near / precise::max(Depth.sample(DepthSampler, _181.xy, uint(rint(_181.z))).x, 1.0000000116860974230803549289703e-07), FragmentUniforms.Far))) - precise::min(FragmentUniforms.Near / precise::max(_136, 1.0000000116860974230803549289703e-07), FragmentUniforms.Far)) * 0.699999988079071044921875)), select(float3(0.0, 1.0, 0.0), float3(1.0, 0.0, 0.0), bool3(_84)), float3(FragmentUniforms.TestFill)), float3(_104.x * 0.25, _104.y * 0.25, 0.0), float3(FragmentUniforms.TestRate));
-+    out.out_var_SV_Target0 = float4(mix(_221, mix(_221 * float3(0.077399380505084991455078125), powr((_221 + float3(0.054999999701976776123046875)) * float3(0.947867333889007568359375), float3(2.400000095367431640625)), step(float3(0.040449999272823333740234375), _221)), float3(FragmentUniforms.SrgbOut)), mix(_199.w, 1.0, FragmentUniforms.TestFill));
-+    out.gl_FragDepth = _136;
++    float2 _106 = precise::max(abs(float2(dfdx(in.in_var_TEXCOORD0.x), dfdy(in.in_var_TEXCOORD0.y))) * FragmentUniforms.LogicalSize, float2(9.9999997473787516355514526367188e-05));
++    float _109 = _94.x + _94.y;
++    float _114 = _94.z + _94.w;
++    float2 _117 = float2((in.in_var_TEXCOORD0.x * _109) - _94.x, _94.z - (in.in_var_TEXCOORD0.y * _114));
++    float2 _133 = mix(FragmentUniforms.Pixel, (((FragmentUniforms.LogicalSize / float2(_109, _114)) * (FragmentUniforms.EdgeAngle * (1.0 + dot(_117, _117)))) / _106) / FragmentUniforms.PhysicalSize, float2(FragmentUniforms.AngularMode));
++    float4 _137 = Depth.sample(DepthSampler, _85.xy, uint(rint(_85.z)));
++    float _138 = _137.x;
++    float3 _140 = float3(_133.x, 0.0, 0.0);
++    float3 _142 = float3(0.0, _133.y, 0.0);
++    float3 _143 = _85 + _140;
++    float3 _149 = _85 - _140;
++    float3 _156 = _85 + _142;
++    float3 _163 = _85 - _142;
++    float4 _228 = Texture.sample(TextureSampler, _85.xy, uint(rint(_85.z)));
++    float3 _241 = mix(mix(_228.xyz, FragmentUniforms.EdgeColor.xyz, float3(mix(step(FragmentUniforms.RawThreshold, _138 - ((((Depth.sample(DepthSampler, _143.xy, uint(rint(_143.z))).x + Depth.sample(DepthSampler, _149.xy, uint(rint(_149.z))).x) + Depth.sample(DepthSampler, _156.xy, uint(rint(_156.z))).x) + Depth.sample(DepthSampler, _163.xy, uint(rint(_163.z))).x) * 0.25)), step(FragmentUniforms.Threshold, ((((precise::min(FragmentUniforms.Near / precise::max(Depth.sample(DepthSampler, _143.xy, uint(rint(_143.z))).x, 1.0000000116860974230803549289703e-07), FragmentUniforms.Far) + precise::min(FragmentUniforms.Near / precise::max(Depth.sample(DepthSampler, _149.xy, uint(rint(_149.z))).x, 1.0000000116860974230803549289703e-07), FragmentUniforms.Far)) + precise::min(FragmentUniforms.Near / precise::max(Depth.sample(DepthSampler, _156.xy, uint(rint(_156.z))).x, 1.0000000116860974230803549289703e-07), FragmentUniforms.Far)) + precise::min(FragmentUniforms.Near / precise::max(Depth.sample(DepthSampler, _163.xy, uint(rint(_163.z))).x, 1.0000000116860974230803549289703e-07), FragmentUniforms.Far)) * 0.25) - precise::min(FragmentUniforms.Near / precise::max(_138, 1.0000000116860974230803549289703e-07), FragmentUniforms.Far)), FragmentUniforms.LinearCriterion) * 0.699999988079071044921875)), select(float3(0.0, 1.0, 0.0), float3(1.0, 0.0, 0.0), bool3(_86)), float3(FragmentUniforms.TestFill));
++    float3 _250 = mix(_241, float3(_106.x * 0.25, _106.y * 0.25, 0.0), float3(FragmentUniforms.TestRate));
++    float3 _260 = mix(_250, mix(_250 * float3(0.077399380505084991455078125), powr((_250 + float3(0.054999999701976776123046875)) * float3(0.947867333889007568359375), float3(2.400000095367431640625)), step(float3(0.040449999272823333740234375), _250)), float3(FragmentUniforms.SrgbOut));
++    out.out_var_SV_Target0 = float4(_260, mix(_228.w, 1.0, FragmentUniforms.TestFill));
++    out.gl_FragDepth = _138;
 +    return out;
 +}
 +
@@ -752,7 +761,7 @@ index 0000000..22bc376
 +#define VISIONOS_VR 1
 +#include "Default.hlsl"
 diff --git a/Content/Shaders/Edge.hlsl b/Content/Shaders/Edge.hlsl
-index 428d06b..d963a53 100644
+index 428d06b..de90de2 100644
 --- a/Content/Shaders/Edge.hlsl
 +++ b/Content/Shaders/Edge.hlsl
 @@ -1,3 +1,7 @@
@@ -798,7 +807,7 @@ index 428d06b..d963a53 100644
  
  // Fragment Shader
  
-@@ -37,8 +59,102 @@ cbuffer FragmentUniforms : register(b0, space3)
+@@ -37,8 +59,112 @@ cbuffer FragmentUniforms : register(b0, space3)
  {
      float4 EdgeColor;
  	float2 Pixel;
@@ -828,7 +837,14 @@ index 428d06b..d963a53 100644
 +	float4 Tangents0;
 +	float4 Tangents1;
 +	float2 LogicalSize;
-+	float2 Pad2;
++	// LinearCriterion 1: the old criterion on the linearised distance (Threshold); 0: the
++	// criterion of the reference on the raw reverse-Z depth n/z (RawThreshold). The reference
++	// compares its hardware depth, affine in 1/z, so the four-neighbour difference is a discrete
++	// Laplacian and exactly zero on planes at any angle and distance; the linearised distance is
++	// not affine in the image, its Laplacian grows with z³ on oblique surfaces and marked whole far
++	// surfaces as outline
++	float LinearCriterion;
++	float RawThreshold;
 +#endif
 +};
 +
@@ -877,13 +893,16 @@ index 428d06b..d963a53 100644
 +	float2 angularPixel = widthTangent * perTangent / rate / PhysicalSize;
 +	float2 pixel = lerp(Pixel, angularPixel, AngularMode);
 +	float raw = rawDepth(at);
++	float3 dx = float3(pixel.x, 0, 0), dy = float3(0, pixel.y, 0);
++	// reference criterion on the raw depth: the centre nearer than the mean of its neighbours
++	// (reverse-Z: larger) by more than the threshold darkens the near side, like the reference
++	float rawOther = (rawDepth(at + dx) + rawDepth(at - dx) + rawDepth(at + dy) + rawDepth(at - dy)) * 0.25;
++	float edgeRaw = step(RawThreshold, raw - rawOther);
++	// old criterion on the linearised distance
 +	float it = min(ViewDistanceReverseZ(raw, Near), Far);
-+	float other =
-+		depth(at + float3(pixel.x, 0, 0)) * 0.25 +
-+		depth(at + float3(-pixel.x, 0, 0)) * 0.25 +
-+		depth(at + float3(0, pixel.y, 0)) * 0.25 +
-+		depth(at + float3(0, -pixel.y, 0)) * 0.25;
-+	float edge = step(Threshold, other - it);
++	float other = (depth(at + dx) + depth(at - dx) + depth(at + dy) + depth(at - dy)) * 0.25;
++	float edgeLinear = step(Threshold, other - it);
++	float edge = lerp(edgeRaw, edgeLinear, LinearCriterion);
 +
 +	float4 col = Texture.Sample(TextureSampler, at);
 +	float3 res = lerp(col.rgb, EdgeColor.rgb, edge * 0.70);
@@ -901,7 +920,7 @@ index 428d06b..d963a53 100644
  Texture2D Texture : register(t0, space2);
  SamplerState TextureSampler : register(s0, space2);
  
-@@ -47,25 +163,42 @@ SamplerState DepthSampler : register(s1, space2);
+@@ -47,25 +173,45 @@ SamplerState DepthSampler : register(s1, space2);
  
  float depth(float2 uv)
  {
@@ -930,9 +949,12 @@ index 428d06b..d963a53 100644
 +
  	// more edge the closer to the screen
 +#ifdef VISIONOS_VR
-+	// same threshold as the reference (0.001 of far) but in world units: the distances
-+	// above are linear, so the sign of the difference stays as in the reference
-+	float edge = step(Threshold, other - it);
++	// reference criterion on the raw reverse-Z depth (see the cbuffer), or the old linearised one
++	float2 dx = float2(Pixel.x, 0), dy = float2(0, Pixel.y);
++	float raw = Depth.Sample(DepthSampler, input.TexCoord).r;
++	float rawOther = (Depth.Sample(DepthSampler, input.TexCoord + dx).r + Depth.Sample(DepthSampler, input.TexCoord - dx).r
++		+ Depth.Sample(DepthSampler, input.TexCoord + dy).r + Depth.Sample(DepthSampler, input.TexCoord - dy).r) * 0.25;
++	float edge = lerp(step(RawThreshold, raw - rawOther), step(Threshold, other - it), LinearCriterion);
 +#else
  	float edge = step(0.001, other - it);
 +#endif
@@ -1907,7 +1929,7 @@ index aae3c23..1a2a566 100644
  				IndexOffset = batch.Index,
  				IndexCount = batch.Count
 diff --git a/Source/Graphics/UniformBuffers.cs b/Source/Graphics/UniformBuffers.cs
-index ff1be6e..4c399ec 100644
+index ff1be6e..b7fa8f5 100644
 --- a/Source/Graphics/UniformBuffers.cs
 +++ b/Source/Graphics/UniformBuffers.cs
 @@ -9,6 +9,13 @@ public unsafe struct DefaultVertex
@@ -1935,7 +1957,7 @@ index ff1be6e..4c399ec 100644
  }
  
  [StructLayout(LayoutKind.Sequential, Pack = 1)]
-@@ -42,16 +53,88 @@ public struct EdgeFragment
+@@ -42,16 +53,91 @@ public struct EdgeFragment
  	public Vec2 Pixel;
  }
  
@@ -1968,7 +1990,10 @@ index ff1be6e..4c399ec 100644
 +	public Vec4 Tangents0;
 +	public Vec4 Tangents1;
 +	public Vec2 LogicalSize;
-+	public float Pad1, Pad2;
++	// LinearCriterion 1 selects the old linearised criterion (Threshold), 0 the criterion of the
++	// reference on the raw reverse-Z depth with RawThreshold
++	public float LinearCriterion;
++	public float RawThreshold;
 +}
 +
 +/// <summary>
@@ -2171,7 +2196,7 @@ index 33da870..7590a36 100644
  			CutoutMode = false,
  		};
 diff --git a/Source/Scenes/World.cs b/Source/Scenes/World.cs
-index bdfb740..3d7f59d 100644
+index bdfb740..3cdbeea 100644
 --- a/Source/Scenes/World.cs
 +++ b/Source/Scenes/World.cs
 @@ -70,9 +70,20 @@ public class World : Scene
@@ -2377,7 +2402,7 @@ index bdfb740..3d7f59d 100644
  
  		// ui
  		{
-@@ -872,9 +973,29 @@ public class World : Scene
+@@ -872,9 +973,31 @@ public class World : Scene
  			// apply post fx
  			postMaterial.CopyFrom(Assets.Materials["Edge"]);
  			postMaterial.Fragment.Samplers[1] = new(target.Attachments[1], new(TextureFilter.Nearest, TextureWrap.Clamp, TextureWrap.Clamp));
@@ -2395,6 +2420,8 @@ index bdfb740..3d7f59d 100644
 +					Far = VisionOSKit.EdgeClampFar(Camera.FarPlane),
 +					Threshold = VisionOSKit.EdgeThreshold,
 +					PhysicalSize = new Vec2(target.Width, target.Height),
++					LinearCriterion = VisionOSKit.EdgeCriterionLinear ? 1 : 0,
++					RawThreshold = VisionOSKit.RawEdgeThreshold,
 +				});
 +			}
 +			else
@@ -2408,7 +2435,7 @@ index bdfb740..3d7f59d 100644
  				Edge = new Color(0x110d33).ToVector4()
  			});
  			batch.PushMaterial(postMaterial);
-@@ -889,6 +1010,140 @@ public class World : Scene
+@@ -889,6 +1012,142 @@ public class World : Scene
  		}
  	}
  
@@ -2486,6 +2513,8 @@ index bdfb740..3d7f59d 100644
 +			Tangents0 = new Vec4(l0, r0, t0, b0),
 +			Tangents1 = new Vec4(l1, r1, t1, b1),
 +			LogicalSize = new Vec2(size.X, size.Y),
++			LinearCriterion = VisionOSKit.EdgeCriterionLinear ? 1 : 0,
++			RawThreshold = VisionOSKit.RawEdgeThreshold,
 +		});
 +		GraphicsDevice.Draw(new DrawCommand(target, quad, postMaterial)
 +		{
@@ -2564,10 +2593,10 @@ index 650a35e..68b1c05 100644
  	private const float EaseClosePercent = 0.3f; // how long (in percent) it eases the entire screen
 diff --git a/Source/VisionOSKit.cs b/Source/VisionOSKit.cs
 new file mode 100644
-index 0000000..36a1ca0
+index 0000000..4683ee2
 --- /dev/null
 +++ b/Source/VisionOSKit.cs
-@@ -0,0 +1,990 @@
+@@ -0,0 +1,1009 @@
 +#if VISIONOS_KIT
 +// VisionOSKit.cs — Schalter des visionOS-Ports für Mac-Läufe (K6b, nur mit UseLocalFoster gebaut).
 +//
@@ -2863,8 +2892,27 @@ index 0000000..36a1ca0
 +	/// <summary>Far plane of the world camera: 800, or practically infinite with C64_FAR=off on the reverse-Z path.</summary>
 +	public static float WorldFarPlane => ReverseZ && FarOff ? 1_000_000f : 800f;
 +
-+	/// <summary>Edge threshold in world units: 0.001 of the reference far plane (800), independent of C64_FAR.</summary>
++	/// <summary>Edge threshold in world units of the linearised criterion: 0.001 of the reference far plane (800), independent of C64_FAR.</summary>
 +	public const float EdgeThreshold = 0.8f;
++
++	/// <summary>
++	/// C64_EDGE_CRITERION=linear: the old criterion of the VR edge pass (mean of the four
++	/// linearised neighbour distances minus the centre, threshold EdgeThreshold). Default is the
++	/// criterion of the reference on the raw depth: the reference compares its hardware depth,
++	/// which is affine in 1/z, so its four-neighbour difference is the discrete Laplacian and is
++	/// exactly zero on a plane at any angle and distance; the linearised distance is not affine in
++	/// the image and its Laplacian grows with the cube of the distance on oblique surfaces, which
++	/// drew outlines over whole far surfaces and widened them while the head turned.
++	/// </summary>
++	public static bool EdgeCriterionLinear { get; set; } = Environment.GetEnvironmentVariable("C64_EDGE_CRITERION") == "linear";
++
++	/// <summary>
++	/// Edge threshold of the raw criterion in units of the reverse-Z depth n'/z. The reference
++	/// uses 0.001 on its depth f(z − n)/(z(f − n)) with n = 20 and f = 800 (World camera), which is
++	/// affine in 1/z with the slope f·n/(f − n); 0.001 there is a step of 0.001·(f − n)/(f·n) in
++	/// 1/z, and in n'/z a step n' times that: about 4.9·10⁻⁵ for n' = 1.
++	/// </summary>
++	public static float RawEdgeThreshold => 0.001f * NearUnits * (800f - 20f) / (800f * 20f);
 +
 +	/// <summary>
 +	/// Distance the edge pass clamps the linearised depth to: the camera's far plane, but below

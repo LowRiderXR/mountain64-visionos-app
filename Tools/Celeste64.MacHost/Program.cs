@@ -91,6 +91,11 @@
 //                       Umrissbreite als häufigste Lauflänge waagrechter Umrissläufe in der Bildmitte
 //                       und am Rand gegen die Erwartung Winkel·(1+x²+y²)·k/Rate in physischen Pixeln;
 //                       mit C64_STEREO_NEGATIVE=no-angle und --rate-map muss der Rand abweichen
+//   --edge-criterion C  raw (Standard, Kriterium der Referenz auf der rohen Reverse-Z-Tiefe) oder
+//                       linear (altes Kriterium auf der linearisierten Distanz). Der vr-check im
+//                       world-Modus liest dazu die Tiefe von A und zählt Umrisspixel nach Zonen
+//                       (nah z < 5 m, fern z > 15 m) und auf ebenen Pixeln (Laplace der rohen
+//                       Tiefe unter einem Zehntel der Schwelle): neu 0 auf Ebenen, alt > 0 fern
 //   --head-jitter D     M4b R1: Kopf und Augen je Tick um zufälliges Gieren und Nicken in ±D Grad
 //                       drehen (fester Seed), Kopfzittern der Brille; Celeste meldet je Sekunde
 //                       [c64-still] changedB=… (veränderte Pixel der Bildmitte von B zwischen zwei
@@ -180,6 +185,7 @@ string? coarseDump = null;
 float headJitter = 0;
 var jitterRandom = new Random(12345);
 float edgeDeg = 0;
+string? edgeCriterion = null;
 bool gpuPasses = false;
 string? metalCapturePath = null; long metalCaptureTick = -1;
 int layerSizeW = 1280, layerSizeH = 720;
@@ -237,6 +243,7 @@ for (int i = 0; i < args.Length; i++)
 		case "--coarse-dump": coarseDump = args[++i]; break;
 		case "--head-jitter": headJitter = float.Parse(args[++i], System.Globalization.CultureInfo.InvariantCulture); break;
 		case "--edge-deg": edgeDeg = float.Parse(args[++i], System.Globalization.CultureInfo.InvariantCulture); break;
+		case "--edge-criterion": edgeCriterion = args[++i]; break;
 		case "--stereo-selftest": stereoSelftest = true; break;
 		case "--gpu-passes": gpuPasses = true; break;
 		case "--layer-size":
@@ -277,6 +284,8 @@ if (pixelMsaa >= 0)
 	VisionOSKit.PixelMsaa = pixelMsaa;
 if (edgeDeg > 0)
 	VisionOSKit.EdgeAngleDegrees = edgeDeg;
+if (edgeCriterion != null)
+	VisionOSKit.EdgeCriterionLinear = edgeCriterion == "linear";
 if (resW > 0 && resH > 0)
 {
 	VisionOSKit.InternalWidth = resW;
@@ -1099,7 +1108,14 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 			var hists = new[] { new int[41], new int[41], new int[41] };
 			var expSum = new double[3]; var expN = new int[3];
 			var zoneNames = new[] { "left", "centre", "right" };
-			bool IsOutline(Color d, Color a) => d.R < a.R && d.G < a.G && d.B < a.B && (a.R - d.R >= 8 || a.G - d.G >= 8 || a.B - d.B >= 8);
+			// Umrisspixel exakt: Drawable = 0,3·A + 0,7·Umrissfarbe (0x110d33), Toleranz 2 je Kanal (Rundung
+			// des Shaders); so zählen Sprites und Schatten, die nach dem Kantenpass ins Drawable kommen und
+			// A ebenfalls abdunkeln, nicht als Umriss
+			static bool IsOutline(Color d, Color a)
+			{
+				int er = (int)MathF.Round(0.3f * a.R + 0.7f * 0x11), eg = (int)MathF.Round(0.3f * a.G + 0.7f * 0x0d), eb = (int)MathF.Round(0.3f * a.B + 0.7f * 0x33);
+				return Math.Abs(d.R - er) <= 2 && Math.Abs(d.G - eg) <= 2 && Math.Abs(d.B - eb) <= 2 && (a.R - d.R >= 4 || a.G - d.G >= 4 || a.B - d.B >= 4);
+			}
 			for (int py = 0; py < h; py++)
 			{
 				var yt = tanT - sy[py] / logH * (tanT + tanB);
@@ -1126,6 +1142,56 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 					if (zone < 0) continue;
 					hists[zone][len]++; expSum[zone] += expected; expN[zone]++;
 				}
+			}
+			// M4b L2: Umrisspixel nach Tiefenzonen und auf ebenen Pixeln. Rohe Reverse-Z-Tiefe von A
+			// (n'/z), Zonen nach Sichtweite z = n'/D in Einheiten (10 je Meter): nah unter 50, fern
+			// über 150; «eben» heisst Laplace der rohen Tiefe (4·D − Nachbarn) unter einem Zehntel
+			// der rohen Schwelle. Mit dem Kriterium der Referenz dürfen ebene Pixel keinen Umriss
+			// tragen; das alte Kriterium markiert ferne schräge Flächen
+			{
+				var depthA = new float[w * h];
+				worldA.Attachments[1].GetData<float>(depthA, checkRect, 0);
+				var nearUnits = VisionOSKit.NearUnits;
+				var flatLimit = VisionOSKit.RawEdgeThreshold * 0.1f;
+				// «eben» mit demselben Stern wie der Shader: Nachbarn im Abstand der Winkelbreite in
+				// physischen Pixeln an dieser Stelle (ein Pixel neben einem Tiefensprung liegt selbst
+				// auf einer Ebene, gehört aber zum Umrissband); ein Pixel ist eben, wenn sein Laplace
+				// mit diesem Stern unter einem Zehntel der rohen Schwelle bleibt
+				long nearN = 0, nearOut = 0, farN = 0, farOut = 0, flatN = 0, flatOut = 0, flatFarN = 0, flatFarOut = 0;
+				for (int py = 1; py < h - 1; py++)
+				{
+					var ytFlat = tanT - sy[py] / logH * (tanT + tanB);
+					for (int px = 1; px < w - 1; px++)
+					{
+						int i = py * w + px;
+						var dv = depthA[i];
+						if (dv <= 1e-7f) continue;   // sky far away or nothing drawn
+						var z = nearUnits / dv;
+						var outline = IsOutline(dPixels[i], aPixels[i]);
+						// Stern wie der Shader: Offset in physischen Pixeln je Achse (Winkel · Jacobi · Pixel je
+						// Tangente / Rate), Abtastung nearest an (Pixelmitte ± Offset), also floor(px + 0.5 ± h)
+						var rateX = Math.Max(sx[px + 1] - sx[px], 1e-3f);
+						var rateY = Math.Max((py + 1 < h ? sy[py + 1] : sy[py] + (sy[py] - sy[py - 1])) - sy[py], 1e-3f);
+						var xtFlat = -tanL + sx[px] / logW * (tanL + tanR);
+						var jac = 1 + xtFlat * xtFlat + ytFlat * ytFlat;
+						var hxF = edgeRad * jac * kx / rateX;
+						var hyF = edgeRad * jac * (logH / (tanT + tanB)) / rateY;
+						int xl = (int)MathF.Floor(px + 0.5f - hxF), xr = (int)MathF.Floor(px + 0.5f + hxF);
+						int yu = (int)MathF.Floor(py + 0.5f - hyF), yd = (int)MathF.Floor(py + 0.5f + hyF);
+						if (xl < 0 || xr >= w || yu < 0 || yd >= h) continue;
+						var lap = Math.Abs(4 * dv - depthA[py * w + xl] - depthA[py * w + xr] - depthA[yu * w + px] - depthA[yd * w + px]) * 0.25f;
+						var flat = lap < flatLimit;
+						if (z < 50) { nearN++; if (outline) nearOut++; }
+						else if (z > 150) { farN++; if (outline) farOut++; }
+						if (flat) { flatN++; if (outline) flatOut++; if (z > 150) { flatFarN++; if (outline) flatFarOut++; } }
+					}
+				}
+				double Pct(long a, long n) => n > 0 ? a * 100.0 / n : 0;
+				var criterion = VisionOSKit.EdgeCriterionLinear ? "linear" : "raw";
+				// Rundung des Sterns (Shader tastet an nicht ganzzahligen Offsets): unter 0,02 % gilt als 0
+				var flatOk = VisionOSKit.EdgeCriterionLinear || Pct(flatFarOut, flatFarN) < 0.02;
+				if (!flatOk) vrChecksFailed++;
+				Log.Info($"[machost] edge zones criterion={criterion} rawThreshold={VisionOSKit.RawEdgeThreshold:E2} outline near(z<5m)={Pct(nearOut, nearN):F2}% (n={nearN}) far(z>15m)={Pct(farOut, farN):F2}% (n={farN}) flat={Pct(flatOut, flatN):F3}% (n={flatN}) flatFar={Pct(flatFarOut, flatFarN):F3}% (n={flatFarN}, outline={flatFarOut}) ({(flatOk ? "ok" : "FEHLER")})");
 			}
 			// Diagnose (C64_STEREO_TESTFILL=rate): die vom Shader gemalte Rate (rot = x/4) gegen die
 			// Rate des Decoders an fünf Spalten der Mittelzeile
