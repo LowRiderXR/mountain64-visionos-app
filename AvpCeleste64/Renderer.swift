@@ -302,6 +302,8 @@ nonisolated final class Renderer: @unchecked Sendable {
     // einmalige Zeile zur Zeitbasis von gpuEndTime gegen die Compositor-Uhr.
     private var presentRasterInterval: TimeInterval = 1.0 / 90.0
     private var timebaseLogged = false
+    // M4b P1: letzte [c64-mem]-Zeile (alle 10 s)
+    private var lastMemLog: CFAbsoluteTime = 0
 
     // Wanduhr-Intervall zwischen aufeinanderfolgenden Rückkehren von queryNextFrame.
     // Zeigt den Block, weil es am Render-Thread misst, nicht am Frame-Zähler des Compositors.
@@ -1108,11 +1110,14 @@ nonisolated final class Renderer: @unchecked Sendable {
             }
         }
         let frameIndexForHandler = frame.frameIndex
+        // M4b P1: Frame-Nummer der Pass-Statistik, vor Celestes Render (prepare/settle tragen sie)
+        // und für den Host-Buffer, der die Etiketten dieses Frames abschliesst.
+        let gpuFrame = CelesteProbe.celesteGpuPasses.beginFrame()
         // M4a.5c-4: nach dem Fortsetzen die ersten drei Frames mit Buffer-Status loggen.
         let logResume = resumeFramesToLog > 0
         if logResume { resumeFramesToLog -= 1 }
         commandBuffer.addCompletedHandler { [weak self] buffer in
-            self?.noteCommandBufferCompletion(buffer, frameIndex: frameIndexForHandler, renderingDeadline: renderingDeadline, logResume: logResume)
+            self?.noteCommandBufferCompletion(buffer, frameIndex: frameIndexForHandler, renderingDeadline: renderingDeadline, gpuFrame: gpuFrame, logResume: logResume)
         }
         // M4b.4-N2: Vorhersage gegen die Präsentationszeit des Drawables (Statistik)
         if let predictedPresentation {
@@ -1501,7 +1506,7 @@ nonisolated final class Renderer: @unchecked Sendable {
 
     /// Completed-Handler (Metal-Thread): Status ungleich .completed oder gesetzter Fehler zählt
     /// als Fehler; Zeile [c64-cmderr] höchstens einmal pro Sekunde, auch in die Datei.
-    private func noteCommandBufferCompletion(_ buffer: MTLCommandBuffer, frameIndex: UInt64, renderingDeadline: TimeInterval, logResume: Bool = false) {
+    private func noteCommandBufferCompletion(_ buffer: MTLCommandBuffer, frameIndex: UInt64, renderingDeadline: TimeInterval, gpuFrame: UInt64, logResume: Bool = false) {
         let status = buffer.status
         let error = buffer.error
         if status == .completed {
@@ -1517,7 +1522,7 @@ nonisolated final class Renderer: @unchecked Sendable {
             }
             // M4b Leistung N3: exklusive Zeit des Host-Buffers (schliesst das Frame ab) und
             // der Termin-Abstand; nur Zahlen, keine Allokation.
-            CelesteProbe.celesteGpuPasses.recordHost(start: gpuStart, end: gpuEnd)
+            CelesteProbe.celesteGpuPasses.recordHost(start: gpuStart, end: gpuEnd, frame: gpuFrame)
             CelesteProbe.frameTiming.noteHostBuffer(gpuEnd: gpuEnd, deadline: renderingDeadline)
         }
         if logResume {
@@ -1649,6 +1654,11 @@ nonisolated final class Renderer: @unchecked Sendable {
         lastFrameIndex = frameIndex
 
         let now = CFAbsoluteTimeGetCurrent()
+        // M4b P1: Speicher alle 10 s (Plateau der SDL-Kopien von A nach dem ersten Levelstart).
+        if now - lastMemLog >= 10.0 {
+            lastMemLog = now
+            c64Record("[c64-mem] tMs=\(LaunchClock.tMs) " + String(format: "footprintMB=%.1f availableMB=%.1f", ProbeContext.physFootprintMB, ProbeContext.availableMemoryMB))
+        }
         if now - statWindowStart >= 1.0 {
             let mean = statIntervalCount > 0 ? statIntervalSum / Double(statIntervalCount) : 0
             let hz = mean > 0 ? 1.0 / mean : 0

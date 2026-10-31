@@ -277,11 +277,27 @@ nonisolated enum CelesteProbe {
     /// der als letzter im Frame kommt und das Frame abschliesst). Je Pass die Summe pro Frame
     /// (mean) und das grösste Frame (max); die Summe aller Buffer eines Frames ebenso. Im
     /// Rückruf nur Zahlen in festen Feldern, keine Allokation (Etiketten als Indizes).
+    /// M4b P1: Etiketten werden vor dem Aufruf von celeste_render_frame_vr eingereiht (Form des
+    /// Vorframes, prepare), weil der kleine Upload-Buffer des Welt-Passes fertig sein kann, bevor
+    /// der Aufruf zurückkehrt; war die Schlange dann leer, nahm der Buffer kein Etikett und die
+    /// danach eingereihten blieben als Versatz stehen (c64-probe.txt: unlabelled=3, pending 8 → 11).
+    /// Nach dem Aufruf ersetzt settle bei anderer Form den unverbrauchten Rest. Jedes Etikett trägt
+    /// die Frame-Nummer des Renderers; der Host-Buffer des Frames (serielle Queue, nach allen
+    /// Celeste-Buffern des Frames) verwirft übrig gebliebene Etiketten bis zu seinem Frame (stale).
     nonisolated final class GpuPassStats: @unchecked Sendable {
         enum Label: Int { case world = 0, edge, sprites, rest, canvas, host, other }
         static let count = Label.other.rawValue + 1
+        static let worldLabels: [Label] = [.world, .world, .edge, .edge, .sprites, .sprites, .rest, .rest]
+        static let canvasLabels: [Label] = [.canvas, .canvas]
         private let lock = NSLock()
+        // Schlange: Etikett und Frame-Nummer, parallel (keine Allokation im Rückruf)
         private var pending: [Int] = []
+        private var pendingFrame: [UInt64] = []
+        private var frameSerial: UInt64 = 0
+        // Form des Vorframes (vorläufige Etiketten) und wie viele davon dieses Frame eingereiht hat
+        private var lastLabels: [Label] = GpuPassStats.canvasLabels
+        private var provisionalCount = 0
+        private var stale = 0
         // inklusiv (gpuEnd − gpuStart) je Etikett
         private var sums = [Double](repeating: 0, count: GpuPassStats.count)
         // exklusiv je Etikett: Summe, laufender Frame-Wert, Buffer im laufenden Frame, Maximum je Frame
@@ -297,10 +313,38 @@ nonisolated enum CelesteProbe {
         private var previousEnd = 0.0
         private var unlabelled = 0
 
-        init() { pending.reserveCapacity(64) }
+        init() { pending.reserveCapacity(64); pendingFrame.reserveCapacity(64) }
 
-        func expect(_ labels: [Label]) {
-            lock.withLock { for label in labels { pending.append(label.rawValue) } }
+        /// Render-Thread, einmal je Compositor-Frame vor dem Host-Command-Buffer: neue Frame-Nummer,
+        /// die prepare/settle dieses Frames und der Host-Buffer tragen.
+        func beginFrame() -> UInt64 {
+            lock.withLock { frameSerial += 1; return frameSerial }
+        }
+
+        /// Vor celeste_render_frame_vr: die Etiketten des Vorframes vorläufig einreihen.
+        func prepare() {
+            lock.withLock {
+                provisionalCount = lastLabels.count
+                for label in lastLabels { pending.append(label.rawValue); pendingFrame.append(frameSerial) }
+            }
+        }
+
+        /// Nach dem Aufruf: tatsächliche Form. Gleich der vorläufigen: nichts zu tun. Sonst den
+        /// unverbrauchten Rest dieses Frames entfernen und die noch nicht verbrauchten tatsächlichen
+        /// Etiketten anhängen (verbrauchte behalten das vorläufige Etikett, einmalig).
+        func settle(_ actual: [Label]) {
+            lock.withLock {
+                defer { lastLabels = actual }
+                if actual == lastLabels { return }
+                var remaining = 0
+                while let last = pendingFrame.last, last == frameSerial, remaining < provisionalCount {
+                    pending.removeLast(); pendingFrame.removeLast(); remaining += 1
+                }
+                let consumed = provisionalCount - remaining
+                if consumed < actual.count {
+                    for label in actual[consumed...] { pending.append(label.rawValue); pendingFrame.append(frameSerial) }
+                }
+            }
         }
 
         /// Ein Celeste-Buffer (Kit-Rückruf, Metal-Completion-Thread).
@@ -312,19 +356,24 @@ nonisolated enum CelesteProbe {
                     index = Label.other.rawValue
                 } else {
                     index = pending.removeFirst()
+                    pendingFrame.removeFirst()
                 }
                 add(index: index, start: start, end: end, buffersPerFrame: 2)
             }
         }
 
-        /// Der Host-Buffer des Frames (Completed-Handler des Renderers), schliesst das Frame ab.
-        func recordHost(start: Double, end: Double) {
+        /// Der Host-Buffer des Frames (Completed-Handler des Renderers), schliesst das Frame ab:
+        /// Etiketten bis zu seinem Frame, die kein Buffer genommen hat, sind stale.
+        func recordHost(start: Double, end: Double, frame: UInt64) {
             lock.withLock {
                 add(index: Label.host.rawValue, start: start, end: end, buffersPerFrame: 1)
                 frameTotalSum += frameTotal
                 frameTotalMax = max(frameTotalMax, frameTotal)
                 frameTotalCount += 1
                 frameTotal = 0
+                while let first = pendingFrame.first, first <= frame {
+                    pending.removeFirst(); pendingFrame.removeFirst(); stale += 1
+                }
             }
         }
 
@@ -352,6 +401,7 @@ nonisolated enum CelesteProbe {
             var frameTotalMax: Double
             var frames: Int
             var unlabelled: Int
+            var stale: Int
             var pending: Int
             func inclusive(_ label: Label) -> Double { inclusive[label.rawValue] }
             func exclusive(_ label: Label) -> Double { exclusive[label.rawValue] }
@@ -363,12 +413,13 @@ nonisolated enum CelesteProbe {
                 let result = Window(inclusive: sums, exclusive: exclSums, exclusiveMax: exclMax,
                                     frameTotalMean: frameTotalCount > 0 ? frameTotalSum / Double(frameTotalCount) : 0,
                                     frameTotalMax: frameTotalMax, frames: frameTotalCount,
-                                    unlabelled: unlabelled, pending: pending.count)
+                                    unlabelled: unlabelled, stale: stale, pending: pending.count)
                 for i in 0..<GpuPassStats.count { sums[i] = 0; exclSums[i] = 0; exclMax[i] = 0 }
                 frameTotalSum = 0
                 frameTotalMax = 0
                 frameTotalCount = 0
                 unlabelled = 0
+                stale = 0
                 return result
             }
         }
@@ -626,6 +677,8 @@ nonisolated enum CelesteProbe {
             defer { lock.unlock() }
             guard ready, !stopped, updatePending else { return }
             updatePending = false
+            // M4b P1: Etiketten vor dem Aufruf (ein Abschicken am Frame-Ende: zwei Buffer)
+            CelesteProbe.celesteGpuPasses.prepare()
             let start = DispatchTime.now()
             let rc = celeste_render_frame(0)
             let renderMs = Double(DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000
@@ -633,13 +686,13 @@ nonisolated enum CelesteProbe {
                 let error = celeste_last_error().map { String(cString: $0) } ?? ""
                 c64Record("[c64-celeste] render rc=-1 after \(totalTicks) ticks, ticking stopped: \"\(error)\"")
                 stopped = true
+                CelesteProbe.celesteGpuPasses.settle([])
                 return
             }
             windowRenders += 1
             renderMsSum += renderMs
             renderMsMax = max(renderMsMax, renderMs)
-            // ein Abschicken am Frame-Ende (RenderFrame → Flush): zwei Buffer
-            CelesteProbe.celesteGpuPasses.expect([.canvas, .canvas])
+            CelesteProbe.celesteGpuPasses.settle(GpuPassStats.canvasLabels)
             if !snapshotDone, totalTicks >= Self.snapshotAtTicks, let queue = snapshotQueue, let texture = snapshotTexture {
                 snapshotDone = true
                 CelesteProbe.writeCanvasSnapshot(queue: queue, texture: texture, label: "tick\(totalTicks)")
@@ -654,6 +707,9 @@ nonisolated enum CelesteProbe {
             defer { lock.unlock() }
             guard ready, !stopped, updatePending else { return -2 }
             updatePending = false
+            // M4b P1: Etiketten vor dem Aufruf einreihen (Form des Vorframes), nach dem Aufruf
+            // die tatsächliche Form setzen
+            CelesteProbe.celesteGpuPasses.prepare()
             let start = DispatchTime.now()
             let rc = celeste_render_frame_vr(frame)
             let renderMs = Double(DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000
@@ -661,6 +717,7 @@ nonisolated enum CelesteProbe {
                 let error = celeste_last_error().map { String(cString: $0) } ?? ""
                 c64Record("[c64-celeste] render_vr rc=-1 after \(totalTicks) ticks, ticking stopped: \"\(error)\"")
                 stopped = true
+                CelesteProbe.celesteGpuPasses.settle([])
                 return rc
             }
             windowRenders += 1
@@ -673,15 +730,15 @@ nonisolated enum CelesteProbe {
             if rc == 1 {
                 windowWorldFrames += 1
                 if flushes == 3 {
-                    labels = [.world, .world, .edge, .edge, .sprites, .sprites, .rest, .rest]
+                    labels = GpuPassStats.worldLabels
                 }
             } else if rc == 0, flushes == 0 {
-                labels = [.canvas, .canvas]
+                labels = GpuPassStats.canvasLabels
             }
             if labels.isEmpty {
                 for _ in 0...flushes { labels += [.other, .other] }
             }
-            CelesteProbe.celesteGpuPasses.expect(labels)
+            CelesteProbe.celesteGpuPasses.settle(labels)
             if !snapshotDone, totalTicks >= Self.snapshotAtTicks, let queue = snapshotQueue, let texture = snapshotTexture {
                 snapshotDone = true
                 CelesteProbe.writeCanvasSnapshot(queue: queue, texture: texture, label: "tick\(totalTicks)")
@@ -718,9 +775,9 @@ nonisolated enum CelesteProbe {
             func excl(_ label: GpuPassStats.Label, per frames: Double) -> String {
                 String(format: "%.3f/%.3f", passes.exclusive(label) / frames * 1000, passes.exclusiveMax(label) * 1000)
             }
-            let passText = String(format: " worldFrames=%d gpuPass(ms/frame) world=%.3f edge=%.3f sprites=%.3f rest=%.3f canvas=%.3f unlabelled=%d pending=%d",
+            let passText = String(format: " worldFrames=%d gpuPass(ms/frame) world=%.3f edge=%.3f sprites=%.3f rest=%.3f canvas=%.3f unlabelled=%d stale=%d pending=%d",
                                   windowWorldFrames, perWorld(.world), perWorld(.edge), perWorld(.sprites), perWorld(.rest),
-                                  passes.inclusive(.canvas) / canvasFrames * 1000, passes.unlabelled, passes.pending)
+                                  passes.inclusive(.canvas) / canvasFrames * 1000, passes.unlabelled, passes.stale, passes.pending)
                 + " gpuExcl(ms/frame mean/max) world=\(excl(.world, per: worldFrames)) edge=\(excl(.edge, per: worldFrames)) sprites=\(excl(.sprites, per: worldFrames)) rest=\(excl(.rest, per: worldFrames)) host=\(excl(.host, per: hostFrames))"
                 + String(format: " sum=%.3f/%.3f", passes.frameTotalMean * 1000, passes.frameTotalMax * 1000)
             let timing = CelesteProbe.frameTiming.take()
