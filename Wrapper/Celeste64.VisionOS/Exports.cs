@@ -638,21 +638,29 @@ public static unsafe class Exports
 			}
 			if (culling.M11 == 0 && culling.M22 == 0)
 				culling = VisionOSKit.UnionProjection(projection0, projection1);
+			var entryTicks = System.Diagnostics.Stopwatch.GetTimestamp();
+			VisionOSKit.RenderEntryTicks = entryTicks;
 			VisionOSKit.BeginVRFrame(game.GraphicsDevice, frame->ColorTexture, frame->DepthTexture, frame->Width, frame->Height, frame->ViewCount,
 				frame->ColorSrgb != 0, frame->RateMap, frame->LogicalWidth, frame->LogicalHeight, frame->PhysicalWidth, frame->PhysicalHeight,
 				projection0, projection1, eye0, eye1, head, culling, frame->OriginReset != 0);
 			bool rendered;
 			int flushes;
+			long worldCommitTicks;
 			try
 			{
 				game.RenderFrame(false);
 			}
 			finally
 			{
+				worldCommitTicks = VisionOSKit.WorldCommitTicks;
 				(rendered, flushes) = VisionOSKit.EndVRFrame();
 			}
 			frame->DrewWorld = rendered ? 1 : 0;
 			frame->Flushes = flushes;
+			// microseconds from the call to the commit of the world pass (0 without a world pass)
+			frame->Reserved2 = worldCommitTicks > 0
+				? (int)((worldCommitTicks - entryTicks) * 1_000_000 / System.Diagnostics.Stopwatch.Frequency)
+				: 0;
 			return rendered ? 1 : Ok;
 		}
 		catch (Exception e)

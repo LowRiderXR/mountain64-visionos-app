@@ -304,6 +304,14 @@ nonisolated final class Renderer: @unchecked Sendable {
     private var timebaseLogged = false
     // M4b P1: letzte [c64-mem]-Zeile (alle 10 s)
     private var lastMemLog: CFAbsoluteTime = 0
+    // M4b L5: Vorlauf der Submission vor optimalInputTime (C64_EARLY_MS, Standard 5 ms), einmal
+    // geloggt; letzte Pose für das Halten bei verweigertem Anker
+    private static let earlySubmitSeconds: TimeInterval = {
+        let ms = ProcessInfo.processInfo.environment["C64_EARLY_MS"].flatMap { Double($0) } ?? 5
+        return max(0, min(ms, 20)) / 1000
+    }()
+    private var earlyLogged = false
+    private var lastDeviceAnchor: DeviceAnchor?
 
     // Wanduhr-Intervall zwischen aufeinanderfolgenden Rückkehren von queryNextFrame.
     // Zeigt den Block, weil es am Render-Thread misst, nicht am Frame-Zähler des Compositors.
@@ -1051,10 +1059,32 @@ nonisolated final class Renderer: @unchecked Sendable {
         frame.endUpdate()
 
         guard let timing = frame.predictTiming() else { return }
-        LayerRenderer.Clock().wait(until: timing.optimalInputTime)
+        // M4b L4: Wartezeit bis optimalInputTime (negativ, wenn das Update schon später fertig war)
+        let optimalInput = timing.optimalInputTime.timeInterval
+        let waitOpt = optimalInput - LayerRenderer.Clock().now.timeInterval
+        // M4b L5: früher einreichen. Compositor Services legt optimalInputTime aus unserer
+        // CPU-Zeit zwischen startSubmission und endSubmission (3 ms) fest und weiss nichts von den
+        // 5–9 ms GPU danach; L4 mass 6–7 ms Warten je Frame und Termine, die die GPU um 1–2 ms
+        // reisst. Wir beginnen C64_EARLY_MS (Standard 5) vor optimalInputTime: der GPU-Start rückt
+        // um diese Zeit vor, die Pose für denselben Präsentationszeitpunkt wird entsprechend
+        // früher vorhergesagt (Drehung korrigiert der Compositor beim Anzeigen).
+        let early = Self.earlySubmitSeconds
+        if !earlyLogged {
+            earlyLogged = true
+            c64Record(String(format: "[c64-early] submission %.1f ms before optimalInputTime (C64_EARLY_MS, 0 = wait until optimalInputTime)", early * 1000))
+        }
+        if early > 0 {
+            LayerRenderer.Clock().wait(until: timing.optimalInputTime.advanced(by: .seconds(-early)))
+        } else {
+            LayerRenderer.Clock().wait(until: timing.optimalInputTime)
+        }
 
         frame.startSubmission()
+        // M4b L5: Dauer von queryDrawables; blockiert es bis optimalInputTime, wäre das frühere
+        // Einreichen wirkungslos und hier sichtbar
+        let queryStart = LayerRenderer.Clock().now.timeInterval
         let drawables = frame.queryDrawables()
+        let queryDrawablesSeconds = LayerRenderer.Clock().now.timeInterval - queryStart
         guard !drawables.isEmpty else {
             // Leere Liste: der Frame ist vom System abgebrochen und darf nicht mehr angefasst
             // werden, auch nicht mit endSubmission. frame.h:109-110 zu cp_frame_query_drawables:
@@ -1133,7 +1163,18 @@ nonisolated final class Renderer: @unchecked Sendable {
             lastLoggedProviderState = providerState
             c64Record("[c64-arkit] render thread sees provider state=\(Self.name(providerState)) frame=\(totalFrames)")
         }
-        let deviceAnchor = providerState == .running ? provider.queryDeviceAnchor(atTimestamp: presentationTime) : nil
+        var deviceAnchor = providerState == .running ? provider.queryDeviceAnchor(atTimestamp: presentationTime) : nil
+        // M4b L5: queryDeviceAnchor verweigert Zeitpunkte, zu denen es nicht vorhersagt (Klepton:
+        // ein Hänger, der die Präsentationszeit hinausschiebt, reicht). Dann die letzte Pose
+        // halten statt ohne Anker zu präsentieren: die Identität würde die Welt vor dem Gesicht
+        // festkleben. Gezählt als anchorHeld.
+        var anchorHeld = false
+        if deviceAnchor == nil, providerState == .running, let held = lastDeviceAnchor {
+            deviceAnchor = held
+            anchorHeld = true
+        } else if let fresh = deviceAnchor {
+            lastDeviceAnchor = fresh
+        }
         if let deviceAnchor {
             // M4b.1b: letzte Kopfpose für die [c64-recenter]-Zeile (Diagnose, Vorbereitung M4b.4).
             CelesteProbe.headPose.set(anchor: deviceAnchor.originFromAnchorTransform)
@@ -1147,6 +1188,7 @@ nonisolated final class Renderer: @unchecked Sendable {
         // dort nichts mehr. Rückgabe 0: Leinwand wie bisher.
         var celesteRenderedThisFrame = false
         var worldDrawnThisFrame = false
+        var toFirstCommit: TimeInterval?
         if renderCelesteThisFrame {
             if CelesteProbe.pauseState.isBackground {
                 // Flag kam zwischen Update und Render: Celestes Render entfällt (keine
@@ -1158,8 +1200,14 @@ nonisolated final class Renderer: @unchecked Sendable {
                 var worldFrame = celeste_vr_frame()
                 if CelesteProbe.stereoWorld,
                    Self.fillVRFrame(&worldFrame, drawable: primary, layerFrame: frame, deviceAnchor: deviceAnchor, configuration: layerRenderer.configuration) {
+                    let renderCall = LayerRenderer.Clock().now.timeInterval
                     let rc = CelesteProbe.tickState.renderVR(&worldFrame)
                     worldDrawnThisFrame = rc == 1
+                    // M4b L4: optimalInputTime bis zum Commit des Welt-Buffers (Celeste meldet die
+                    // Mikrosekunden vom Aufruf bis zum Commit in reserved2)
+                    if rc == 1, worldFrame.reserved2 > 0 {
+                        toFirstCommit = (renderCall - optimalInput) + Double(worldFrame.reserved2) / 1_000_000
+                    }
                     noteStereoFrame(rc: rc, frame: worldFrame, frameIndex: frame.frameIndex)
                     if rc == 1 { logHeadIfDue() }
                 } else {
@@ -1231,6 +1279,12 @@ nonisolated final class Renderer: @unchecked Sendable {
         }
         commandBuffer.commit()
         frame.endSubmission()
+        // M4b L4: Apples Frist gilt für die CPU: Command Buffer committet und endSubmission vor
+        // renderingDeadline. cpuMargin = Frist minus jetzt; dazu die Wartezeit und der Weg zum
+        // ersten Commit dieses Frames. Nur Zeitstempel, keine Synchronisation.
+        CelesteProbe.frameTiming.noteCpu(waitOpt: waitOpt, toFirstCommit: toFirstCommit,
+                                         cpuMargin: renderingDeadline - LayerRenderer.Clock().now.timeInterval,
+                                         queryDrawables: queryDrawablesSeconds, anchorHeld: anchorHeld)
         if pauseFrameNote?.frameIndex == frame.frameIndex {
             pauseFrameNote?.committed = true
             pauseFrameNote?.presented = true

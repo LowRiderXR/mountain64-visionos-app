@@ -312,6 +312,11 @@ nonisolated enum CelesteProbe {
         private var frameTotalCount = 0
         private var previousEnd = 0.0
         private var unlabelled = 0
+        // M4b L4: Spanne erster GPU-Start bis Host-Ende je Frame, und Frames mit Summe über 5,8 ms
+        private var frameFirstStart = 0.0
+        private var spanSum = 0.0, spanMax = 0.0
+        private var slowFrames = 0
+        static let slowFrameSeconds = 0.0058
 
         init() { pending.reserveCapacity(64); pendingFrame.reserveCapacity(64) }
 
@@ -370,7 +375,13 @@ nonisolated enum CelesteProbe {
                 frameTotalSum += frameTotal
                 frameTotalMax = max(frameTotalMax, frameTotal)
                 frameTotalCount += 1
+                if frameTotal > GpuPassStats.slowFrameSeconds { slowFrames += 1 }
                 frameTotal = 0
+                if frameFirstStart > 0 {
+                    let span = max(end - frameFirstStart, 0)
+                    spanSum += span; spanMax = max(spanMax, span)
+                }
+                frameFirstStart = 0
                 while let first = pendingFrame.first, first <= frame {
                     pending.removeFirst(); pendingFrame.removeFirst(); stale += 1
                 }
@@ -378,6 +389,7 @@ nonisolated enum CelesteProbe {
         }
 
         private func add(index: Int, start: Double, end: Double, buffersPerFrame: Int) {
+            if frameFirstStart == 0 || start < frameFirstStart { frameFirstStart = start }
             let inclusive = max(end - start, 0)
             let exclusive = max(end - max(start, previousEnd), 0)
             previousEnd = max(previousEnd, end)
@@ -403,6 +415,9 @@ nonisolated enum CelesteProbe {
             var unlabelled: Int
             var stale: Int
             var pending: Int
+            var spanMean: Double
+            var spanMax: Double
+            var slowFrames: Int
             func inclusive(_ label: Label) -> Double { inclusive[label.rawValue] }
             func exclusive(_ label: Label) -> Double { exclusive[label.rawValue] }
             func exclusiveMax(_ label: Label) -> Double { exclusiveMax[label.rawValue] }
@@ -413,13 +428,15 @@ nonisolated enum CelesteProbe {
                 let result = Window(inclusive: sums, exclusive: exclSums, exclusiveMax: exclMax,
                                     frameTotalMean: frameTotalCount > 0 ? frameTotalSum / Double(frameTotalCount) : 0,
                                     frameTotalMax: frameTotalMax, frames: frameTotalCount,
-                                    unlabelled: unlabelled, stale: stale, pending: pending.count)
+                                    unlabelled: unlabelled, stale: stale, pending: pending.count,
+                                    spanMean: frameTotalCount > 0 ? spanSum / Double(frameTotalCount) : 0, spanMax: spanMax, slowFrames: slowFrames)
                 for i in 0..<GpuPassStats.count { sums[i] = 0; exclSums[i] = 0; exclMax[i] = 0 }
                 frameTotalSum = 0
                 frameTotalMax = 0
                 frameTotalCount = 0
                 unlabelled = 0
                 stale = 0
+                spanSum = 0; spanMax = 0; slowFrames = 0
                 return result
             }
         }
@@ -439,6 +456,47 @@ nonisolated enum CelesteProbe {
         private var marginCount = 0
         private var missed = 0
         private var presentGaps = 0
+        // M4b L4: CPU-Zeitfelder je Frame (Render-Thread, nur Zahlen)
+        private var waitSum = 0.0, waitMax = -Double.greatestFiniteMagnitude; private var waitCount = 0
+        private var commitSum = 0.0, commitMax = 0.0; private var commitCount = 0
+        private var cpuMarginSum = 0.0, cpuMarginMin = Double.greatestFiniteMagnitude; private var cpuMarginCount = 0
+        private var cpuLate = 0
+        // M4b L5: Dauer von queryDrawables und gehaltene Anker
+        private var querySum = 0.0, queryMax = 0.0
+        private var anchorHeld = 0
+
+        /// Render-Thread nach endSubmission: Wartezeit bis optimalInputTime, Weg von
+        /// optimalInputTime zum Commit des Welt-Buffers (nur Welt-Frames), die CPU-Frist, die
+        /// Dauer von queryDrawables und ob die letzte Pose gehalten wurde.
+        func noteCpu(waitOpt: TimeInterval, toFirstCommit: TimeInterval?, cpuMargin: TimeInterval, queryDrawables: TimeInterval, anchorHeld held: Bool) {
+            lock.withLock {
+                waitSum += waitOpt; waitMax = max(waitMax, waitOpt); waitCount += 1
+                if let toFirstCommit { commitSum += toFirstCommit; commitMax = max(commitMax, toFirstCommit); commitCount += 1 }
+                cpuMarginSum += cpuMargin; cpuMarginMin = min(cpuMarginMin, cpuMargin); cpuMarginCount += 1
+                if cpuMargin < 0 { cpuLate += 1 }
+                querySum += queryDrawables; queryMax = max(queryMax, queryDrawables)
+                if held { anchorHeld += 1 }
+            }
+        }
+
+        struct CpuWindow { var waitMean, waitMax, commitMean, commitMax, cpuMarginMin, cpuMarginMean, queryMean, queryMax: Double; var cpuLate, frames, commitFrames, anchorHeld: Int }
+
+        func takeCpu() -> CpuWindow {
+            lock.withLock {
+                let result = CpuWindow(waitMean: waitCount > 0 ? waitSum / Double(waitCount) : 0, waitMax: waitCount > 0 ? waitMax : 0,
+                                       commitMean: commitCount > 0 ? commitSum / Double(commitCount) : 0, commitMax: commitMax,
+                                       cpuMarginMin: cpuMarginCount > 0 ? cpuMarginMin : 0,
+                                       cpuMarginMean: cpuMarginCount > 0 ? cpuMarginSum / Double(cpuMarginCount) : 0,
+                                       queryMean: cpuMarginCount > 0 ? querySum / Double(cpuMarginCount) : 0, queryMax: queryMax,
+                                       cpuLate: cpuLate, frames: cpuMarginCount, commitFrames: commitCount, anchorHeld: anchorHeld)
+                waitSum = 0; waitMax = -Double.greatestFiniteMagnitude; waitCount = 0
+                commitSum = 0; commitMax = 0; commitCount = 0
+                cpuMarginSum = 0; cpuMarginMin = Double.greatestFiniteMagnitude; cpuMarginCount = 0
+                cpuLate = 0
+                querySum = 0; queryMax = 0; anchorHeld = 0
+                return result
+            }
+        }
 
         /// Einmalige Belegung der Zeitbasis: beide Uhren unmittelbar nacheinander gelesen.
         /// Liefert den Versatz in Sekunden, nil wenn schon kalibriert.
@@ -781,8 +839,14 @@ nonisolated enum CelesteProbe {
                 + " gpuExcl(ms/frame mean/max) world=\(excl(.world, per: worldFrames)) edge=\(excl(.edge, per: worldFrames)) sprites=\(excl(.sprites, per: worldFrames)) rest=\(excl(.rest, per: worldFrames)) host=\(excl(.host, per: hostFrames))"
                 + String(format: " sum=%.3f/%.3f", passes.frameTotalMean * 1000, passes.frameTotalMax * 1000)
             let timing = CelesteProbe.frameTiming.take()
-            let timingText = String(format: " deadlineMissed=%d/%d deadlineMargin(ms) min=%+.2f mean=%+.2f presentGaps=%d",
-                                    timing.missed, timing.frames, timing.marginMin * 1000, timing.marginMean * 1000, timing.presentGaps)
+            let cpu = CelesteProbe.frameTiming.takeCpu()
+            // M4b L4: deadlineMissed ist eine Näherung (GPU-Ende gegen die CPU-Frist), cpuLate
+            // Apples Frist (endSubmission nach renderingDeadline), slowFrames Frames über 5,8 ms Summe
+            let timingText = String(format: " deadlineMissed=%d/%d deadlineMargin(ms) min=%+.2f mean=%+.2f presentGaps=%d waitOpt(ms) mean=%.2f max=%.2f toFirstCommit(ms) mean=%.2f max=%.2f n=%d frameSpan(ms) mean=%.2f max=%.2f cpuMargin(ms) min=%+.2f mean=%+.2f cpuLate=%d slowFrames=%d queryDrawables(ms) mean=%.3f max=%.3f anchorHeld=%d",
+                                    timing.missed, timing.frames, timing.marginMin * 1000, timing.marginMean * 1000, timing.presentGaps,
+                                    cpu.waitMean * 1000, cpu.waitMax * 1000, cpu.commitMean * 1000, cpu.commitMax * 1000, cpu.commitFrames,
+                                    passes.spanMean * 1000, passes.spanMax * 1000, cpu.cpuMarginMin * 1000, cpu.cpuMarginMean * 1000, cpu.cpuLate, passes.slowFrames,
+                                    cpu.queryMean * 1000, cpu.queryMax * 1000, cpu.anchorHeld)
             let wallText = wallCount > 0
                 ? String(format: " wall(ms) mean=%.2f max=%.2f dev(ms) mean=%.3f max=%.3f", wallSum / Double(wallCount) * 1000, wallMax * 1000, devSum / Double(wallCount) * 1000, devMax * 1000)
                 : ""

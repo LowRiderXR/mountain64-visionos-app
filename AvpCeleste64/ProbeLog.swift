@@ -3,8 +3,11 @@
 //  AvpCeleste64
 //
 //  Logger, Startzeile [c64-ctx] und Fortschrittsdatei Documents/c64-probe.txt.
-//  Die Datei wird nach jeder Zeile synchronisiert (fsync), damit nach einem Abbruch
-//  durch das System sichtbar bleibt, welche Zeile zuletzt geschrieben wurde.
+//  Jede Zeile geht mit einem ungepufferten write() direkt an den Kernel; damit überlebt sie
+//  einen SIGKILL (die Daten liegen im Seitencache und werden vom Kernel geschrieben), ohne dass
+//  der schreibende Thread auf den Datenträger wartet. M4b L4: das frühere fsync je Zeile lief
+//  auf dem Render-Thread und konnte dort Millisekunden kosten; ein verlorener Rest bliebe nur
+//  bei einem Kernel-Absturz oder Stromausfall, nicht beim Beenden durch das System.
 //
 
 import Darwin
@@ -48,7 +51,7 @@ nonisolated final class ProgressFile: @unchecked Sendable {
         write("---- Start \(ISO8601DateFormatter().string(from: Date())) pid=\(getpid()) debugger=\(ProbeContext.debuggerAttached ? 1 : 0) truncated=\(Self.truncateOnStart ? 1 : 0) \(Self.truncateOnStart ? "(Datei geleert)" : "(angehängt)")")
     }
 
-    /// Schreibt eine Zeile und synchronisiert sie sofort auf den Datenträger.
+    /// Schreibt eine Zeile ungepuffert an den Kernel (kein fsync, siehe Kopf der Datei).
     func write(_ line: String) {
         lock.lock()
         defer { lock.unlock() }
@@ -62,7 +65,6 @@ nonisolated final class ProgressFile: @unchecked Sendable {
                 offset += n
             }
         }
-        fsync(fd)
     }
 }
 

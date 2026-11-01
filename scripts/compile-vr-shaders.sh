@@ -55,7 +55,7 @@ compile() {
 }
 
 echo "== VR shader variants -> $OUT"
-for name in DefaultVR SpriteVR EdgeVR EdgeVRArray UpscaleVRArray; do
+for name in DefaultVR DefaultVRNoDiscard SpriteVR EdgeVR EdgeVRArray UpscaleVRArray; do
     compile "$name" vertex vs_6_1
     compile "$name" fragment ps_6_1
 done
@@ -65,7 +65,7 @@ done
 # stay those of the originals (UpscaleVRArray binds like Edge: two samplers, one uniform buffer),
 # otherwise Foster binds them differently.
 echo "== checks"
-for name in DefaultVR SpriteVR EdgeVR EdgeVRArray UpscaleVRArray; do
+for name in DefaultVR DefaultVRNoDiscard SpriteVR EdgeVR EdgeVRArray UpscaleVRArray; do
     if [[ "$name" != "EdgeVRArray" && "$name" != "UpscaleVRArray" ]] && grep -q "depth(any)" "$OUT/$name.fragment.msl"; then
         echo "error: $name.fragment.msl still writes depth" >&2; exit 1
     fi
@@ -92,7 +92,7 @@ grep -q "depth(any)" "$OUT/UpscaleVRArray.fragment.msl" || { echo "error: Upscal
 echo "   UpscaleVRArray: texture2d_array and depth output present"
 
 echo "== Metal compiler check (xros and macOS)"
-for name in DefaultVR SpriteVR EdgeVR EdgeVRArray UpscaleVRArray; do
+for name in DefaultVR DefaultVRNoDiscard SpriteVR EdgeVR EdgeVRArray UpscaleVRArray; do
     for stage in vertex fragment; do
         xcrun -sdk xros metal -x metal -c "$OUT/$name.$stage.msl" -o "$TMP/$name.$stage.xros.air"
         xcrun -sdk macosx metal -x metal -c "$OUT/$name.$stage.msl" -o "$TMP/$name.$stage.macos.air"

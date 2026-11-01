@@ -286,6 +286,9 @@ if (edgeDeg > 0)
 	VisionOSKit.EdgeAngleDegrees = edgeDeg;
 if (edgeCriterion != null)
 	VisionOSKit.EdgeCriterionLinear = edgeCriterion == "linear";
+// M4b L4: [c64-still] ist standardmässig aus (Rücklesungen kosten Frames); --head-jitter braucht es
+if (headJitter > 0)
+	VisionOSKit.StillEnabled = true;
 if (resW > 0 && resH > 0)
 {
 	VisionOSKit.InternalWidth = resW;
@@ -1093,6 +1096,15 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 			var dPixels = new Color[w * h];
 			worldA.Attachments[0].GetData<Color>(aPixels, checkRect, 0);
 			layerColor.GetData<Color>(dPixels, checkRect, 0);
+			if (coarseDump != null)
+			{
+				// A (aufgelöste Farbe, Schicht 0) als RGBA roh, Vergleich zweier Läufe (L3: mit und ohne discard)
+				var raw = new byte[aPixels.Length * 4];
+				for (int i = 0; i < aPixels.Length; i++) { raw[i * 4] = aPixels[i].R; raw[i * 4 + 1] = aPixels[i].G; raw[i * 4 + 2] = aPixels[i].B; raw[i * 4 + 3] = aPixels[i].A; }
+				var dumpPath = $"{coarseDump}-A-L0-{game.Time.Frame}.rgba";
+				File.WriteAllBytes(dumpPath, raw);
+				Log.Info($"[machost] coarse dump {dumpPath} ({w}x{h}, msaa={VisionOSKit.PixelMsaa}, nodiscard={(VisionOSKit.NoDiscard ? 1 : 0)})");
+			}
 			float logW = rateMapPtr != 0 ? logicalW : LayerW, logH = rateMapPtr != 0 ? logicalH : LayerH;
 			var sx = new float[w + 1];
 			var sy = new float[h];

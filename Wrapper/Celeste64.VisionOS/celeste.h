@@ -173,7 +173,7 @@ typedef struct celeste_vr_frame {
     float head_transform[16];         /* O-from-anchor */
     float culling_projection[16];     /* binocular culling matrix (device space to clip, reverse-Z, widened tangents) */
     int32_t origin_reset;             /* 1 in the frame the host set O anew (logged by the game) */
-    int32_t reserved2;
+    int32_t reserved2;                /* out: microseconds from the call to the commit of the world pass, 0 without one */
     int32_t drew_world;               /* out: 1 when the world was rendered into the drawable */
     int32_t flushes;                  /* out: command buffer submissions the game made for its passes (2 buffers each) */
 } celeste_vr_frame;
