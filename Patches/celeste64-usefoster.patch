@@ -1366,6 +1366,103 @@ index 3b98afe..111db92 100644
  
  		batch.Rect(new Rect(bounds.X, bounds.Y, bounds.Width, BarSize * ease), Color.Black);
  		batch.Rect(new Rect(bounds.X, bounds.Bottom - BarSize * ease, bounds.Width, BarSize * ease), Color.Black);
+diff --git a/Source/Actors/Player.cs b/Source/Actors/Player.cs
+index dd52d78..2431b6b 100644
+--- a/Source/Actors/Player.cs
++++ b/Source/Actors/Player.cs
+@@ -271,6 +271,11 @@ public class Player : Actor, IHaveModels, IHaveSprites, IRidePlatforms, ICastPoi
+ 				var invertX = Save.Instance.InvertCamera == Save.InvertCameraOptions.X || Save.Instance.InvertCamera == Save.InvertCameraOptions.Both;
+ 				var rot = new Vec2(cameraTargetForward.X, cameraTargetForward.Y).Angle();
+ 				rot -= Controls.Camera.Value.X * Time.Delta * 4 * (invertX ? -1 : 1);
++#if VISIONOS_KIT
++				// visionOS port: camera probe
++				if (Controls.Camera.Value.X != 0)
++					VisionOSKit.CamProbe.StickTurnFrames++;
++#endif
+ 
+ 				var angle = Calc.AngleToVector(rot);
+ 				cameraTargetForward = new(angle, 0);
+@@ -468,6 +473,10 @@ public class Player : Actor, IHaveModels, IHaveSprites, IRidePlatforms, ICastPoi
+ 			{
+ 				lookAt = cameraOverride.Value.LookAt;
+ 				cameraPos = cameraOverride.Value.Position;
++#if VISIONOS_KIT
++				// visionOS port: camera probe
++				VisionOSKit.CamProbe.OverrideFrames++;
++#endif
+ 			}
+ 			else
+ 			{
+@@ -547,9 +556,19 @@ public class Player : Actor, IHaveModels, IHaveSprites, IRidePlatforms, ICastPoi
+ 
+ 		// get default values
+ 		cameraLookAt = cameraOriginPos;
++		var cameraBehind = Utils.Lerp3(30, 60, 110, 110, cameraTargetDistance);
++		var cameraHeight = Utils.Lerp3(1, 30, 80, 180, cameraTargetDistance);
++#if VISIONOS_KIT
++		// visionOS port: on the stereo path the head looks level by default, so the camera's height
++		// follows a target angle of the look-at point (12 above the feet) below the horizon;
++		// C64_CAM_PITCH_DEG=off keeps Celeste's curve. Before the ray-cast, so walls are still respected.
++		VisionOSKit.CamProbe.Zoom = cameraTargetDistance;
++		if (VisionOSKit.StereoSession != null && VisionOSKit.Cam.PitchDegrees is { } pitchDegrees)
++			cameraHeight = 12 + cameraBehind * MathF.Tan(pitchDegrees * MathF.PI / 180);
++#endif
+ 		cameraPosition = cameraLookAt
+-			- cameraTargetForward * Utils.Lerp3(30, 60, 110, 110, cameraTargetDistance)
+-			+ Vec3.UnitZ * Utils.Lerp3(1, 30, 80, 180, cameraTargetDistance);
++			- cameraTargetForward * cameraBehind
++			+ Vec3.UnitZ * cameraHeight;
+ 		cameraLookAt += Vec3.UnitZ * 12;
+ 
+ 		// inside a fixed camera zone
+@@ -559,6 +578,10 @@ public class Player : Actor, IHaveModels, IHaveSprites, IRidePlatforms, ICastPoi
+ 			cameraPosition = fixedCamera.Point;
+ 			cameraTargetForward = new Vec3((cameraLookAt.XY() - cameraPosition.XY()).Normalized(), 0);
+ 			snapRequested = true;
++#if VISIONOS_KIT
++			// visionOS port: camera probe
++			VisionOSKit.CamProbe.FixedZoneFrames++;
++#endif
+ 		}
+ 		// try to push out of solids if we're in them
+ 		else
+@@ -579,6 +602,10 @@ public class Player : Actor, IHaveModels, IHaveSprites, IRidePlatforms, ICastPoi
+ 				{
+ 					snapRequested = true;
+ 					cameraPosition = hit.Point;
++#if VISIONOS_KIT
++					// visionOS port: camera probe
++					VisionOSKit.CamProbe.CamHitFrames++;
++#endif
+ 				}
+ 			}
+ 
+@@ -586,6 +613,10 @@ public class Player : Actor, IHaveModels, IHaveSprites, IRidePlatforms, ICastPoi
+ 			if (World.SolidRayCast(cameraPosition, Vec3.UnitZ, 5, out hit, true, true))
+ 			{
+ 				cameraPosition = hit.Point - Vec3.UnitZ * 5;
++#if VISIONOS_KIT
++				// visionOS port: camera probe
++				VisionOSKit.CamProbe.CamHitFrames++;
++#endif
+ 			}
+ 		}
+ 	}
+@@ -603,7 +634,14 @@ public class Player : Actor, IHaveModels, IHaveSprites, IRidePlatforms, ICastPoi
+ 
+ 			Vec2 forward, side;
+ 			
++#if VISIONOS_KIT
++			// visionOS port: C64_MOVE_REF=head takes the head's yaw instead of the game camera's
++			var cameraForward = VisionOSKit.Cam.MoveRelativeToHead
++				? World.Camera.ViewForward.XY()
++				: (World.Camera.LookAt - World.Camera.Position).Normalized().XY();
++#else
+             var cameraForward = (World.Camera.LookAt - World.Camera.Position).Normalized().XY();
++#endif
+ 			if (cameraForward.X == 0 && cameraForward.Y == 0)
+ 				forward = targetFacing;
+ 			else
 diff --git a/Source/Actors/Snow.cs b/Source/Actors/Snow.cs
 index 623a700..2b52833 100644
 --- a/Source/Actors/Snow.cs
@@ -1718,7 +1815,7 @@ index 312df59..6c9dbde 100644
  
  	private FMOD.RESULT MusicTimelineCallback(FMOD.Studio.EVENT_CALLBACK_TYPE type, IntPtr _event, IntPtr parameters)
 diff --git a/Source/Graphics/Camera.cs b/Source/Graphics/Camera.cs
-index e184bbf..ae0bad5 100644
+index e184bbf..41a8d39 100644
 --- a/Source/Graphics/Camera.cs
 +++ b/Source/Graphics/Camera.cs
 @@ -14,6 +14,13 @@ public struct Camera()
@@ -1829,7 +1926,7 @@ index e184bbf..ae0bad5 100644
 +		get
 +		{
 +			EnsureStereoCache();
-+			stereoWorldFromHead ??= VisionOSKit.WorldFromRelative(VisionOSKit.StereoSession!.Head, Position, VisionOSKit.BaseYaw(Position, LookAt));
++			stereoWorldFromHead ??= VisionOSKit.WorldFromRelative(VisionOSKit.StereoSession!.Head, Position, VisionOSKit.BaseRotation(Position, LookAt));
 +			return stereoWorldFromHead.Value;
 +		}
 +	}
@@ -1848,14 +1945,14 @@ index e184bbf..ae0bad5 100644
 +		{
 +			if (!stereoView0.HasValue)
 +			{
-+				Matrix.Invert(VisionOSKit.WorldFromRelative(session.Eye0, Position, VisionOSKit.BaseYaw(Position, LookAt)), out var v);
++				Matrix.Invert(VisionOSKit.WorldFromRelative(session.Eye0, Position, VisionOSKit.BaseRotation(Position, LookAt)), out var v);
 +				stereoView0 = v;
 +			}
 +			return stereoView0.Value;
 +		}
 +		if (!stereoView1.HasValue)
 +		{
-+			Matrix.Invert(VisionOSKit.WorldFromRelative(session.Eye1, Position, VisionOSKit.BaseYaw(Position, LookAt)), out var v);
++			Matrix.Invert(VisionOSKit.WorldFromRelative(session.Eye1, Position, VisionOSKit.BaseRotation(Position, LookAt)), out var v);
 +			stereoView1 = v;
 +		}
 +		return stereoView1.Value;
@@ -2349,7 +2446,7 @@ index 33da870..7590a36 100644
  			CutoutMode = false,
  		};
 diff --git a/Source/Scenes/World.cs b/Source/Scenes/World.cs
-index bdfb740..3cdbeea 100644
+index bdfb740..c868fde 100644
 --- a/Source/Scenes/World.cs
 +++ b/Source/Scenes/World.cs
 @@ -70,9 +70,20 @@ public class World : Scene
@@ -2373,7 +2470,18 @@ index bdfb740..3cdbeea 100644
  		Camera.FOVMultiplier = 1;
  
  		strawbCounterWas = Save.CurrentRecord.Strawberries.Count;
-@@ -658,8 +669,26 @@ public class World : Scene
+@@ -394,6 +405,10 @@ public class World : Scene
+ 			foreach (var actor in Actors)
+ 				if (actor.UpdateOffScreen || actor.WorldBounds.Intersects(view))
+ 					actor.LateUpdate();
++#if VISIONOS_KIT
++			// visionOS port: camera probe [c64-cam], one line per second (the player updated the camera above)
++			VisionOSKit.CamProbe.Update(Camera, Time.Delta);
++#endif
+ 		}
+ 		// unpause
+ 		else
+@@ -658,8 +673,26 @@ public class World : Scene
  	public override void Render(Target target)
  	{
  		debugRndTimer.Restart();
@@ -2400,7 +2508,7 @@ index bdfb740..3cdbeea 100644
  
  		// create render state
  		RenderState state = new(GraphicsDevice, Time);
-@@ -668,7 +697,11 @@ public class World : Scene
+@@ -668,7 +701,11 @@ public class World : Scene
  			state.ModelMatrix = Matrix.Identity;
  			state.SunDirection = new Vec3(0, -.7f, -1).Normalized();
  			state.Silhouette = false;
@@ -2412,7 +2520,7 @@ index bdfb740..3cdbeea 100644
  			state.DepthMask = true;
  			state.VerticalFogColor = 0xdceaf0;
  		}
-@@ -698,9 +731,17 @@ public class World : Scene
+@@ -698,9 +735,17 @@ public class World : Scene
  			}
  
  			// sort models by distance (for transparency)
@@ -2430,7 +2538,7 @@ index bdfb740..3cdbeea 100644
  
  			// perp all models
  			foreach (var it in models)
-@@ -709,13 +750,23 @@ public class World : Scene
+@@ -709,13 +754,23 @@ public class World : Scene
  
  		// draw the skybox first
  		{
@@ -2455,7 +2563,7 @@ index bdfb740..3cdbeea 100644
  			}
  		}
  
-@@ -725,7 +776,11 @@ public class World : Scene
+@@ -725,7 +780,11 @@ public class World : Scene
  		// render silhouettes
  		{
  			var it = state;
@@ -2467,7 +2575,7 @@ index bdfb740..3cdbeea 100644
  			it.DepthMask = false;
  			it.Silhouette = true;
  			RenderModels(ref it, models, ModelFlags.Silhouette);
-@@ -735,8 +790,22 @@ public class World : Scene
+@@ -735,8 +794,22 @@ public class World : Scene
  
  		// render main models
  		RenderModels(ref state, models, ModelFlags.Default);
@@ -2491,7 +2599,7 @@ index bdfb740..3cdbeea 100644
  		ApplyPostEffects();
  
  		// render alpha threshold transparent stuff
-@@ -762,21 +831,53 @@ public class World : Scene
+@@ -762,21 +835,53 @@ public class World : Scene
  		// strawberry collect effect
  		if (models.Any((it) => it.Model.Flags.Has(ModelFlags.StrawberryGetEffect)))
  		{
@@ -2555,7 +2663,7 @@ index bdfb740..3cdbeea 100644
  
  		// ui
  		{
-@@ -872,9 +973,31 @@ public class World : Scene
+@@ -872,9 +977,31 @@ public class World : Scene
  			// apply post fx
  			postMaterial.CopyFrom(Assets.Materials["Edge"]);
  			postMaterial.Fragment.Samplers[1] = new(target.Attachments[1], new(TextureFilter.Nearest, TextureWrap.Clamp, TextureWrap.Clamp));
@@ -2588,7 +2696,7 @@ index bdfb740..3cdbeea 100644
  				Edge = new Color(0x110d33).ToVector4()
  			});
  			batch.PushMaterial(postMaterial);
-@@ -889,6 +1012,142 @@ public class World : Scene
+@@ -889,6 +1016,142 @@ public class World : Scene
  		}
  	}
  
@@ -2746,10 +2854,10 @@ index 650a35e..68b1c05 100644
  	private const float EaseClosePercent = 0.3f; // how long (in percent) it eases the entire screen
 diff --git a/Source/VisionOSKit.cs b/Source/VisionOSKit.cs
 new file mode 100644
-index 0000000..00df7a3
+index 0000000..09fb308
 --- /dev/null
 +++ b/Source/VisionOSKit.cs
-@@ -0,0 +1,1054 @@
+@@ -0,0 +1,1243 @@
 +#if VISIONOS_KIT
 +// VisionOSKit.cs — Schalter des visionOS-Ports für Mac-Läufe (K6b, nur mit UseLocalFoster gebaut).
 +//
@@ -3300,14 +3408,203 @@ index 0000000..00df7a3
 +	/// </summary>
 +	public static Vec3 ToCelesteDirection(Vec3 v) => new(v.X, -v.Z, v.Y);
 +
++	// ---- Camera switches and probe ----
++
++	/// <summary>How the game camera carries the head: Yaw = position and yaw of the game camera, pitch and roll only from the head (horizon level); Full = the whole rotation of the game camera (pitch included) as the base, the head on top.</summary>
++	public enum CameraBaseMode { Yaw, Full }
++
++	/// <summary>
++	/// Camera switches, read once from the environment; the static constructor logs every value
++	/// (the first frame that places the head triggers it).
++	/// C64_CAMERA: a (Yaw, default) or c (Full). C64_CAM_PITCH_DEG: target angle of Madeline below
++	/// the horizon on the stereo path (default 20), off = Celeste's own height curve.
++	/// C64_MOVE_REF: game (default, stick relative to the game camera's yaw) or head.
++	/// </summary>
++	public static class Cam
++	{
++		public static readonly CameraBaseMode Mode;
++		/// <summary>Target angle in degrees, null = Celeste's curve.</summary>
++		public static readonly float? PitchDegrees;
++		public static readonly bool MoveRelativeToHead;
++
++		static Cam()
++		{
++			var camera = Environment.GetEnvironmentVariable("C64_CAMERA");
++			Mode = camera switch { "c" => CameraBaseMode.Full, _ => CameraBaseMode.Yaw };
++			if (camera != null && camera != "a" && camera != "c")
++				Log.Warning($"[c64-cam] C64_CAMERA={camera} unknown, using a");
++			Log.Info($"[c64-cam] C64_CAMERA={(Mode == CameraBaseMode.Full ? "c" : "a")} ({(Mode == CameraBaseMode.Full ? "full rotation of the game camera as base" : "position and yaw of the game camera, pitch and roll from the head")})");
++
++			var pitch = Environment.GetEnvironmentVariable("C64_CAM_PITCH_DEG");
++			if (pitch == "off")
++				PitchDegrees = null;
++			else if (float.TryParse(pitch, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var degrees) && degrees > -80 && degrees < 80)
++				PitchDegrees = degrees;
++			else
++			{
++				if (pitch != null)
++					Log.Warning($"[c64-cam] C64_CAM_PITCH_DEG={pitch} invalid, using 20");
++				PitchDegrees = 20;
++			}
++			Log.Info($"[c64-cam] C64_CAM_PITCH_DEG={(PitchDegrees is { } p ? p.ToString("F1", System.Globalization.CultureInfo.InvariantCulture) : "off")} ({(PitchDegrees.HasValue ? "height = 12 + distance * tan(angle) on the stereo path" : "Celeste's height curve")})");
++
++			var moveRef = Environment.GetEnvironmentVariable("C64_MOVE_REF");
++			MoveRelativeToHead = moveRef == "head";
++			if (moveRef != null && moveRef != "game" && moveRef != "head")
++				Log.Warning($"[c64-cam] C64_MOVE_REF={moveRef} unknown, using game");
++			Log.Info($"[c64-cam] C64_MOVE_REF={(MoveRelativeToHead ? "head" : "game")} (stick direction relative to the {(MoveRelativeToHead ? "head's" : "game camera's")} yaw)");
++		}
++	}
++
++	/// <summary>
++	/// Base rotation that carries the head pose (row-vector layout, rows = images of X, Y, Z):
++	/// Yaw mode: rotation about Z by the game camera's yaw; Full mode: right, forward and up of
++	/// the game camera (forward = LookAt - Position, up from the world's Z), falls back to the
++	/// yaw when the camera looks straight up or down.
++	/// </summary>
++	public static Matrix BaseRotation(Vec3 position, Vec3 lookAt)
++	{
++		if (Cam.Mode == CameraBaseMode.Full)
++		{
++			var forward = lookAt - position;
++			var length = forward.Length();
++			if (length > 1e-6f)
++			{
++				forward /= length;
++				var right = Vec3.Cross(forward, Vec3.UnitZ);
++				var rightLength = right.Length();
++				if (rightLength > 1e-4f)
++				{
++					right /= rightLength;
++					var up = Vec3.Cross(right, forward);
++					return new Matrix(
++						right.X, right.Y, right.Z, 0,
++						forward.X, forward.Y, forward.Z, 0,
++						up.X, up.Y, up.Z, 0,
++						0, 0, 0, 1);
++				}
++			}
++		}
++		return Matrix.CreateRotationZ(BaseYaw(position, lookAt));
++	}
++
++	/// <summary>Pitch of the game camera towards its LookAt in degrees, positive = looking down.</summary>
++	public static float CameraPitchDegrees(Vec3 position, Vec3 lookAt)
++	{
++		var f = lookAt - position;
++		return MathF.Atan2(-f.Z, MathF.Sqrt(f.X * f.X + f.Y * f.Y)) * 180 / MathF.PI;
++	}
++
++	/// <summary>
++	/// Camera probe [c64-cam]: counters the player's camera code increments per frame, rates and
++	/// angles sampled once per game tick in World.Update, one log line per second (wall clock).
++	/// Nothing here runs on the render path.
++	/// </summary>
++	public static class CamProbe
++	{
++		/// <summary>Frames in which the right stick turned the camera.</summary>
++		public static int StickTurnFrames;
++		/// <summary>Frames in which a FixedCamera zone set the camera.</summary>
++		public static int FixedZoneFrames;
++		/// <summary>Frames in which a camera override (strawberry, cassette) replaced the target.</summary>
++		public static int OverrideFrames;
++		/// <summary>Frames in which the ray-cast against solids moved the camera (wall or ceiling).</summary>
++		public static int CamHitFrames;
++		/// <summary>The player's zoom value 0..1 (0.5 = default).</summary>
++		public static float Zoom;
++
++		private static readonly Stopwatch clock = new();
++		private static bool hasPrevious;
++		private static Vec3 previousPosition;
++		private static float previousYaw;
++		private static int previousHeadVersion = -1;
++		private static float previousHeadYaw;
++		private static int frames;
++		private static float speedSum, speedMax, yawRateSum, yawRateMax, headYawRateSum, headYawRateMax;
++		private static int headSamples;
++
++		private static float WrapDegrees(float degrees)
++		{
++			while (degrees > 180) degrees -= 360;
++			while (degrees < -180) degrees += 360;
++			return degrees;
++		}
++
++		/// <summary>Head yaw and pitch (degrees, yaw positive to the right, pitch positive up) and position (metres) relative to O, from the last stereo pose.</summary>
++		private static (Vec3 position, float yaw, float pitch) HeadOf(StereoPose pose)
++		{
++			var h = pose.Head;
++			var forward = -new Vec3(h.M31, h.M32, h.M33);
++			var yaw = MathF.Atan2(forward.X, -forward.Z) * 180 / MathF.PI;
++			var pitch = MathF.Atan2(forward.Y, MathF.Sqrt(forward.X * forward.X + forward.Z * forward.Z)) * 180 / MathF.PI;
++			return (new Vec3(h.M41, h.M42, h.M43), yaw, pitch);
++		}
++
++		public static void Update(in Camera camera, float delta)
++		{
++			if (!clock.IsRunning)
++				clock.Start();
++			var position = camera.Position;
++			var yaw = BaseYaw(position, camera.LookAt) * 180 / MathF.PI;
++			if (hasPrevious && delta > 0)
++			{
++				var speed = (position - previousPosition).Length() / delta;
++				speedSum += speed;
++				speedMax = MathF.Max(speedMax, speed);
++				var yawRate = MathF.Abs(WrapDegrees(yaw - previousYaw)) / delta;
++				yawRateSum += yawRate;
++				yawRateMax = MathF.Max(yawRateMax, yawRate);
++				frames++;
++			}
++			previousPosition = position;
++			previousYaw = yaw;
++			hasPrevious = true;
++
++			var session = StereoSession;
++			if (session != null && session.Version != previousHeadVersion && delta > 0)
++			{
++				var head = HeadOf(session);
++				if (previousHeadVersion >= 0)
++				{
++					var rate = MathF.Abs(WrapDegrees(head.yaw - previousHeadYaw)) / delta;
++					headYawRateSum += rate;
++					headYawRateMax = MathF.Max(headYawRateMax, rate);
++					headSamples++;
++				}
++				previousHeadVersion = session.Version;
++				previousHeadYaw = head.yaw;
++			}
++
++			if (clock.Elapsed.TotalSeconds < 1)
++				return;
++			clock.Restart();
++			var pitchDeg = Cam.PitchDegrees is { } p ? p.ToString("F0", System.Globalization.CultureInfo.InvariantCulture) : "off";
++			var headText = "head=- (no pose)";
++			if (session != null)
++			{
++				var head = HeadOf(session);
++				headText = $"head=({head.position.X:F2}, {head.position.Y:F2}, {head.position.Z:F2}) m headYawRel={head.yaw:F1} headPitch={head.pitch:F1} headYawRate(deg/s) mean={(headSamples > 0 ? headYawRateSum / headSamples : 0):F1} max={headYawRateMax:F1}";
++			}
++			Log.Info($"[c64-cam] mode={(Cam.Mode == CameraBaseMode.Full ? "c" : "a")} scale={WorldScale:F1} pitchDeg={pitchDeg} moveRef={(Cam.MoveRelativeToHead ? "head" : "game")} cam=({position.X:F1}, {position.Y:F1}, {position.Z:F1}) camYaw={yaw:F1} camPitch={CameraPitchDegrees(position, camera.LookAt):F1} zoom={Zoom:F2} camSpeed(u/s) mean={(frames > 0 ? speedSum / frames : 0):F1} max={speedMax:F1} yawRate(deg/s) mean={(frames > 0 ? yawRateSum / frames : 0):F1} max={yawRateMax:F1} stickTurn={StickTurnFrames} fixedZone={FixedZoneFrames} override={OverrideFrames} camHit={CamHitFrames} frames={frames} {headText}");
++			frames = 0;
++			speedSum = speedMax = yawRateSum = yawRateMax = headYawRateSum = headYawRateMax = 0;
++			headSamples = 0;
++			StickTurnFrames = FixedZoneFrames = OverrideFrames = CamHitFrames = 0;
++		}
++	}
++
++	/// <summary>World-from-eye (or world-from-head) on a base given as a yaw about Z, see the matrix overload.</summary>
++	public static Matrix WorldFromRelative(in Matrix relative, Vec3 basePosition, float baseYaw)
++		=> WorldFromRelative(relative, basePosition, Matrix.CreateRotationZ(baseYaw));
++
 +	/// <summary>
 +	/// World-from-eye (or world-from-head) in Celeste's world from a transform relative to the
 +	/// host's reference O: axes through ToCelesteDirection, the position scaled with WorldScale,
-+	/// both rotated by the game camera's yaw and placed at its position. Row-vector layout.
++	/// both rotated by the base rotation (the game camera's yaw, or its whole rotation in
++	/// CameraBaseMode.Full) and placed at its position. Row-vector layout.
 +	/// </summary>
-+	public static Matrix WorldFromRelative(in Matrix relative, Vec3 basePosition, float baseYaw)
++	public static Matrix WorldFromRelative(in Matrix relative, Vec3 basePosition, in Matrix rz)
 +	{
-+		var rz = Matrix.CreateRotationZ(baseYaw);
 +		var right = Vec3.TransformNormal(ToCelesteDirection(new Vec3(relative.M11, relative.M12, relative.M13)), rz);
 +		var up = Vec3.TransformNormal(ToCelesteDirection(new Vec3(relative.M21, relative.M22, relative.M23)), rz);
 +		var back = Vec3.TransformNormal(ToCelesteDirection(new Vec3(relative.M31, relative.M32, relative.M33)), rz);
@@ -3325,7 +3622,7 @@ index 0000000..00df7a3
 +	/// </summary>
 +	public static Vec2 DebugProject(Vec3 cameraPosition, Vec3 cameraLookAt, in Matrix eyeRelative, in Matrix projection, Vec3 worldPoint, int width, int height)
 +	{
-+		Matrix.Invert(WorldFromRelative(eyeRelative, cameraPosition, BaseYaw(cameraPosition, cameraLookAt)), out var view);
++		Matrix.Invert(WorldFromRelative(eyeRelative, cameraPosition, BaseRotation(cameraPosition, cameraLookAt)), out var view);
 +		var clip = Vec4.Transform(new Vec4(worldPoint, 1), view * projection);
 +		return new Vec2((clip.X / clip.W + 1) / 2 * width, (1 - clip.Y / clip.W) / 2 * height);
 +	}
