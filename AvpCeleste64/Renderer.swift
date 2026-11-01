@@ -1079,23 +1079,25 @@ nonisolated final class Renderer: @unchecked Sendable {
             LayerRenderer.Clock().wait(until: timing.optimalInputTime)
         }
 
-        frame.startSubmission()
-        // M4b L5: Dauer von queryDrawables; blockiert es bis optimalInputTime, wäre das frühere
-        // Einreichen wirkungslos und hier sichtbar
+        // M4b L5b: erst die Drawables, dann startSubmission, wie Apples Vorlage und Klepton
+        // (KleptonCompositor.swift, renderFrame). Eine leere Liste heisst, der Frame ist vom System
+        // abgebrochen und darf nicht mehr angefasst werden (frame.h:109-110 zu
+        // cp_frame_query_drawables: "If array count is 0, the frame has been cancelled ... and is
+        // invalid to access"); bis L5 stand startSubmission davor, und dieser Ausstieg liess eine
+        // begonnene Submission ohne endSubmission zurück, was Compositor Services als Client-Fehler
+        // (__BUG_IN_CLIENT__) mit Abbruch quittieren kann. Dauer von queryDrawables gemessen:
+        // blockierte es bis optimalInputTime, wäre der Vorlauf wirkungslos und hier sichtbar.
         let queryStart = LayerRenderer.Clock().now.timeInterval
         let drawables = frame.queryDrawables()
         let queryDrawablesSeconds = LayerRenderer.Clock().now.timeInterval - queryStart
         guard !drawables.isEmpty else {
-            // Leere Liste: der Frame ist vom System abgebrochen und darf nicht mehr angefasst
-            // werden, auch nicht mit endSubmission. frame.h:109-110 zu cp_frame_query_drawables:
-            // "If array count is 0, the frame has been cancelled as there are no drawables to
-            // draw to and the frame should be discarded and is invalid to access."
             statCancelled += 1
             cancelledTotal += 1
             return
         }
         // Ab dem ersten erhaltenen Drawable ist der Frame in Arbeit und wird in jedem Fall
         // abgeschlossen (encodePresent, commit, endSubmission).
+        frame.startSubmission()
 
         logTargetsIfChanged(drawables)
         applyRenderQualityIfRequested()
