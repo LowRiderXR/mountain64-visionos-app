@@ -1095,8 +1095,22 @@ nonisolated final class Renderer: @unchecked Sendable {
             cancelledTotal += 1
             return
         }
-        // Ab dem ersten erhaltenen Drawable ist der Frame in Arbeit und wird in jedem Fall
-        // abgeschlossen (encodePresent, commit, endSubmission).
+        // M4b L6: auch der Command Buffer kommt vor startSubmission (wie bei Klepton und Apples
+        // Vorlage). Fehlt er, wird der Frame ohne begonnene Submission verlassen; ein endSubmission
+        // ohne präsentiertes Drawable gilt Compositor Services als Client-Fehler
+        // (__BUG_IN_CLIENT__, KleptonCompositor.swift renderFrame). Zeile höchstens einmal pro Sekunde.
+        guard let commandBuffer = commandQueue.makeCommandBuffer() else {
+            statNoCmdBuf += 1
+            let now = CFAbsoluteTimeGetCurrent()
+            if now - lastNoCmdBufLog >= 1.0 {
+                lastNoCmdBufLog = now
+                c64Log.error("[c64-loop] makeCommandBuffer lieferte nil, Frame \(frame.frameIndex) ohne Submission verlassen (bisher \(self.statNoCmdBuf) im Fenster)")
+            }
+            return
+        }
+        commandBuffer.label = "c64-frame \(frame.frameIndex)"
+        // Ab hier ist der Frame in Arbeit und wird in jedem Fall abgeschlossen (encodePresent,
+        // commit, endSubmission).
         frame.startSubmission()
 
         logTargetsIfChanged(drawables)
@@ -1104,20 +1118,6 @@ nonisolated final class Renderer: @unchecked Sendable {
         logFoveationIfChanged(drawables)
         logFoveationFingerprint(drawables)
         rememberSizes(drawables)
-
-        guard let commandBuffer = commandQueue.makeCommandBuffer() else {
-            // Ohne Command Buffer lässt sich nichts präsentieren; Submission trotzdem beenden,
-            // damit der angefangene Frame nicht offen bleibt. Zeile höchstens einmal pro Sekunde.
-            statNoCmdBuf += 1
-            let now = CFAbsoluteTimeGetCurrent()
-            if now - lastNoCmdBufLog >= 1.0 {
-                lastNoCmdBufLog = now
-                c64Log.error("[c64-loop] makeCommandBuffer lieferte nil, Frame \(frame.frameIndex) ohne Present beendet (bisher \(self.statNoCmdBuf) im Fenster)")
-            }
-            frame.endSubmission()
-            return
-        }
-        commandBuffer.label = "c64-frame \(frame.frameIndex)"
 
         // Pose und Timing aus dem Drawable für das eingebaute Display (target builtIn,
         // drawable.h:36-44, Vorrang laut drawable.h:428-429), Rückfall auf das erste.

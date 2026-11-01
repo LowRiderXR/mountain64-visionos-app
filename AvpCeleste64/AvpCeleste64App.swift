@@ -235,8 +235,13 @@ enum GameStartup {
             }
             let result = CelesteProbe.runInit(since: start)
             if result.ok, CelesteProbe.attachCanvasToGame() {
-                CelesteProbe.tickState.markReady(snapshotQueue: CelesteProbe.commandQueue, snapshotTexture: CelesteProbe.canvasTexture)
-                c64Record("[c64-start] Celeste geladen (\(result.version)), Endbild auf der Leinwand; der Render-Thread tickt ab dem ersten Frame")
+                // M4b L6: der Leinwand-Schnappschuss nach 600 Ticks (Blit, waitUntilCompleted, PNG
+                // in Documents, rund 100 ms auf dem Render-Thread) nur noch mit C64_SNAPSHOT=1;
+                // er war der eine Ausreisser kurz nach dem Levelstart
+                let snapshot = ProcessInfo.processInfo.environment["C64_SNAPSHOT"] == "1"
+                CelesteProbe.tickState.markReady(snapshotQueue: snapshot ? CelesteProbe.commandQueue : nil,
+                                                 snapshotTexture: snapshot ? CelesteProbe.canvasTexture : nil)
+                c64Record("[c64-start] Celeste geladen (\(result.version)), Endbild auf der Leinwand; der Render-Thread tickt ab dem ersten Frame\(snapshot ? "" : "; Leinwand-Schnappschuss aus (C64_SNAPSHOT=1)")")
             } else {
                 c64Record("[c64-start] Celeste-Start oder Leinwand fehlgeschlagen: \(result.capabilitiesLine)")
             }
