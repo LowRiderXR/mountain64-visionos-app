@@ -676,6 +676,120 @@ index 0000000..29d8c9b
 +    return out;
 +}
 +
+diff --git a/Content/Shaders/Compiled/UIVRArray.fragment.json b/Content/Shaders/Compiled/UIVRArray.fragment.json
+new file mode 100644
+index 0000000..defcd39
+--- /dev/null
++++ b/Content/Shaders/Compiled/UIVRArray.fragment.json
+@@ -0,0 +1 @@
++{ "samplers": 1, "storage_textures": 0, "storage_buffers": 0, "uniform_buffers": 1, "inputs": [{ "name": "in.var.TEXCOORD0", "type": "float2", "location": 0 }], "outputs": [{ "name": "out.var.SV_Target0", "type": "float4", "location": 0 }] }
+diff --git a/Content/Shaders/Compiled/UIVRArray.fragment.msl b/Content/Shaders/Compiled/UIVRArray.fragment.msl
+new file mode 100644
+index 0000000..9fd5413
+--- /dev/null
++++ b/Content/Shaders/Compiled/UIVRArray.fragment.msl
+@@ -0,0 +1,44 @@
++#include <metal_stdlib>
++#include <simd/simd.h>
++
++using namespace metal;
++
++struct type_FragmentUniforms
++{
++    float SrgbOut;
++    float Opacity;
++    float Dim;
++    float DimAlpha;
++};
++
++struct fragment_main_out
++{
++    float4 out_var_SV_Target0 [[color(0)]];
++};
++
++struct fragment_main_in
++{
++    float2 in_var_TEXCOORD0 [[user(locn0)]];
++};
++
++fragment fragment_main_out fragment_main(fragment_main_in in [[stage_in]], constant type_FragmentUniforms& FragmentUniforms [[buffer(0)]], texture2d<float> Texture [[texture(0)]], sampler TextureSampler [[sampler(0)]])
++{
++    fragment_main_out out = {};
++    float4 _48 = Texture.sample(TextureSampler, in.in_var_TEXCOORD0);
++    float4 _55 = mix(_48, float4(0.0, 0.0, 0.0, FragmentUniforms.DimAlpha), float4(FragmentUniforms.Dim));
++    float _56 = _55.w;
++    float3 _64;
++    if (_56 > 0.0)
++    {
++        _64 = _55.xyz / float3(_56);
++    }
++    else
++    {
++        _64 = float3(0.0);
++    }
++    float3 _66 = float3(1.0 - _56, 0.0, 0.0);
++    float _74 = 1.0 - mix(_66 * float3(0.077399380505084991455078125), powr((_66 + float3(0.054999999701976776123046875)) * float3(0.947867333889007568359375), float3(2.400000095367431640625)), step(float3(0.040449999272823333740234375), _66)).x;
++    out.out_var_SV_Target0 = mix(_55, float4(mix(_64 * float3(0.077399380505084991455078125), powr((_64 + float3(0.054999999701976776123046875)) * float3(0.947867333889007568359375), float3(2.400000095367431640625)), step(float3(0.040449999272823333740234375), _64)) * _74, _74), float4(FragmentUniforms.SrgbOut)) * FragmentUniforms.Opacity;
++    return out;
++}
++
+diff --git a/Content/Shaders/Compiled/UIVRArray.vertex.json b/Content/Shaders/Compiled/UIVRArray.vertex.json
+new file mode 100644
+index 0000000..b090805
+--- /dev/null
++++ b/Content/Shaders/Compiled/UIVRArray.vertex.json
+@@ -0,0 +1 @@
++{ "samplers": 0, "storage_textures": 0, "storage_buffers": 0, "uniform_buffers": 1, "inputs": [{ "name": "in.var.TEXCOORD1", "type": "float2", "location": 1 }], "outputs": [{ "name": "out.var.TEXCOORD0", "type": "float2", "location": 0 }] }
+diff --git a/Content/Shaders/Compiled/UIVRArray.vertex.msl b/Content/Shaders/Compiled/UIVRArray.vertex.msl
+new file mode 100644
+index 0000000..3bfb840
+--- /dev/null
++++ b/Content/Shaders/Compiled/UIVRArray.vertex.msl
+@@ -0,0 +1,44 @@
++#include <metal_stdlib>
++#include <simd/simd.h>
++
++using namespace metal;
++
++struct type_VertexUniforms
++{
++    float4x4 ViewProjection0;
++    float4x4 ViewProjection1;
++    float4 Corner0;
++    float4 Corner1;
++    float4 Corner2;
++    float4 Corner3;
++};
++
++struct vertex_main_out
++{
++    float2 out_var_TEXCOORD0 [[user(locn0)]];
++    float4 gl_Position [[position]];
++};
++
++struct vertex_main_in
++{
++    float2 in_var_TEXCOORD1 [[attribute(1)]];
++};
++
++vertex vertex_main_out vertex_main(vertex_main_in in [[stage_in]], constant type_VertexUniforms& VertexUniforms [[buffer(0)]], uint gl_InstanceIndex [[instance_id]], uint gl_BaseInstance [[base_instance]], uint gl_ViewIndex [[amplification_id]])
++{
++    vertex_main_out out = {};
++    float3 _46 = float3(in.in_var_TEXCOORD1.x);
++    float4x4 _67;
++    if (gl_ViewIndex == 0u)
++    {
++        _67 = transpose(VertexUniforms.ViewProjection0);
++    }
++    else
++    {
++        _67 = transpose(VertexUniforms.ViewProjection1);
++    }
++    out.out_var_TEXCOORD0 = in.in_var_TEXCOORD1;
++    out.gl_Position = float4(mix(mix(VertexUniforms.Corner0.xyz, VertexUniforms.Corner1.xyz, _46), mix(VertexUniforms.Corner3.xyz, VertexUniforms.Corner2.xyz, _46), float3(in.in_var_TEXCOORD1.y)), 1.0) * _67;
++    return out;
++}
++
 diff --git a/Content/Shaders/Compiled/UpscaleVRArray.fragment.json b/Content/Shaders/Compiled/UpscaleVRArray.fragment.json
 new file mode 100644
 index 0000000..d3f6fee
@@ -1257,6 +1371,93 @@ index 0000000..1dec08b
 +// Compiled by scripts/compile-vr-shaders.sh.
 +#define VISIONOS_VR 1
 +#include "Sprite.hlsl"
+diff --git a/Content/Shaders/UIVRArray.hlsl b/Content/Shaders/UIVRArray.hlsl
+new file mode 100644
+index 0000000..dda86a8
+--- /dev/null
++++ b/Content/Shaders/UIVRArray.hlsl
+@@ -0,0 +1,81 @@
++// visionOS port, 2D in the stereo world: one textured quad that carries the transparent UI layer
++// (the pause menu, counter, timer) into the host's drawable, both views by vertex amplification;
++// with Dim it darkens the whole view instead (black quad in clip space). The
++// four corners of the panel come in world space; the vertex interpolates them with the quad's
++// texture coordinates (the mesh is the unit quad of the other stereo passes, its positions are
++// unused). The layer holds premultiplied, gamma-encoded colour from the game's batcher; for an
++// sRGB drawable the fragment un-premultiplies, decodes with the same SrgbToLinear as the world
++// shaders and maps the alpha so a dark panel darkens the world as in the 2D original.
++// Depth comes from the hardware (the quad's real distance), compared with Always by the caller.
++// Compiled by scripts/compile-vr-shaders.sh.
++#include "Partials/Methods.hlsl"
++
++// Vertex Shader
++
++cbuffer VertexUniforms : register(b0, space1)
++{
++    float4x4 ViewProjection0;
++    float4x4 ViewProjection1;
++    // world-space corners: top-left, top-right, bottom-right, bottom-left (texture v grows downwards)
++    float4 Corner0;
++    float4 Corner1;
++    float4 Corner2;
++    float4 Corner3;
++};
++
++struct VsInput
++{
++    float2 Position : TEXCOORD0;
++    float2 TexCoord : TEXCOORD1;
++    float4 Color : TEXCOORD2;
++    float4 Type : TEXCOORD4;
++};
++
++struct VsOutput
++{
++    float2 TexCoord : TEXCOORD0;
++    float4 Position : SV_Position;
++};
++
++VsOutput vertex_main(VsInput input, uint viewID : SV_ViewID)
++{
++    VsOutput output;
++    float2 uv = input.TexCoord;
++    float3 top = lerp(Corner0.xyz, Corner1.xyz, uv.x);
++    float3 bottom = lerp(Corner3.xyz, Corner2.xyz, uv.x);
++    float3 world = lerp(top, bottom, uv.y);
++    output.TexCoord = uv;
++    output.Position = mul(viewID == 0 ? ViewProjection0 : ViewProjection1, float4(world, 1.0));
++    return output;
++}
++
++// Fragment Shader
++
++cbuffer FragmentUniforms : register(b0, space3)
++{
++    // 1 for an sRGB drawable (decode the gamma-encoded layer to linear), 0 for the Mac host
++    float SrgbOut;
++    // overall opacity of the panel (1; fades later)
++    float Opacity;
++    // Dim 1: ignore the texture and output black with DimAlpha (the full-view darkening of the
++    // world while paused, the caller passes clip-space corners and identity matrices)
++    float Dim;
++    float DimAlpha;
++};
++
++Texture2D<float4> Texture : register(t0, space2);
++SamplerState TextureSampler : register(s0, space2);
++
++float4 fragment_main(VsOutput input) : SV_Target0
++{
++    float4 col = Texture.Sample(TextureSampler, input.TexCoord);
++    col = lerp(col, float4(0.0, 0.0, 0.0, DimAlpha), Dim);
++    // premultiplied in gamma space: decode the straight colour. The batcher blended in gamma
++    // space, the sRGB drawable blends in linear space; so that a dark panel darkens the world as
++    // much as in the 2D original, its alpha is mapped the same way (1 - a is the share of the
++    // world that stays, decoded like a colour), opaque pixels keep alpha 1.
++    float3 straight = col.a > 0.0 ? col.rgb / col.a : float3(0.0, 0.0, 0.0);
++    float linearAlpha = 1.0 - SrgbToLinear(float3(1.0 - col.a, 0.0, 0.0)).x;
++    float4 decoded = float4(SrgbToLinear(straight) * linearAlpha, linearAlpha);
++    return lerp(col, decoded, SrgbOut) * Opacity;
++}
 diff --git a/Content/Shaders/UpscaleVRArray.hlsl b/Content/Shaders/UpscaleVRArray.hlsl
 new file mode 100644
 index 0000000..3033fb7
@@ -1670,7 +1871,7 @@ index f2ba5d0..9814c98 100644
  		Audio.SetVCAVolume("vca:/sfx", Calc.Clamp(SfxVolume / 10.0f, 0, 1));
  	}
 diff --git a/Source/Game.cs b/Source/Game.cs
-index 312df59..6c9dbde 100644
+index 312df59..12df0ab 100644
 --- a/Source/Game.cs
 +++ b/Source/Game.cs
 @@ -37,15 +37,29 @@ public class Game : App
@@ -1716,7 +1917,7 @@ index 312df59..6c9dbde 100644
  		batcher = new(GraphicsDevice);
  
  		GraphicsDevice.VSync = true;
-@@ -116,6 +135,22 @@ public class Game : App
+@@ -116,6 +135,25 @@ public class Game : App
  
  	protected override void Update()
  	{
@@ -1730,6 +1931,9 @@ index 312df59..6c9dbde 100644
 +			scenes.TryPeek(out var top);
 +			if (top is World pausedWorld && !pausedWorld.Paused)
 +			{
++				// the pause panel follows the head until the host sets O anew (the pose right after
++				// putting the device on is unusable)
++				VisionOSKit.UiTablet.MarkResumeTrigger();
 +				pausedWorld.SetPaused(true);
 +				applied = true;
 +			}
@@ -1739,7 +1943,7 @@ index 312df59..6c9dbde 100644
  		Audio.Update();
  
  		// toggle mouse camera mode
-@@ -316,9 +351,24 @@ public class Game : App
+@@ -316,9 +354,24 @@ public class Game : App
  
  	protected override void Render()
  	{
@@ -1767,7 +1971,7 @@ index 312df59..6c9dbde 100644
  		{
  			// draw the world to the target
  			if (scenes.TryPeek(out var scene))
-@@ -332,16 +382,42 @@ public class Game : App
+@@ -332,16 +385,42 @@ public class Game : App
  				batcher.Clear();
  			}
  
@@ -2179,7 +2383,7 @@ index aae3c23..1a2a566 100644
  				IndexOffset = batch.Index,
  				IndexCount = batch.Count
 diff --git a/Source/Graphics/UniformBuffers.cs b/Source/Graphics/UniformBuffers.cs
-index ff1be6e..b7fa8f5 100644
+index ff1be6e..265f1c6 100644
 --- a/Source/Graphics/UniformBuffers.cs
 +++ b/Source/Graphics/UniformBuffers.cs
 @@ -9,6 +9,13 @@ public unsafe struct DefaultVertex
@@ -2207,7 +2411,7 @@ index ff1be6e..b7fa8f5 100644
  }
  
  [StructLayout(LayoutKind.Sequential, Pack = 1)]
-@@ -42,16 +53,91 @@ public struct EdgeFragment
+@@ -42,16 +53,116 @@ public struct EdgeFragment
  	public Vec2 Pixel;
  }
  
@@ -2261,6 +2465,31 @@ index ff1be6e..b7fa8f5 100644
 +	public float SrgbOut;
 +	public float TestPhysicalUV;
 +}
++
++/// <summary>
++/// visionOS port, UI panel in the stereo world (UIVRArray): the view-projection of each eye and
++/// the world-space corners of the panel (top-left, top-right, bottom-right, bottom-left).
++/// </summary>
++[StructLayout(LayoutKind.Sequential, Pack = 1)]
++public struct UiVertexVR
++{
++	public Matrix ViewProjection0;
++	public Matrix ViewProjection1;
++	public Vec4 Corner0;
++	public Vec4 Corner1;
++	public Vec4 Corner2;
++	public Vec4 Corner3;
++}
++
++/// <summary>visionOS port, UI panel: SrgbOut decodes the gamma-encoded layer for an sRGB drawable; Opacity scales the premultiplied colour; Dim 1 outputs black with DimAlpha instead of the texture (full-view darkening).</summary>
++[StructLayout(LayoutKind.Sequential, Pack = 1)]
++public struct UiFragmentVR
++{
++	public float SrgbOut;
++	public float Opacity;
++	public float Dim;
++	public float DimAlpha;
++}
 +#endif
 +
 +[StructLayout(LayoutKind.Sequential, Pack = 1)]
@@ -2304,7 +2533,7 @@ index ff1be6e..b7fa8f5 100644
  }
 -
 diff --git a/Source/Helpers/Menu.cs b/Source/Helpers/Menu.cs
-index 4f614cb..ae41dc8 100644
+index 4f614cb..2f30319 100644
 --- a/Source/Helpers/Menu.cs
 +++ b/Source/Helpers/Menu.cs
 @@ -3,8 +3,8 @@ namespace Celeste64;
@@ -2318,6 +2547,17 @@ index 4f614cb..ae41dc8 100644
  	public const float TitleScale = 0.75f;
  
  	public abstract class Item
+@@ -172,6 +172,10 @@ public class Menu(Controls controls)
+ 
+ 	public bool IsInMainMenu => submenus.Count <= 0;
+ 	private Menu CurrentMenu => submenus.Count > 0 ? submenus.Peek() : this;
++#if VISIONOS_KIT
++	/// <summary>visionOS port: size of the menu that is shown right now (the open submenu, else this one), for the panel behind it.</summary>
++	public Vec2 CurrentSize => CurrentMenu.Size;
++#endif
+ 	
+ 	public Vec2 Size
+ 	{
 diff --git a/Source/Helpers/UI.cs b/Source/Helpers/UI.cs
 index 7a5517e..da0c59f 100644
 --- a/Source/Helpers/UI.cs
@@ -2446,7 +2686,7 @@ index 33da870..7590a36 100644
  			CutoutMode = false,
  		};
 diff --git a/Source/Scenes/World.cs b/Source/Scenes/World.cs
-index bdfb740..c868fde 100644
+index bdfb740..da7c90c 100644
 --- a/Source/Scenes/World.cs
 +++ b/Source/Scenes/World.cs
 @@ -70,9 +70,20 @@ public class World : Scene
@@ -2481,7 +2721,21 @@ index bdfb740..c868fde 100644
  		}
  		// unpause
  		else
-@@ -658,8 +673,26 @@ public class World : Scene
+@@ -432,6 +447,13 @@ public class World : Scene
+ 
+ 			Controls.Consume();
+ 			Paused = paused;
++#if VISIONOS_KIT
++			// visionOS port: the pause panel in the stereo world opens and closes with the menu
++			if (paused)
++				VisionOSKit.UiTablet.Opened(Camera.Position, Camera.LookAt);
++			else
++				VisionOSKit.UiTablet.Closed();
++#endif
+ 		}
+ 	}
+ 
+@@ -658,8 +680,26 @@ public class World : Scene
  	public override void Render(Target target)
  	{
  		debugRndTimer.Restart();
@@ -2508,7 +2762,7 @@ index bdfb740..c868fde 100644
  
  		// create render state
  		RenderState state = new(GraphicsDevice, Time);
-@@ -668,7 +701,11 @@ public class World : Scene
+@@ -668,7 +708,11 @@ public class World : Scene
  			state.ModelMatrix = Matrix.Identity;
  			state.SunDirection = new Vec3(0, -.7f, -1).Normalized();
  			state.Silhouette = false;
@@ -2520,7 +2774,7 @@ index bdfb740..c868fde 100644
  			state.DepthMask = true;
  			state.VerticalFogColor = 0xdceaf0;
  		}
-@@ -698,9 +735,17 @@ public class World : Scene
+@@ -698,9 +742,17 @@ public class World : Scene
  			}
  
  			// sort models by distance (for transparency)
@@ -2538,7 +2792,7 @@ index bdfb740..c868fde 100644
  
  			// perp all models
  			foreach (var it in models)
-@@ -709,13 +754,23 @@ public class World : Scene
+@@ -709,13 +761,23 @@ public class World : Scene
  
  		// draw the skybox first
  		{
@@ -2563,7 +2817,7 @@ index bdfb740..c868fde 100644
  			}
  		}
  
-@@ -725,7 +780,11 @@ public class World : Scene
+@@ -725,7 +787,11 @@ public class World : Scene
  		// render silhouettes
  		{
  			var it = state;
@@ -2575,7 +2829,7 @@ index bdfb740..c868fde 100644
  			it.DepthMask = false;
  			it.Silhouette = true;
  			RenderModels(ref it, models, ModelFlags.Silhouette);
-@@ -735,8 +794,22 @@ public class World : Scene
+@@ -735,8 +801,26 @@ public class World : Scene
  
  		// render main models
  		RenderModels(ref state, models, ModelFlags.Default);
@@ -2588,6 +2842,10 @@ index bdfb740..c868fde 100644
 +			// stereo frame: world pass submitted, edge pass from the coarse A into the coarse B,
 +			// the rest of the frame draws into B (state.Camera is a copy, take the new target)
 +			VisionOSKit.FlushPass(GraphicsDevice, "world");
++			// pause panel: the menu into the transparent UI layer before the edge pass opens the
++			// drawable; the panel quad follows the sprites in that same pass (no extra load)
++			if (Paused && VisionOSKit.Ui.Enabled)
++				RenderUiLayer();
 +			ApplyPostEffectsStereo(vr);
 +			VisionOSKit.FlushPass(GraphicsDevice, "edge");
 +			// world pixel look: the rest of the frame draws into the drawable; raster: into B
@@ -2599,7 +2857,7 @@ index bdfb740..c868fde 100644
  		ApplyPostEffects();
  
  		// render alpha threshold transparent stuff
-@@ -762,21 +835,53 @@ public class World : Scene
+@@ -762,22 +846,57 @@ public class World : Scene
  		// strawberry collect effect
  		if (models.Any((it) => it.Model.Flags.Has(ModelFlags.StrawberryGetEffect)))
  		{
@@ -2642,13 +2900,16 @@ index bdfb740..c868fde 100644
 -			ApplyPostEffects();
 +				ApplyPostEffects();
 +			}
-+		}
-+
+ 		}
+ 
 +#if VISIONOS_KIT
 +		if (vr != null)
 +		{
 +			// stereo frame: sprites and transparent models submitted, then the coarse composite is
 +			// enlarged into the drawable (submitted with the frame's final flush); no 2D UI (M4b.3b)
++			// pause panel: the UI layer as a quad in the world, after the sprites, always on top
++			if (Paused && VisionOSKit.Ui.Enabled)
++				DrawUiPanel(vr);
 +			VisionOSKit.FlushPass(GraphicsDevice, "sprites");
 +			// diagnosis of the unrest: changed pixels of B between two frames, once per second
 +			VisionOSKit.SampleStillness();
@@ -2658,12 +2919,13 @@ index bdfb740..c868fde 100644
 +			lastDebugRndTime = debugRndTimer.Elapsed;
 +			debugRndTimer.Stop();
 +			return;
- 		}
++		}
 +#endif
- 
++
  		// ui
  		{
-@@ -872,9 +977,31 @@ public class World : Scene
+ 			batch.PushSampler(new TextureSampler(TextureFilter.Linear, TextureWrap.Clamp, TextureWrap.Clamp));
+@@ -872,9 +991,31 @@ public class World : Scene
  			// apply post fx
  			postMaterial.CopyFrom(Assets.Materials["Edge"]);
  			postMaterial.Fragment.Samplers[1] = new(target.Attachments[1], new(TextureFilter.Nearest, TextureWrap.Clamp, TextureWrap.Clamp));
@@ -2696,7 +2958,7 @@ index bdfb740..c868fde 100644
  				Edge = new Color(0x110d33).ToVector4()
  			});
  			batch.PushMaterial(postMaterial);
-@@ -889,6 +1016,142 @@ public class World : Scene
+@@ -889,6 +1030,313 @@ public class World : Scene
  		}
  	}
  
@@ -2834,6 +3096,177 @@ index bdfb740..c868fde 100644
 +			CullMode = CullMode.None,
 +		});
 +	}
++
++	private Mesh<BatcherVertex>? uiQuad;
++	private Point2 uiQuadSize;
++	private readonly Material uiMaterial = new();
++	private readonly Material uiDimMaterial = new();
++
++	/// <summary>
++	/// visionOS port, stereo frame: the 2D UI into the transparent UI layer (the internal size, so
++	/// the layout is the game's). Style original: the game's UI block at its positions, the world
++	/// is darkened in the drawable instead of on the layer. Style panel: the menu on a rounded
++	/// panel, nothing else. Premultiplied alpha from the batcher.
++	/// </summary>
++	private void RenderUiLayer()
++	{
++		var layer = VisionOSKit.EnsureUILayer(GraphicsDevice);
++		layer.Clear(Color.Transparent, 0, 0, ClearMask.Color);
++		var bounds = new Rect(0, 0, layer.Width, layer.Height);
++		batch.PushSampler(new TextureSampler(TextureFilter.Linear, TextureWrap.Clamp, TextureWrap.Clamp));
++		if (VisionOSKit.Ui.Style == VisionOSKit.UiStyle.Panel)
++		{
++			var pad = 16 * Game.RelativeScale;
++			var menuSize = pauseMenu.CurrentSize;
++			batch.RectRounded(new Rect(bounds.Center.X - menuSize.X / 2 - pad, bounds.Center.Y - menuSize.Y / 2 - pad, menuSize.X + 2 * pad, menuSize.Y + 2 * pad), 8 * Game.RelativeScale, Color.Black * 0.70f);
++			pauseMenu.Render(batch, bounds.Center);
++		}
++		else
++		{
++			RenderUiBlockForLayer(bounds);
++		}
++		batch.PopSampler();
++		batch.Render(layer);
++		batch.Clear();
++	}
++
++	/// <summary>
++	/// visionOS port, stereo frame: the game's UI block (see the "ui" block of Render) drawn into
++	/// the transparent layer at its original positions: pause menu centred, timer and strawberry
++	/// counter top left, version text bottom left. Left out: the full-screen dimming (the world is
++	/// darkened in the drawable instead, with its depth intact), the actors' UI (dialog box and
++	/// letterbox bars, a later round), the additive overlay and the debug text.
++	/// </summary>
++	private void RenderUiBlockForLayer(Rect bounds)
++	{
++		// pause menu
++		if (Paused)
++			pauseMenu.Render(batch, bounds.Center);
++
++		// stats
++		{
++			var at = bounds.TopLeft + new Vec2(4, 8);
++			if (IsInEndingArea || Save.Instance.SpeedrunTimer)
++			{
++				UI.Timer(batch, Save.CurrentRecord.Time, at);
++				at.Y += UI.IconSize + 4;
++			}
++
++			if (strawbCounterEase > 0)
++			{
++				var wiggle = 1 + MathF.Sin(strawbCounterWiggle * MathF.Tau * 2) * strawbCounterWiggle * .3f;
++
++				batch.PushMatrix(
++					Matrix3x2.CreateTranslation(0, -UI.IconSize / 2) *
++					Matrix3x2.CreateScale(wiggle) *
++					Matrix3x2.CreateTranslation(at + new Vec2(-60 * (1 - Ease.Cube.Out(strawbCounterEase)), UI.IconSize / 2)));
++				UI.Strawberries(batch, Save.CurrentRecord.Strawberries.Count, Vec2.Zero);
++				batch.PopMatrix();
++			}
++
++			// show version number when paused / in ending area
++			if (IsInEndingArea || Paused)
++				UI.Text(batch, Game.VersionString, bounds.BottomLeft + new Vec2(4, -4) * Game.RelativeScale, new Vec2(0, 1), Color.White * 0.25f);
++		}
++	}
++
++	/// <summary>
++	/// visionOS port, stereo frame: the UI layer as one quad in the world (UIVRArray, both views),
++	/// placed by <see cref="VisionOSKit.UiTablet"/> (frozen upright in front of the head, or
++	/// following it until O is set anew). Always on top, with the quad's real depth written for
++	/// the compositor, premultiplied blend, sRGB decoding for the device's drawable.
++	/// </summary>
++	private void DrawUiPanel(VisionOSKit.VRFrame vr)
++	{
++		var layer = VisionOSKit.UILayer;
++		if (layer == null)
++			return;
++		VisionOSKit.UiTablet.Update(Camera.Position, Camera.LookAt);
++		var aspect = layer.Width / (float)layer.Height;
++		if (!VisionOSKit.UiTablet.TryGetCorners(aspect, out var c0, out var c1, out var c2, out var c3))
++			return;
++		var quad = StereoQuad(ref uiQuad, ref uiQuadSize, new Point2(1, 1), "ui-panel-quad");
++		var vp0 = Camera.ViewProjectionFor(0);
++		var vp1 = Camera.ViewProjectionFor(1);
++		var srgbOut = vr.ColorSrgb || VisionOSKit.Ui.ForceSrgbDecode ? 1 : 0;
++		var linearSampler = new TextureSampler(TextureFilter.Linear, TextureWrap.Clamp, TextureWrap.Clamp);
++
++		if (VisionOSKit.Ui.Style == VisionOSKit.UiStyle.Original)
++		{
++			// the original's full-screen dimming (black, 70 %) over the whole view of both eyes:
++			// clip-space corners with identity matrices, no depth test and no depth write, so the
++			// world keeps its depth; the shader maps the alpha for the linear blending of an sRGB
++			// drawable like the panel's colours
++			uiDimMaterial.CopyFrom(Assets.Materials["UIVRArray"]);
++			uiDimMaterial.Vertex.SetUniformBuffer(new UniformBuffers.UiVertexVR()
++			{
++				ViewProjection0 = Matrix.Identity,
++				ViewProjection1 = Matrix.Identity,
++				Corner0 = new Vec4(-1, 1, 0.5f, 1),
++				Corner1 = new Vec4(1, 1, 0.5f, 1),
++				Corner2 = new Vec4(1, -1, 0.5f, 1),
++				Corner3 = new Vec4(-1, -1, 0.5f, 1),
++			});
++			uiDimMaterial.Fragment.Samplers[0] = new(layer.Attachments[0], linearSampler);
++			uiDimMaterial.Fragment.SetUniformBuffer(new UniformBuffers.UiFragmentVR()
++			{
++				SrgbOut = srgbOut,
++				Opacity = 1,
++				Dim = 1,
++				DimAlpha = 0.70f,
++			});
++			GraphicsDevice.Draw(new DrawCommand(Camera.Target, quad, uiDimMaterial)
++			{
++				BlendMode = BlendMode.Premultiply,
++				DepthTestEnabled = false,
++				DepthWriteEnabled = false,
++				CullMode = CullMode.None,
++			});
++		}
++
++		uiMaterial.CopyFrom(Assets.Materials["UIVRArray"]);
++		uiMaterial.Vertex.SetUniformBuffer(new UniformBuffers.UiVertexVR()
++		{
++			ViewProjection0 = vp0,
++			ViewProjection1 = vp1,
++			Corner0 = new Vec4(c0, 1),
++			Corner1 = new Vec4(c1, 1),
++			Corner2 = new Vec4(c2, 1),
++			Corner3 = new Vec4(c3, 1),
++		});
++		uiMaterial.Fragment.Samplers[0] = new(layer.Attachments[0], linearSampler);
++		uiMaterial.Fragment.SetUniformBuffer(new UniformBuffers.UiFragmentVR()
++		{
++			SrgbOut = srgbOut,
++			Opacity = 1,
++			Dim = 0,
++			DimAlpha = 0,
++		});
++		GraphicsDevice.Draw(new DrawCommand(Camera.Target, quad, uiMaterial)
++		{
++			BlendMode = BlendMode.Premultiply,
++			DepthTestEnabled = true,
++			DepthWriteEnabled = true,
++			DepthCompare = DepthCompare.Always,
++			CullMode = CullMode.None,
++		});
++
++		if (VisionOSKit.UiTablet.ConsumeLogRequest())
++		{
++			// bounding box of the panel in eye 0, logical pixels of the drawable (Mac check)
++			float minX = float.MaxValue, minY = float.MaxValue, maxX = float.MinValue, maxY = float.MinValue;
++			foreach (var corner in (ReadOnlySpan<Vec3>)[c0, c1, c2, c3])
++			{
++				var clip = Vec4.Transform(new Vec4(corner, 1), vp0);
++				var x = (clip.X / clip.W + 1) / 2 * vr.LogicalWidth;
++				var y = (1 - clip.Y / clip.W) / 2 * vr.LogicalHeight;
++				minX = MathF.Min(minX, x); maxX = MathF.Max(maxX, x);
++				minY = MathF.Min(minY, y); maxY = MathF.Max(maxY, y);
++			}
++			var menuSize = pauseMenu.CurrentSize;
++			Log.Info($"[c64-ui] panel eye0 bbox px=[{minX:F0}..{maxX:F0}]x[{minY:F0}..{maxY:F0}] of {vr.LogicalWidth}x{vr.LogicalHeight} layer={layer.Width}x{layer.Height} menu={menuSize.X:F0}x{menuSize.Y:F0} srgbOut={srgbOut} style={(VisionOSKit.Ui.Style == VisionOSKit.UiStyle.Panel ? "panel" : "original")}");
++		}
++	}
 +#endif
 +
  	private void RenderModels(ref RenderState state, List<ModelEntry> models, ModelFlags flags)
@@ -2854,10 +3287,10 @@ index 650a35e..68b1c05 100644
  	private const float EaseClosePercent = 0.3f; // how long (in percent) it eases the entire screen
 diff --git a/Source/VisionOSKit.cs b/Source/VisionOSKit.cs
 new file mode 100644
-index 0000000..09fb308
+index 0000000..82c847b
 --- /dev/null
 +++ b/Source/VisionOSKit.cs
-@@ -0,0 +1,1243 @@
+@@ -0,0 +1,1467 @@
 +#if VISIONOS_KIT
 +// VisionOSKit.cs — Schalter des visionOS-Ports für Mac-Läufe (K6b, nur mit UseLocalFoster gebaut).
 +//
@@ -3593,6 +4026,228 @@ index 0000000..09fb308
 +		}
 +	}
 +
++	// ---- 2D in the stereo world: the pause menu on a panel ----
++
++	/// <summary>
++	/// UI switches, read once from the environment; the static constructor logs the values.
++	/// C64_UI: 1 (default) or 0 (no 2D in the stereo world, the fallback). C64_UI_DIST: distance
++	/// of the panel in metres (default 2). C64_UI_FOV: angular width of the UI layer in degrees
++	/// (default 50, like the canvas of M4a; the height follows the layer's aspect ratio).
++	/// </summary>
++	public static class Ui
++	{
++		public static readonly bool Enabled;
++		public static readonly float DistanceMeters;
++		public static readonly float FovDegrees;
++		/// <summary>Diagnostics (Mac host): C64_UI_SRGB=1 forces the sRGB decoding of the panel on a non-sRGB drawable, so the decoded values can be read back.</summary>
++		public static readonly bool ForceSrgbDecode;
++		/// <summary>C64_UI_STYLE: original (default; the game's UI block on the layer, the world darkened by 70 % over the whole view) or panel (menu on a rounded panel, no darkening).</summary>
++		public static readonly UiStyle Style;
++
++		static Ui()
++		{
++			Enabled = Environment.GetEnvironmentVariable("C64_UI") != "0";
++			DistanceMeters = ReadFloat("C64_UI_DIST", 2f, 0.3f, 50f);
++			FovDegrees = ReadFloat("C64_UI_FOV", 50f, 10f, 150f);
++			ForceSrgbDecode = Environment.GetEnvironmentVariable("C64_UI_SRGB") == "1";
++			if (ForceSrgbDecode)
++				Log.Info("[c64-ui] C64_UI_SRGB=1 (diagnostics: sRGB decoding of the panel forced)");
++			var style = Environment.GetEnvironmentVariable("C64_UI_STYLE");
++			Style = style == "panel" ? UiStyle.Panel : UiStyle.Original;
++			if (style != null && style != "panel" && style != "original")
++				Log.Warning($"[c64-ui] C64_UI_STYLE={style} unknown, using original");
++			Log.Info($"[c64-ui] C64_UI_STYLE={(Style == UiStyle.Panel ? "panel" : "original")} ({(Style == UiStyle.Panel ? "menu on a rounded panel, world not darkened" : "the game's UI block on the layer, world darkened by 70 % while paused")})");
++			Log.Info($"[c64-ui] C64_UI={(Enabled ? 1 : 0)} ({(Enabled ? "the 2D menu as a panel in the stereo world" : "no 2D in the stereo world")})");
++			Log.Info($"[c64-ui] C64_UI_DIST={DistanceMeters.ToString("F2", System.Globalization.CultureInfo.InvariantCulture)} m C64_UI_FOV={FovDegrees.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)} deg (distance of the panel, angular width of the UI layer)");
++		}
++
++		private static float ReadFloat(string name, float fallback, float min, float max)
++		{
++			var text = Environment.GetEnvironmentVariable(name);
++			if (text == null)
++				return fallback;
++			if (float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var value) && value >= min && value <= max)
++				return value;
++			Log.Warning($"[c64-ui] {name}={text} invalid, using {fallback}");
++			return fallback;
++		}
++	}
++
++	/// <summary>The transparent UI layer (colour only, the internal size); null until first needed.</summary>
++	public static Target? UILayer { get; private set; }
++
++	/// <summary>The UI layer, created on first use (or anew when the internal size changed).</summary>
++	public static Target EnsureUILayer(GraphicsDevice device)
++	{
++		if (UILayer == null || UILayer.Width != InternalWidth || UILayer.Height != InternalHeight)
++		{
++			UILayer = new Target(device, InternalWidth, InternalHeight, [TextureFormat.Color], name: "ui-layer");
++			Log.Info($"[c64-ui] layer {InternalWidth}x{InternalHeight} (colour only, cleared transparent in every frame that uses it)");
++		}
++		return UILayer;
++	}
++
++	/// <summary>How often the host set its reference O anew (origin_reset in the frame), counted in BeginVRFrame.</summary>
++	public static int OriginResets { get; private set; }
++
++	public enum UiStyle { Original, Panel }
++	public enum UiAnchorMode { Following, Frozen }
++	public enum UiTrigger { Start, Resume }
++
++	/// <summary>
++	/// Placement of the pause panel: in front of the head at Ui.DistanceMeters, upright (position
++	/// and yaw of the head, no pitch or roll). Opened by the pause button: frozen at once with the
++	/// head pose of the last frame. Opened by the host's pause request after the device was put on
++	/// again: the panel follows the head until the host sets O anew (the pose right after putting
++	/// the device on is unusable), then it freezes. The pose is kept relative to O together with
++	/// the game camera's base of that moment, so the panel stays where it was in the world.
++	/// </summary>
++	public static class UiTablet
++	{
++		public static bool Open { get; private set; }
++		public static UiAnchorMode Mode { get; private set; }
++		public static UiTrigger Trigger { get; private set; }
++
++		private static UiTrigger pendingTrigger = UiTrigger.Start;
++		private static Matrix relative = Matrix.Identity;   // O-from-panel in visionOS space
++		private static Vec3 basePosition;
++		private static Matrix baseRotation = Matrix.Identity;
++		private static bool hasPose;
++		private static int resetsAtOpen, framesFollowing;
++		private static bool logRequested;
++
++		/// <summary>The next SetPaused(true) comes from the host's pause request (device put on again).</summary>
++		public static void MarkResumeTrigger() => pendingTrigger = UiTrigger.Resume;
++
++		public static void Opened(Vec3 cameraPosition, Vec3 cameraLookAt)
++		{
++			Open = true;
++			Trigger = pendingTrigger;
++			pendingTrigger = UiTrigger.Start;
++			resetsAtOpen = OriginResets;
++			framesFollowing = 0;
++			hasPose = false;
++			Mode = Trigger == UiTrigger.Resume ? UiAnchorMode.Following : UiAnchorMode.Frozen;
++			Place(cameraPosition, cameraLookAt);
++			Log.Info($"[c64-ui] pause panel opened trigger={TriggerName} mode={ModeName} {PoseText()}");
++			logRequested = true;
++		}
++
++		public static void Closed()
++		{
++			if (!Open)
++				return;
++			Open = false;
++			Log.Info($"[c64-ui] pause panel closed mode={ModeName} followingFrames={framesFollowing}");
++		}
++
++		/// <summary>Once per stereo frame while open: a following panel is placed anew and freezes once O was set anew since it opened.</summary>
++		public static void Update(Vec3 cameraPosition, Vec3 cameraLookAt)
++		{
++			if (!Open)
++				return;
++			if (Mode == UiAnchorMode.Following)
++			{
++				framesFollowing++;
++				Place(cameraPosition, cameraLookAt);
++				if (OriginResets != resetsAtOpen)
++				{
++					Mode = UiAnchorMode.Frozen;
++					Log.Info($"[c64-ui] pause panel frozen after {framesFollowing} following frames (origin reset) {PoseText()}");
++					logRequested = true;
++				}
++			}
++			else if (!hasPose)
++			{
++				// opened before the first stereo pose of this session
++				Place(cameraPosition, cameraLookAt);
++				if (hasPose)
++				{
++					Log.Info($"[c64-ui] pause panel placed with the first stereo pose {PoseText()}");
++					logRequested = true;
++				}
++			}
++		}
++
++		/// <summary>True once after opening and after freezing: the caller logs the panel's pixel bounds.</summary>
++		public static bool ConsumeLogRequest()
++		{
++			var requested = logRequested;
++			logRequested = false;
++			return requested;
++		}
++
++		private static void Place(Vec3 cameraPosition, Vec3 cameraLookAt)
++		{
++			var session = StereoSession;
++			if (session == null)
++				return;
++			var h = session.Head;
++			// upright: the head's back axis flattened into the horizontal plane, up = world up
++			var back = new Vec3(h.M31, 0, h.M33);
++			var length = back.Length();
++			back = length > 1e-4f ? back / length : new Vec3(0, 0, 1);
++			var up = Vec3.UnitY;
++			var right = Vec3.Cross(up, back);
++			var yawOnly = new Matrix(
++				right.X, right.Y, right.Z, 0,
++				up.X, up.Y, up.Z, 0,
++				back.X, back.Y, back.Z, 0,
++				h.M41, h.M42, h.M43, 1);
++			// the panel sits DistanceMeters in front of the head (-Z in head space)
++			relative = Matrix.CreateTranslation(0, 0, -Ui.DistanceMeters) * yawOnly;
++			basePosition = cameraPosition;
++			baseRotation = BaseRotation(cameraPosition, cameraLookAt);
++			hasPose = true;
++		}
++
++		/// <summary>World-from-panel in Celeste's world (rows right, up, back, position); false without a pose.</summary>
++		public static bool TryGetWorld(out Matrix world)
++		{
++			world = hasPose ? WorldFromRelative(relative, basePosition, baseRotation) : Matrix.Identity;
++			return hasPose;
++		}
++
++		/// <summary>Half width of the panel in metres from the angular width and the distance.</summary>
++		public static float HalfWidthMeters => Ui.DistanceMeters * MathF.Tan(Ui.FovDegrees * MathF.PI / 360);
++
++		/// <summary>Corners of the panel in Celeste's world: top-left, top-right, bottom-right, bottom-left (texture v grows downwards).</summary>
++		public static bool TryGetCorners(float aspect, out Vec3 c0, out Vec3 c1, out Vec3 c2, out Vec3 c3)
++		{
++			c0 = c1 = c2 = c3 = default;
++			if (!TryGetWorld(out var m))
++				return false;
++			var right = new Vec3(m.M11, m.M12, m.M13);
++			var up = new Vec3(m.M21, m.M22, m.M23);
++			var centre = new Vec3(m.M41, m.M42, m.M43);
++			var halfW = HalfWidthMeters * WorldScale;
++			var halfH = halfW / aspect;
++			c0 = centre - right * halfW + up * halfH;
++			c1 = centre + right * halfW + up * halfH;
++			c2 = centre + right * halfW - up * halfH;
++			c3 = centre - right * halfW - up * halfH;
++			return true;
++		}
++
++		private static string TriggerName => Trigger == UiTrigger.Resume ? "resume" : "start";
++		private static string ModeName => Mode == UiAnchorMode.Following ? "following" : "frozen";
++
++		private static string PoseText()
++		{
++			if (!hasPose)
++				return "pose=- (no stereo pose yet)";
++			var aspect = InternalWidth / (float)InternalHeight;
++			var width = 2 * HalfWidthMeters;
++			var height = width / aspect;
++			var verticalDegrees = 2 * MathF.Atan(height / 2 / Ui.DistanceMeters) * 180 / MathF.PI;
++			var head = StereoSession!.Head;
++			var forward = -new Vec3(head.M31, head.M32, head.M33);
++			var yaw = MathF.Atan2(forward.X, -forward.Z) * 180 / MathF.PI;
++			TryGetWorld(out var m);
++			return $"head=({head.M41:F2}, {head.M42:F2}, {head.M43:F2}) m headYaw={yaw:F1} panel=({relative.M41:F2}, {relative.M42:F2}, {relative.M43:F2}) m rel. O world=({m.M41:F1}, {m.M42:F1}, {m.M43:F1}) size={width:F2}x{height:F2} m ({Ui.FovDegrees:F1}x{verticalDegrees:F1} deg) dist={Ui.DistanceMeters:F2} m scale={WorldScale:F1}";
++		}
++	}
++
 +	/// <summary>World-from-eye (or world-from-head) on a base given as a yaw about Z, see the matrix overload.</summary>
 +	public static Matrix WorldFromRelative(in Matrix relative, Vec3 basePosition, float baseYaw)
 +		=> WorldFromRelative(relative, basePosition, Matrix.CreateRotationZ(baseYaw));
@@ -3901,6 +4556,8 @@ index 0000000..09fb308
 +			Culling = cullingProjection,
 +			Version = (StereoSession?.Version ?? 0) + 1,
 +		};
++		if (originReset)
++			OriginResets++;
 +		if (originReset || !headPoseLogged)
 +		{
 +			headPoseLogged = true;

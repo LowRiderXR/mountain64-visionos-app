@@ -1,6 +1,6 @@
 #!/bin/zsh
 # compile-vr-shaders.sh: compile the visionOS VR variants of Celeste's shaders (DefaultVR, SpriteVR,
-# EdgeVR, EdgeVRArray in Source/Celeste64/Content/Shaders, each a #define VISIONOS_VR plus #include
+# EdgeVR, EdgeVRArray, UpscaleVRArray, UIVRArray in Source/Celeste64/Content/Shaders; the first ones are a #define VISIONOS_VR plus #include
 # of the original) with the kit's tool chain: HLSL (SV_ViewID, Shader Model 6.1) -> SPIR-V with DXC,
 # SPIR-V -> MSL and JSON with SDL_shadercross, vertex MSL -> [[amplification_id]] with
 # Kit/sdl-gpu-kit/tools/msl-amplification.sh (SDL_shadercross compiles HLSL only as 6.0 and rejects
@@ -55,7 +55,7 @@ compile() {
 }
 
 echo "== VR shader variants -> $OUT"
-for name in DefaultVR DefaultVRNoDiscard SpriteVR EdgeVR EdgeVRArray UpscaleVRArray; do
+for name in DefaultVR DefaultVRNoDiscard SpriteVR EdgeVR EdgeVRArray UpscaleVRArray UIVRArray; do
     compile "$name" vertex vs_6_1
     compile "$name" fragment ps_6_1
 done
@@ -65,11 +65,11 @@ done
 # stay those of the originals (UpscaleVRArray binds like Edge: two samplers, one uniform buffer),
 # otherwise Foster binds them differently.
 echo "== checks"
-for name in DefaultVR DefaultVRNoDiscard SpriteVR EdgeVR EdgeVRArray UpscaleVRArray; do
+for name in DefaultVR DefaultVRNoDiscard SpriteVR EdgeVR EdgeVRArray UpscaleVRArray UIVRArray; do
     if [[ "$name" != "EdgeVRArray" && "$name" != "UpscaleVRArray" ]] && grep -q "depth(any)" "$OUT/$name.fragment.msl"; then
         echo "error: $name.fragment.msl still writes depth" >&2; exit 1
     fi
-    base="Default"; [[ "$name" == Sprite* ]] && base="Sprite"; [[ "$name" == Edge* || "$name" == Upscale* ]] && base="Edge"
+    base="Default"; [[ "$name" == Sprite* ]] && base="Sprite"; [[ "$name" == Edge* || "$name" == Upscale* ]] && base="Edge"; [[ "$name" == UI* ]] && base="Sprite"
     for stage in vertex fragment; do
         # only the four counts Assets.cs reads (newer shadercross builds add input and output lists)
         python3 - "$OUT/$base.$stage.json" "$OUT/$name.$stage.json" <<'PY' || exit 1
@@ -92,7 +92,7 @@ grep -q "depth(any)" "$OUT/UpscaleVRArray.fragment.msl" || { echo "error: Upscal
 echo "   UpscaleVRArray: texture2d_array and depth output present"
 
 echo "== Metal compiler check (xros and macOS)"
-for name in DefaultVR DefaultVRNoDiscard SpriteVR EdgeVR EdgeVRArray UpscaleVRArray; do
+for name in DefaultVR DefaultVRNoDiscard SpriteVR EdgeVR EdgeVRArray UpscaleVRArray UIVRArray; do
     for stage in vertex fragment; do
         xcrun -sdk xros metal -x metal -c "$OUT/$name.$stage.msl" -o "$TMP/$name.$stage.xros.air"
         xcrun -sdk macosx metal -x metal -c "$OUT/$name.$stage.msl" -o "$TMP/$name.$stage.macos.air"
