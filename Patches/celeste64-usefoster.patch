@@ -3388,7 +3388,7 @@ index 33da870..7590a36 100644
  			CutoutMode = false,
  		};
 diff --git a/Source/Scenes/World.cs b/Source/Scenes/World.cs
-index bdfb740..27772c5 100644
+index bdfb740..88ff96e 100644
 --- a/Source/Scenes/World.cs
 +++ b/Source/Scenes/World.cs
 @@ -70,9 +70,20 @@ public class World : Scene
@@ -3531,7 +3531,7 @@ index bdfb740..27772c5 100644
  			it.DepthMask = false;
  			it.Silhouette = true;
  			RenderModels(ref it, models, ModelFlags.Silhouette);
-@@ -735,8 +801,33 @@ public class World : Scene
+@@ -735,8 +801,41 @@ public class World : Scene
  
  		// render main models
  		RenderModels(ref state, models, ModelFlags.Default);
@@ -3546,8 +3546,13 @@ index bdfb740..27772c5 100644
 +			VisionOSKit.FlushPass(GraphicsDevice, "world");
 +			// pause panel: the menu into the transparent UI layer before the edge pass opens the
 +			// drawable; the panel quad follows the sprites in that same pass (no extra load)
-+			if (Paused && VisionOSKit.Ui.Enabled)
++			// the UI layer only in frames with something to show: the pause menu, or the timer and
++			// the strawberry counter during play (head-locked); otherwise no pass at all
++			var hudVisible = IsInEndingArea || Save.Instance.SpeedrunTimer || strawbCounterEase > 0;
++			uiLayerActive = VisionOSKit.Ui.Enabled && (Paused || hudVisible);
++			if (uiLayerActive)
 +				RenderUiLayer();
++			NoteHudVisibility(hudVisible && !Paused, vr);
 +			// screen wipe of a running transition into its own layer (the output pass of Game
 +			// that draws it in 2D is skipped on the stereo path)
 +			activeWipe = VisionOSKit.Wipe.Enabled ? Game.Instance.ActiveWipe : null;
@@ -3555,6 +3560,9 @@ index bdfb740..27772c5 100644
 +				RenderWipeLayer(activeWipe, vr);
 +			else
 +				VisionOSKit.WipeProbe.End();
++			// the layers in their own submission, so the host can account them as pass "ui"
++			if (uiLayerActive || activeWipe != null)
++				VisionOSKit.FlushPass(GraphicsDevice, "ui");
 +			ApplyPostEffectsStereo(vr);
 +			VisionOSKit.FlushPass(GraphicsDevice, "edge");
 +			// world pixel look: the rest of the frame draws into the drawable; raster: into B
@@ -3566,7 +3574,7 @@ index bdfb740..27772c5 100644
  		ApplyPostEffects();
  
  		// render alpha threshold transparent stuff
-@@ -762,21 +853,59 @@ public class World : Scene
+@@ -762,22 +861,60 @@ public class World : Scene
  		// strawberry collect effect
  		if (models.Any((it) => it.Model.Flags.Has(ModelFlags.StrawberryGetEffect)))
  		{
@@ -3602,22 +3610,22 @@ index bdfb740..27772c5 100644
 +				batch.Image(img, bounds.Center, orig, Vec2.One, 0, Color.White);
 +				batch.Render(Camera.Target);
 +				batch.Clear();
-+
-+				RenderModels(ref state, models, ModelFlags.StrawberryGetEffect);
  
 -			RenderModels(ref state, models, ModelFlags.StrawberryGetEffect);
-+				ApplyPostEffects();
-+			}
-+		}
++				RenderModels(ref state, models, ModelFlags.StrawberryGetEffect);
  
 -			ApplyPostEffects();
++				ApplyPostEffects();
++			}
+ 		}
+ 
 +#if VISIONOS_KIT
 +		if (vr != null)
 +		{
 +			// stereo frame: sprites and transparent models submitted, then the coarse composite is
 +			// enlarged into the drawable (submitted with the frame's final flush); no 2D UI (M4b.3b)
 +			// pause panel: the UI layer as a quad in the world, after the sprites, always on top
-+			if (Paused && VisionOSKit.Ui.Enabled)
++			if (uiLayerActive)
 +				DrawUiPanel(vr);
 +			// the wipe over everything, head-locked across the whole view
 +			if (activeWipe != null)
@@ -3631,12 +3639,13 @@ index bdfb740..27772c5 100644
 +			lastDebugRndTime = debugRndTimer.Elapsed;
 +			debugRndTimer.Stop();
 +			return;
- 		}
++		}
 +#endif
- 
++
  		// ui
  		{
-@@ -872,9 +1001,31 @@ public class World : Scene
+ 			batch.PushSampler(new TextureSampler(TextureFilter.Linear, TextureWrap.Clamp, TextureWrap.Clamp));
+@@ -872,9 +1009,31 @@ public class World : Scene
  			// apply post fx
  			postMaterial.CopyFrom(Assets.Materials["Edge"]);
  			postMaterial.Fragment.Samplers[1] = new(target.Attachments[1], new(TextureFilter.Nearest, TextureWrap.Clamp, TextureWrap.Clamp));
@@ -3669,7 +3678,7 @@ index bdfb740..27772c5 100644
  				Edge = new Color(0x110d33).ToVector4()
  			});
  			batch.PushMaterial(postMaterial);
-@@ -889,6 +1040,401 @@ public class World : Scene
+@@ -889,6 +1048,451 @@ public class World : Scene
  		}
  	}
  
@@ -3815,6 +3824,44 @@ index bdfb740..27772c5 100644
 +	private readonly Material wipeMaterial = new();
 +	private VisionOSKit.WipeGeometry wipeGeometry;
 +	private ScreenWipe? activeWipe;   // the wipe of the running transition in this frame, null if none
++	private bool uiLayerActive;       // the UI layer is drawn in this frame (pause, or timer and counter during play)
++	private bool hudWasVisible;
++	private int hudFrames;
++
++	/// <summary>[c64-ui] once when the head-locked HUD (timer, counter) appears during play, with its pixel box in eye 0, and once when it disappears.</summary>
++	private void NoteHudVisibility(bool visible, VisionOSKit.VRFrame vr)
++	{
++		if (visible == hudWasVisible)
++		{
++			if (visible) hudFrames++;
++			return;
++		}
++		hudWasVisible = visible;
++		if (visible)
++		{
++			hudFrames = 1;
++			var layer = VisionOSKit.UILayer;
++			var text = "bbox=-";
++			if (layer != null && VisionOSKit.UiTablet.TryGetHeadLockedCorners(layer.Width / (float)layer.Height, Camera.Position, Camera.LookAt, out var c0, out var c1, out var c2, out var c3))
++			{
++				var vp0 = Camera.ViewProjectionFor(0);
++				float minX = float.MaxValue, minY = float.MaxValue, maxX = float.MinValue, maxY = float.MinValue;
++				foreach (var corner in (ReadOnlySpan<Vec3>)[c0, c1, c2, c3])
++				{
++					var clip = Vec4.Transform(new Vec4(corner, 1), vp0);
++					var x = (clip.X / clip.W + 1) / 2 * vr.LogicalWidth;
++					var y = (1 - clip.Y / clip.W) / 2 * vr.LogicalHeight;
++					minX = MathF.Min(minX, x); maxX = MathF.Max(maxX, x);
++					minY = MathF.Min(minY, y); maxY = MathF.Max(maxY, y);
++				}
++				text = $"eye0 bbox px=[{minX:F0}..{maxX:F0}]x[{minY:F0}..{maxY:F0}] of {vr.LogicalWidth}x{vr.LogicalHeight}";
++			}
++			var anchor = layer != null && VisionOSKit.Ui.HudInset ? VisionOSKit.Ui.HudAnchor(layer.Width, layer.Height) : new Vec2(4, 8);
++			Log.Info($"[c64-ui] hud shown timer={(IsInEndingArea || Save.Instance.SpeedrunTimer ? 1 : 0)} counter={(strawbCounterEase > 0 ? 1 : 0)} mode=head-locked anchor=({anchor.X:F0}, {anchor.Y:F0}) layer px {text}");
++		}
++		else
++			Log.Info($"[c64-ui] hud hidden after {hudFrames} frames");
++	}
 +
 +	/// <summary>
 +	/// visionOS port, stereo frame: the running screen wipe into the transparent wipe layer, with
@@ -3942,9 +3989,10 @@ index bdfb740..27772c5 100644
 +		if (Paused)
 +			pauseMenu.Render(batch, bounds.Center);
 +
-+		// stats
++		// stats: during play moved from the layer's corner towards the gaze (fixed foveation, see
++		// VisionOSKit.Ui.HudAnchor); in the pause at the original position on the frozen panel
 +		{
-+			var at = bounds.TopLeft + new Vec2(4, 8);
++			var at = !Paused && VisionOSKit.Ui.HudInset ? VisionOSKit.Ui.HudAnchor(bounds.Width, bounds.Height) : bounds.TopLeft + new Vec2(4, 8);
 +			if (IsInEndingArea || Save.Instance.SpeedrunTimer)
 +			{
 +				UI.Timer(batch, Save.CurrentRecord.Time, at);
@@ -3980,17 +4028,28 @@ index bdfb740..27772c5 100644
 +		var layer = VisionOSKit.UILayer;
 +		if (layer == null)
 +			return;
-+		VisionOSKit.UiTablet.Update(Camera.Position, Camera.LookAt);
 +		var aspect = layer.Width / (float)layer.Height;
-+		if (!VisionOSKit.UiTablet.TryGetCorners(aspect, out var c0, out var c1, out var c2, out var c3))
-+			return;
++		Vec3 c0, c1, c2, c3;
++		if (Paused)
++		{
++			// pause: the frozen, upright panel (following the head until O is set anew)
++			VisionOSKit.UiTablet.Update(Camera.Position, Camera.LookAt);
++			if (!VisionOSKit.UiTablet.TryGetCorners(aspect, out c0, out c1, out c2, out c3))
++				return;
++		}
++		else
++		{
++			// play: head-locked with the full head pose of this frame (timer, strawberry counter)
++			if (!VisionOSKit.UiTablet.TryGetHeadLockedCorners(aspect, Camera.Position, Camera.LookAt, out c0, out c1, out c2, out c3))
++				return;
++		}
 +		var quad = StereoQuad(ref uiQuad, ref uiQuadSize, new Point2(1, 1), "ui-panel-quad");
 +		var vp0 = Camera.ViewProjectionFor(0);
 +		var vp1 = Camera.ViewProjectionFor(1);
 +		var srgbOut = vr.ColorSrgb || VisionOSKit.Ui.ForceSrgbDecode ? 1 : 0;
 +		var linearSampler = new TextureSampler(TextureFilter.Linear, TextureWrap.Clamp, TextureWrap.Clamp);
 +
-+		if (VisionOSKit.Ui.Style == VisionOSKit.UiStyle.Original)
++		if (Paused && VisionOSKit.Ui.Style == VisionOSKit.UiStyle.Original)
 +		{
 +			// the original's full-screen dimming (black, 70 %) over the whole view of both eyes:
 +			// clip-space corners with identity matrices, no depth test and no depth write, so the
@@ -4086,10 +4145,10 @@ index 650a35e..68b1c05 100644
  	private const float EaseClosePercent = 0.3f; // how long (in percent) it eases the entire screen
 diff --git a/Source/VisionOSKit.cs b/Source/VisionOSKit.cs
 new file mode 100644
-index 0000000..f2d126c
+index 0000000..5b2c108
 --- /dev/null
 +++ b/Source/VisionOSKit.cs
-@@ -0,0 +1,1610 @@
+@@ -0,0 +1,1678 @@
 +#if VISIONOS_KIT
 +// VisionOSKit.cs — Schalter des visionOS-Ports für Mac-Läufe (K6b, nur mit UseLocalFoster gebaut).
 +//
@@ -4842,6 +4901,15 @@ index 0000000..f2d126c
 +		public static readonly bool ForceSrgbDecode;
 +		/// <summary>C64_UI_STYLE: original (default; the game's UI block on the layer, the world darkened by 70 % over the whole view) or panel (menu on a rounded panel, no darkening).</summary>
 +		public static readonly UiStyle Style;
++		/// <summary>
++		/// C64_UI_HUD_X / C64_UI_HUD_Y: where timer and strawberry counter sit during play, in degrees
++		/// left of and above the gaze (defaults 12 and 9). The foveation is fixed to the head, so a
++		/// head-locked element at the layer's corner (24.7 degrees left) sits for good in the zone with a
++		/// third of the pixel density (M4a.4b: 0.33 at 25 degrees, 1.0 in the centre); 12 and 9 degrees
++		/// lie on the plateau. `off` keeps the original corner. The pause keeps the original positions.
++		/// </summary>
++		public static readonly bool HudInset;
++		public static readonly float HudXDegrees, HudYDegrees;
 +
 +		static Ui()
 +		{
@@ -4856,6 +4924,15 @@ index 0000000..f2d126c
 +			if (style != null && style != "panel" && style != "original")
 +				Log.Warning($"[c64-ui] C64_UI_STYLE={style} unknown, using original");
 +			Log.Info($"[c64-ui] C64_UI_STYLE={(Style == UiStyle.Panel ? "panel" : "original")} ({(Style == UiStyle.Panel ? "menu on a rounded panel, world not darkened" : "the game's UI block on the layer, world darkened by 70 % while paused")})");
++			var hudX = Environment.GetEnvironmentVariable("C64_UI_HUD_X");
++			var hudY = Environment.GetEnvironmentVariable("C64_UI_HUD_Y");
++			HudInset = hudX != "off" && hudY != "off";
++			HudXDegrees = ReadFloat("C64_UI_HUD_X", 12f, 0f, 40f);
++			HudYDegrees = ReadFloat("C64_UI_HUD_Y", 9f, -20f, 20f);
++			if (HudInset)
++				Log.Info($"[c64-ui] C64_UI_HUD_X={HudXDegrees.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)} C64_UI_HUD_Y={HudYDegrees.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)} deg left/above the gaze during play, estimated density {EstimateDensity(HudXDegrees, HudYDegrees):F2} (model from M4a.4b: centre 1.0, 25 deg 0.33, up 14.7 deg 0.82); pause keeps the original corner");
++			else
++				Log.Info("[c64-ui] C64_UI_HUD_X/Y=off: timer and counter at the layer's original corner during play (24.7 deg left, 14.4 deg up, density about 0.35)");
 +			Log.Info($"[c64-ui] C64_UI={(Enabled ? 1 : 0)} ({(Enabled ? "the 2D menu as a panel in the stereo world" : "no 2D in the stereo world")})");
 +			Log.Info($"[c64-ui] C64_UI_DIST={DistanceMeters.ToString("F2", System.Globalization.CultureInfo.InvariantCulture)} m C64_UI_FOV={FovDegrees.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)} deg (distance of the panel, angular width of the UI layer)");
 +		}
@@ -4863,12 +4940,41 @@ index 0000000..f2d126c
 +		private static float ReadFloat(string name, float fallback, float min, float max)
 +		{
 +			var text = Environment.GetEnvironmentVariable(name);
-+			if (text == null)
++			if (text == null || text == "off")
 +				return fallback;
 +			if (float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var value) && value >= min && value <= max)
 +				return value;
 +			Log.Warning($"[c64-ui] {name}={text} invalid, using {fallback}");
 +			return fallback;
++		}
++
++		/// <summary>
++		/// Rough pixel density of the device's rate map at an angle left of and above the gaze, from
++		/// the measurements of M4a.4b (M5, quality 1.0): horizontal 1.0 up to about 14 degrees (the
++		/// mean density over the 50-degree canvas was 0.85), linear to 0.33 at 25 degrees; upwards 1.0
++		/// to about 12 degrees, linear to 0.82 at 14.7 degrees; the two factors multiplied. An estimate.
++		/// </summary>
++		public static float EstimateDensity(float xDegrees, float yDegrees)
++		{
++			var x = MathF.Abs(xDegrees);
++			var horizontal = x <= 14f ? 1f : MathF.Max(0.1f, 1f - (x - 14f) / (25f - 14f) * (1f - 0.33f));
++			var y = MathF.Abs(yDegrees);
++			var vertical = y <= 12f ? 1f : MathF.Max(0.1f, 1f - (y - 12f) / (14.7f - 12f) * (1f - 0.82f));
++			return horizontal * vertical;
++		}
++
++		/// <summary>
++		/// Anchor of timer and counter on the UI layer during play, in layer pixels: the layer spans
++		/// FovDegrees horizontally (tangent-linear), the anchor sits HudXDegrees left and HudYDegrees
++		/// above the gaze (the layer's centre).
++		/// </summary>
++		public static Vec2 HudAnchor(float layerWidth, float layerHeight)
++		{
++			var halfTan = MathF.Tan(FovDegrees * MathF.PI / 360);
++			var pixelsPerTangent = layerWidth / (2 * halfTan);
++			var x = layerWidth / 2 - MathF.Tan(HudXDegrees * MathF.PI / 180) * pixelsPerTangent;
++			var y = layerHeight / 2 - MathF.Tan(HudYDegrees * MathF.PI / 180) * pixelsPerTangent;
++			return new Vec2(MathF.Round(x), MathF.Round(y));
 +		}
 +	}
 +
@@ -5010,12 +5116,24 @@ index 0000000..f2d126c
 +		/// <summary>Half width of the panel in metres from the angular width and the distance.</summary>
 +		public static float HalfWidthMeters => Ui.DistanceMeters * MathF.Tan(Ui.FovDegrees * MathF.PI / 360);
 +
-+		/// <summary>Corners of the panel in Celeste's world: top-left, top-right, bottom-right, bottom-left (texture v grows downwards).</summary>
-+		public static bool TryGetCorners(float aspect, out Vec3 c0, out Vec3 c1, out Vec3 c2, out Vec3 c3)
++		/// <summary>
++		/// Corners of a head-locked layer (timer and counter during play): the full head pose of
++		/// this frame (position, yaw, pitch, roll) on the current camera base, DistanceMeters ahead.
++		/// </summary>
++		public static bool TryGetHeadLockedCorners(float aspect, Vec3 cameraPosition, Vec3 cameraLookAt, out Vec3 c0, out Vec3 c1, out Vec3 c2, out Vec3 c3)
 +		{
 +			c0 = c1 = c2 = c3 = default;
-+			if (!TryGetWorld(out var m))
++			var session = StereoSession;
++			if (session == null)
 +				return false;
++			var relativeNow = Matrix.CreateTranslation(0, 0, -Ui.DistanceMeters) * session.Head;
++			var m = WorldFromRelative(relativeNow, cameraPosition, BaseRotation(cameraPosition, cameraLookAt));
++			CornersOf(m, aspect, out c0, out c1, out c2, out c3);
++			return true;
++		}
++
++		private static void CornersOf(in Matrix m, float aspect, out Vec3 c0, out Vec3 c1, out Vec3 c2, out Vec3 c3)
++		{
 +			var right = new Vec3(m.M11, m.M12, m.M13);
 +			var up = new Vec3(m.M21, m.M22, m.M23);
 +			var centre = new Vec3(m.M41, m.M42, m.M43);
@@ -5025,6 +5143,15 @@ index 0000000..f2d126c
 +			c1 = centre + right * halfW + up * halfH;
 +			c2 = centre + right * halfW - up * halfH;
 +			c3 = centre - right * halfW - up * halfH;
++		}
++
++		/// <summary>Corners of the panel in Celeste's world: top-left, top-right, bottom-right, bottom-left (texture v grows downwards).</summary>
++		public static bool TryGetCorners(float aspect, out Vec3 c0, out Vec3 c1, out Vec3 c2, out Vec3 c3)
++		{
++			c0 = c1 = c2 = c3 = default;
++			if (!TryGetWorld(out var m))
++				return false;
++			CornersOf(m, aspect, out c0, out c1, out c2, out c3);
 +			return true;
 +		}
 +

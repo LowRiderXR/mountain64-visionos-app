@@ -285,9 +285,11 @@ nonisolated enum CelesteProbe {
     /// die Frame-Nummer des Renderers; der Host-Buffer des Frames (serielle Queue, nach allen
     /// Celeste-Buffern des Frames) verwirft übrig gebliebene Etiketten bis zu seinem Frame (stale).
     nonisolated final class GpuPassStats: @unchecked Sendable {
-        enum Label: Int { case world = 0, edge, sprites, rest, canvas, host, other }
+        enum Label: Int { case world = 0, edge, sprites, rest, canvas, host, ui, other }
         static let count = Label.other.rawValue + 1
         static let worldLabels: [Label] = [.world, .world, .edge, .edge, .sprites, .sprites, .rest, .rest]
+        // M4c.2: Welt-Frame mit UI- oder Wipe-Ebene: das Spiel reicht die Ebenen nach dem Welt-Pass als eigenen Pass «ui» ein
+        static let worldLabelsUi: [Label] = [.world, .world, .ui, .ui, .edge, .edge, .sprites, .sprites, .rest, .rest]
         static let canvasLabels: [Label] = [.canvas, .canvas]
         private let lock = NSLock()
         // Schlange: Etikett und Frame-Nummer, parallel (keine Allokation im Rückruf)
@@ -781,7 +783,7 @@ nonisolated enum CelesteProbe {
             windowRenders += 1
             renderMsSum += renderMs
             renderMsMax = max(renderMsMax, renderMs)
-            // Etiketten der Buffer dieses Frames: je FlushPass (Welt, Kante, Sprites) und das
+            // Etiketten der Buffer dieses Frames: je FlushPass (Welt, [UI-Ebene], Kante, Sprites) und das
             // Abschicken am Frame-Ende zwei Buffer; Leinwand-Frames nur das Frame-Ende
             let flushes = Int(frame.pointee.flushes)
             var labels: [GpuPassStats.Label] = []
@@ -789,6 +791,8 @@ nonisolated enum CelesteProbe {
                 windowWorldFrames += 1
                 if flushes == 3 {
                     labels = GpuPassStats.worldLabels
+                } else if flushes == 4 {
+                    labels = GpuPassStats.worldLabelsUi
                 }
             } else if rc == 0, flushes == 0 {
                 labels = GpuPassStats.canvasLabels
@@ -833,10 +837,10 @@ nonisolated enum CelesteProbe {
             func excl(_ label: GpuPassStats.Label, per frames: Double) -> String {
                 String(format: "%.3f/%.3f", passes.exclusive(label) / frames * 1000, passes.exclusiveMax(label) * 1000)
             }
-            let passText = String(format: " worldFrames=%d gpuPass(ms/frame) world=%.3f edge=%.3f sprites=%.3f rest=%.3f canvas=%.3f unlabelled=%d stale=%d pending=%d",
-                                  windowWorldFrames, perWorld(.world), perWorld(.edge), perWorld(.sprites), perWorld(.rest),
+            let passText = String(format: " worldFrames=%d gpuPass(ms/frame) world=%.3f ui=%.3f edge=%.3f sprites=%.3f rest=%.3f canvas=%.3f unlabelled=%d stale=%d pending=%d",
+                                  windowWorldFrames, perWorld(.world), perWorld(.ui), perWorld(.edge), perWorld(.sprites), perWorld(.rest),
                                   passes.inclusive(.canvas) / canvasFrames * 1000, passes.unlabelled, passes.stale, passes.pending)
-                + " gpuExcl(ms/frame mean/max) world=\(excl(.world, per: worldFrames)) edge=\(excl(.edge, per: worldFrames)) sprites=\(excl(.sprites, per: worldFrames)) rest=\(excl(.rest, per: worldFrames)) host=\(excl(.host, per: hostFrames))"
+                + " gpuExcl(ms/frame mean/max) world=\(excl(.world, per: worldFrames)) ui=\(excl(.ui, per: worldFrames)) edge=\(excl(.edge, per: worldFrames)) sprites=\(excl(.sprites, per: worldFrames)) rest=\(excl(.rest, per: worldFrames)) host=\(excl(.host, per: hostFrames))"
                 + String(format: " sum=%.3f/%.3f", passes.frameTotalMean * 1000, passes.frameTotalMax * 1000)
             let timing = CelesteProbe.frameTiming.take()
             let cpu = CelesteProbe.frameTiming.takeCpu()

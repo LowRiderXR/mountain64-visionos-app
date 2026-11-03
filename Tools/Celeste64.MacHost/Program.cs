@@ -56,7 +56,7 @@
 //                       Meldung geben; Gegenprobe mit gültigem Ziel
 //   --minimize-at T,T   K6f.3: am ersten Tick das Fenster minimieren, am zweiten zurückholen;
 //                       der Lauf muss ohne Ausnahme weitergehen
-//   --tap-pause T       M4c.1: an Tick T die Pausentaste (Escape) kurz drücken (SDL_PushEvent)
+//   --tap-pause T,T     M4c.1: an diesen Ticks die Pausentaste (Escape) kurz drücken (SDL_PushEvent)
 //   --tap-down T,T      M4c.1c: an diesen Ticks die Menütaste Abwärts kurz drücken
 //   --layer-dump-ticks T,T  M4c.1c: zusätzlich an diesen Ticks Schichtvergleich und -dump
 //   --key-probe N       K6f.4: vor Tick N ein F7-Tastenereignis einspeisen (SDL_PushEvent), zwei
@@ -176,7 +176,7 @@ float rateMapScale = 1.4f;
 bool passSelftest = false;
 var minimizeAt = new List<long>();
 long keyProbeAt = -1;
-long tapPauseAt = -1;   // M4c.1: Escape (pause) at this tick, released two ticks later
+var tapPause = new List<long>();     // M4c.1: Escape (pause) at these ticks, released two ticks later
 var tapDown = new List<long>();      // M4c.1c: menu Down key at these ticks
 var layerDumpTicks = new List<long>(); // M4c.1c: additional layer dumps at these ticks
 long keyProbeSeenDown = -1, keyProbeSeenUp = -1;
@@ -239,7 +239,7 @@ for (int i = 0; i < args.Length; i++)
 		case "--pass-selftest": passSelftest = true; break;
 		case "--minimize-at": foreach (var t in args[++i].Split(',')) minimizeAt.Add(long.Parse(t)); break;
 		case "--key-probe": keyProbeAt = long.Parse(args[++i]); break;
-		case "--tap-pause": tapPauseAt = long.Parse(args[++i]); break;
+		case "--tap-pause": foreach (var t in args[++i].Split(',')) tapPause.Add(long.Parse(t)); break;
 		case "--tap-down": foreach (var t in args[++i].Split(',')) tapDown.Add(long.Parse(t)); break;
 		case "--layer-dump-ticks": foreach (var t in args[++i].Split(',')) layerDumpTicks.Add(long.Parse(t)); break;
 		case "--vr-depth": vrDepth = true; break;
@@ -792,8 +792,7 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 	if (keyProbeAt >= 0 && totalTicks == keyProbeAt) PushKey(true, SDL_Scancode.SDL_SCANCODE_F7);
 	if (keyProbeAt >= 0 && totalTicks == keyProbeAt + 2) PushKey(false, SDL_Scancode.SDL_SCANCODE_F7);
 	// M4c.1: pause key (Escape) at a fixed tick, released two ticks later; opens the pause menu in the level
-	if (tapPauseAt >= 0 && totalTicks == tapPauseAt) PushKey(true, SDL_Scancode.SDL_SCANCODE_ESCAPE);
-	if (tapPauseAt >= 0 && totalTicks == tapPauseAt + 2) PushKey(false, SDL_Scancode.SDL_SCANCODE_ESCAPE);
+	foreach (var t in tapPause) { if (totalTicks == t) PushKey(true, SDL_Scancode.SDL_SCANCODE_ESCAPE); if (totalTicks == t + 2) PushKey(false, SDL_Scancode.SDL_SCANCODE_ESCAPE); }
 	// M4c.1c: menu Down at fixed ticks (released two ticks later), e.g. to reach Retry in the pause menu
 	foreach (var t in tapDown) { if (totalTicks == t) PushKey(true, SDL_Scancode.SDL_SCANCODE_DOWN); if (totalTicks == t + 2) PushKey(false, SDL_Scancode.SDL_SCANCODE_DOWN); }
 
