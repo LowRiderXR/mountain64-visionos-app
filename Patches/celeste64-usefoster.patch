@@ -742,10 +742,10 @@ index 0000000..b090805
 +{ "samplers": 0, "storage_textures": 0, "storage_buffers": 0, "uniform_buffers": 1, "inputs": [{ "name": "in.var.TEXCOORD1", "type": "float2", "location": 1 }], "outputs": [{ "name": "out.var.TEXCOORD0", "type": "float2", "location": 0 }] }
 diff --git a/Content/Shaders/Compiled/UIVRArray.vertex.msl b/Content/Shaders/Compiled/UIVRArray.vertex.msl
 new file mode 100644
-index 0000000..3bfb840
+index 0000000..3401f52
 --- /dev/null
 +++ b/Content/Shaders/Compiled/UIVRArray.vertex.msl
-@@ -0,0 +1,44 @@
+@@ -0,0 +1,71 @@
 +#include <metal_stdlib>
 +#include <simd/simd.h>
 +
@@ -759,6 +759,10 @@ index 0000000..3bfb840
 +    float4 Corner1;
 +    float4 Corner2;
 +    float4 Corner3;
++    float4 Tangents0;
++    float4 Tangents1;
++    float4 Union;
++    float4 Mode;
 +};
 +
 +struct vertex_main_out
@@ -775,18 +779,41 @@ index 0000000..3bfb840
 +vertex vertex_main_out vertex_main(vertex_main_in in [[stage_in]], constant type_VertexUniforms& VertexUniforms [[buffer(0)]], uint gl_InstanceIndex [[instance_id]], uint gl_BaseInstance [[base_instance]], uint gl_ViewIndex [[amplification_id]])
 +{
 +    vertex_main_out out = {};
-+    float3 _46 = float3(in.in_var_TEXCOORD1.x);
-+    float4x4 _67;
-+    if (gl_ViewIndex == 0u)
++    float2 _134;
++    float4 _135;
++    do
 +    {
-+        _67 = transpose(VertexUniforms.ViewProjection0);
-+    }
-+    else
-+    {
-+        _67 = transpose(VertexUniforms.ViewProjection1);
-+    }
-+    out.out_var_TEXCOORD0 = in.in_var_TEXCOORD1;
-+    out.gl_Position = float4(mix(mix(VertexUniforms.Corner0.xyz, VertexUniforms.Corner1.xyz, _46), mix(VertexUniforms.Corner3.xyz, VertexUniforms.Corner2.xyz, _46), float3(in.in_var_TEXCOORD1.y)), 1.0) * _67;
++        if (VertexUniforms.Mode.x > 0.5)
++        {
++            float4 _60;
++            if (gl_ViewIndex == 0u)
++            {
++                _60 = VertexUniforms.Tangents0;
++            }
++            else
++            {
++                _60 = VertexUniforms.Tangents1;
++            }
++            _134 = float2((mix(-_60.x, _60.y, in.in_var_TEXCOORD1.x) - VertexUniforms.Union.x) / (VertexUniforms.Union.y - VertexUniforms.Union.x), (VertexUniforms.Union.w - mix(_60.z, -_60.w, in.in_var_TEXCOORD1.y)) / (VertexUniforms.Union.w - VertexUniforms.Union.z)) * VertexUniforms.Mode.zw;
++            _135 = float4((in.in_var_TEXCOORD1.x * 2.0) - 1.0, 1.0 - (in.in_var_TEXCOORD1.y * 2.0), VertexUniforms.Mode.y, 1.0);
++            break;
++        }
++        float3 _107 = float3(in.in_var_TEXCOORD1.x);
++        float4x4 _128;
++        if (gl_ViewIndex == 0u)
++        {
++            _128 = transpose(VertexUniforms.ViewProjection0);
++        }
++        else
++        {
++            _128 = transpose(VertexUniforms.ViewProjection1);
++        }
++        _134 = in.in_var_TEXCOORD1;
++        _135 = float4(mix(mix(VertexUniforms.Corner0.xyz, VertexUniforms.Corner1.xyz, _107), mix(VertexUniforms.Corner3.xyz, VertexUniforms.Corner2.xyz, _107), float3(in.in_var_TEXCOORD1.y)), 1.0) * _128;
++        break;
++    } while(false);
++    out.out_var_TEXCOORD0 = _134;
++    out.gl_Position = _135;
 +    return out;
 +}
 +
@@ -1373,13 +1400,14 @@ index 0000000..1dec08b
 +#include "Sprite.hlsl"
 diff --git a/Content/Shaders/UIVRArray.hlsl b/Content/Shaders/UIVRArray.hlsl
 new file mode 100644
-index 0000000..dda86a8
+index 0000000..461989d
 --- /dev/null
 +++ b/Content/Shaders/UIVRArray.hlsl
-@@ -0,0 +1,81 @@
+@@ -0,0 +1,101 @@
 +// visionOS port, 2D in the stereo world: one textured quad that carries the transparent UI layer
 +// (the pause menu, counter, timer) into the host's drawable, both views by vertex amplification;
-+// with Dim it darkens the whole view instead (black quad in clip space). The
++// with Dim it darkens the whole view instead (black quad in clip space), with Mode.x it carries
++// the screen wipes head-locked over the whole view (texture mapped by the view tangents). The
 +// four corners of the panel come in world space; the vertex interpolates them with the quad's
 +// texture coordinates (the mesh is the unit quad of the other stereo passes, its positions are
 +// unused). The layer holds premultiplied, gamma-encoded colour from the game's batcher; for an
@@ -1400,6 +1428,16 @@ index 0000000..dda86a8
 +    float4 Corner1;
 +    float4 Corner2;
 +    float4 Corner3;
++    // head-locked mode (Mode.x = 1, the screen wipes): the quad fills the view of each eye in
++    // clip space; the texture coordinate comes from the eye's view tangents (left, right, top,
++    // bottom) mapped into the union rectangle of both eyes (Union: uMin, uMax, vMin, vMax, v up),
++    // so the pattern has the same angular geometry in both eyes and the gaze direction is the
++    // centre of the layer's bounds. Mode.y is the fixed depth written in that mode, Mode.zw the
++    // used part of the layer.
++    float4 Tangents0;
++    float4 Tangents1;
++    float4 Union;
++    float4 Mode;
 +};
 +
 +struct VsInput
@@ -1420,6 +1458,15 @@ index 0000000..dda86a8
 +{
 +    VsOutput output;
 +    float2 uv = input.TexCoord;
++    if (Mode.x > 0.5)
++    {
++        float4 t = viewID == 0 ? Tangents0 : Tangents1;
++        float u = lerp(-t.x, t.y, uv.x);
++        float v = lerp(t.z, -t.w, uv.y);
++        output.TexCoord = float2((u - Union.x) / (Union.y - Union.x), (Union.w - v) / (Union.w - Union.z)) * Mode.zw;
++        output.Position = float4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, Mode.y, 1.0);
++        return output;
++    }
 +    float3 top = lerp(Corner0.xyz, Corner1.xyz, uv.x);
 +    float3 bottom = lerp(Corner3.xyz, Corner2.xyz, uv.x);
 +    float3 world = lerp(top, bottom, uv.y);
@@ -1871,13 +1918,403 @@ index f2ba5d0..9814c98 100644
  		Audio.SetVCAVolume("vca:/sfx", Calc.Clamp(SfxVolume / 10.0f, 0, 1));
  	}
 diff --git a/Source/Game.cs b/Source/Game.cs
-index 312df59..12df0ab 100644
+index 312df59..4133935 100644
 --- a/Source/Game.cs
 +++ b/Source/Game.cs
-@@ -37,15 +37,29 @@ public class Game : App
- 
- 	public const string GamePath = "Celeste64";
- 	public const string GameTitle = "Celeste 64: Fragments of the Mountain";
+@@ -1,354 +1,437 @@
+-﻿using System.Diagnostics;
+-using System.Text.Json;
+-
+-namespace Celeste64;
+-
+-public struct Transition
+-{
+-	public enum Modes
+-	{
+-		Replace,
+-		Push,
+-		Pop
+-	}
+-
+-	public Modes Mode;
+-	public Func<Scene>? Scene;
+-	public ScreenWipe? ToBlack;
+-	public ScreenWipe? FromBlack;
+-	public bool ToPause;
+-	public bool FromPause;
+-	public bool Saving;
+-	public bool StopMusic;
+-	public bool PerformAssetReload;
+-	public float HoldOnBlackFor;
+-}
+-
+-public class Game : App
+-{
+-	private enum TransitionStep
+-	{
+-		None,
+-		FadeOut,
+-		Hold,
+-		Perform,
+-		FadeIn
+-	}
+-
+-	public const string GamePath = "Celeste64";
+-	public const string GameTitle = "Celeste 64: Fragments of the Mountain";
+-	public const int Width = 640;
+-	public const int Height = 360;
+-	public static readonly Version Version = typeof(Game).Assembly.GetName().Version!;
+-	public static readonly string VersionString = $"v.{Version.Major}.{Version.Minor}.{Version.Build}";
+-
+-	/// <summary>
+-	/// Used by various rendering elements to proportionally scale if you change the default game resolution
+-	/// </summary>
+-	public const float RelativeScale = Height / 360.0f;
+-
+-	private static Game? instance;
+-	public static Game Instance => instance ?? throw new Exception("Game isn't running");
+-
+-	private readonly Stack<Scene> scenes = new();
+-	private readonly Target target;
+-	private readonly Batcher batcher;
+-	private Transition transition;
+-	private TransitionStep transitionStep = TransitionStep.None;
+-	private readonly FMOD.Studio.EVENT_CALLBACK audioEventCallback;
+-	private int audioBeatCounter;
+-	private bool audioBeatCounterEvent;
+-	private bool mouseCameraEnabled = false;
+-
+-	public AudioHandle Ambience;
+-	public AudioHandle Music;
+-	public Controls Controls;
+-
+-	public Game(AppConfig config) : base(config)
+-	{
+-		target = new(GraphicsDevice, Width, Height, [TextureFormat.Color, TextureFormat.Depth16]);
+-		batcher = new(GraphicsDevice);
+-
+-		GraphicsDevice.VSync = true;
+-		Controls = new(Input, new ControlsConfig());
+-
+-		// If this isn't stored, the delegate will get GC'd and everything will crash :)
+-		audioEventCallback = MusicTimelineCallback;
+-	}
+-
+-	protected override void Startup()
+-	{
+-		instance = this;
+-		Audio.Init();
+-		scenes.Push(new Startup());
+-	}
+-
+-	protected override void Shutdown()
+-	{
+-		if (scenes.TryPeek(out var topScene))
+-			topScene.Exited();
+-
+-		while (scenes.Count > 0)
+-		{
+-			var it = scenes.Pop();
+-			it.Disposed();
+-		}
+-		
+-		scenes.Clear();
+-		instance = null;
+-		Audio.Shutdown();
+-	}
+-
+-	public bool IsMidTransition => transitionStep != TransitionStep.None;
+-
+-	public void Goto(Transition next)
+-	{
+-		Debug.Assert(
+-			transitionStep == TransitionStep.None ||
+-			transitionStep == TransitionStep.FadeIn);
+-		transition = next;
+-		transitionStep = scenes.Count > 0 ? TransitionStep.FadeOut : TransitionStep.Perform;
+-		transition.ToBlack?.Restart(transitionStep != TransitionStep.FadeOut);
+-
+-		if (transition.StopMusic)
+-			Music.Stop();
+-	}
+-
+-	protected override void Update()
+-	{
+-		Audio.Update();
+-
+-		// toggle mouse camera mode
+-		if (Input.Keyboard.Pressed(Keys.Escape))
+-			mouseCameraEnabled = false;
+-		if (Window.Focused && Input.Mouse.LeftPressed)
+-			mouseCameraEnabled = true;
+-		Window.SetMouseRelativeMode(mouseCameraEnabled);
+-
+-		// update input filters depending on state
+-		{
+-			Input.BindingFilters.Clear();
+-			Input.BindingFilters.Add(Controls.IsUsingNintendo
+-				? ControlsConfig.FILTER_NINTENDO
+-				: ControlsConfig.FILTER_XBOX);
+-			Input.BindingFilters.Add(mouseCameraEnabled 
+-				? ControlsConfig.FILTER_MOUSE_CAMERA
+-				: ControlsConfig.FILTER_KEYBOARD_CAMERA);
+-		}
+-
+-		// update top scene
+-		if (scenes.TryPeek(out var scene))
+-		{
+-			var pausing = 
+-				transitionStep == TransitionStep.FadeIn && transition.FromPause ||
+-				transitionStep == TransitionStep.FadeOut && transition.ToPause;
+-
+-			if (!pausing)
+-				scene.Update();
+-		}
+-
+-		// handle transitions
+-		if (transitionStep == TransitionStep.FadeOut)
+-		{
+-			if (transition.ToBlack == null || transition.ToBlack.IsFinished)
+-			{
+-				transitionStep = TransitionStep.Hold;
+-			}
+-			else
+-			{
+-				transition.ToBlack.Update(Time);
+-			}
+-		}
+-		else if (transitionStep == TransitionStep.Hold)
+-        {
+-            transition.HoldOnBlackFor -= Time.Delta;
+-			if (transition.HoldOnBlackFor <= 0)
+-            {
+-                if (transition.FromBlack != null)
+-                    transition.ToBlack = transition.FromBlack;
+-                transition.ToBlack?.Restart(true);
+-				transitionStep = TransitionStep.Perform;
+-            }
+-        }
+-		else if (transitionStep == TransitionStep.Perform)
+-		{
+-			Audio.StopBus(Sfx.bus_gameplay_world, false);
+-
+-			// exit last scene
+-			if (scenes.TryPeek(out var lastScene))
+-			{
+-				lastScene?.Exited();
+-				if (transition.Mode != Transition.Modes.Push)
+-					lastScene?.Disposed();
+-			}
+-
+-			// reload assets if requested
+-			if (transition.PerformAssetReload)
+-			{
+-				Assets.Load(GraphicsDevice);
+-			}
+-
+-			// perform game save between transitions
+-			if (transition.Saving)
+-				Save.Instance.SaveToFile(UserPath);
+-
+-			// perform transition
+-			switch (transition.Mode)
+-			{
+-			case Transition.Modes.Replace:
+-			Debug.Assert(transition.Scene != null);
+-			if (scenes.Count > 0)
+-				scenes.Pop();
+-			scenes.Push(transition.Scene());
+-			break;
+-			case Transition.Modes.Push:
+-			Debug.Assert(transition.Scene != null);
+-			scenes.Push(transition.Scene());
+-			audioBeatCounter = 0;
+-			break;
+-			case Transition.Modes.Pop:
+-			scenes.Pop();
+-			break;
+-			}
+-
+-			// don't let the game sit in a sceneless place
+-			if (scenes.Count <= 0)
+-				scenes.Push(new Overworld(false));
+-
+-			// run a single update when transition happens so stuff gets established
+-			if (scenes.TryPeek(out var nextScene))
+-			{
+-				nextScene.Entered();
+-				nextScene.Update();
+-			}
+-
+-			// switch music
+-			{
+-				var last = Music.IsPlaying && lastScene != null ? lastScene.Music : string.Empty;
+-				var next = nextScene?.Music ?? string.Empty;
+-				if (next != last)
+-				{
+-					Music.Stop();
+-					Music = Audio.Play(next);
+-					if (Music)
+-						Music.SetCallback(audioEventCallback);
+-				}
+-			}
+-
+-			// switch ambience
+-			{
+-				var last = Ambience.IsPlaying && lastScene != null ? lastScene.Ambience : string.Empty;
+-				var next = nextScene?.Ambience ?? string.Empty;
+-				if (next != last)
+-				{
+-					Ambience.Stop();
+-					Ambience = Audio.Play(next);
+-				}
+-			}
+-
+-			// in case new music was played
+-			Save.Instance.ApplySettings(this);
+-			transitionStep = TransitionStep.FadeIn;
+-		}
+-		else if (transitionStep == TransitionStep.FadeIn)
+-		{
+-			if (transition.ToBlack == null || transition.ToBlack.IsFinished)
+-			{
+-				transitionStep = TransitionStep.None;
+-				transition = new();
+-			}
+-			else
+-			{
+-				transition.ToBlack.Update(Time);
+-			}
+-		}
+-		else if (transitionStep == TransitionStep.None)
+-		{
+-			// handle audio beat events on main thread
+-			if (audioBeatCounterEvent)
+-			{
+-				audioBeatCounterEvent = false;
+-				audioBeatCounter++;
+-
+-				if (scene is World world)
+-				{
+-					foreach (var listener in world.All<IListenToAudioCallback>())
+-						(listener as IListenToAudioCallback)?.AudioCallbackEvent(audioBeatCounter);
+-				}
+-			}
+-		}
+-
+-		
+-		if (scene is not Celeste64.Startup)
+-		{
+-			// toggle fullsrceen
+-			if ((Input.Keyboard.Alt && Input.Keyboard.Pressed(Keys.Enter)) || Input.Keyboard.Pressed(Keys.F4))
+-				Save.Instance.ToggleFullscreen(this);
+-
+-			// reload state
+-			if (Input.Keyboard.Ctrl && Input.Keyboard.Pressed(Keys.R) && !IsMidTransition)
+-			{
+-				if (scene is World world)
+-				{
+-					Goto(new Transition()
+-					{
+-						Mode = Transition.Modes.Replace,
+-						Scene = () => new World(world.Entry),
+-						ToPause = true,
+-						ToBlack = new AngledWipe(),
+-						PerformAssetReload = true
+-					});
+-				}
+-				else
+-				{
+-					Goto(new Transition()
+-					{
+-						Mode = Transition.Modes.Replace,
+-						Scene = () => new Titlescreen(),
+-						ToPause = true,
+-						ToBlack = new AngledWipe(),
+-						PerformAssetReload = true
+-					});
+-				}
+-			}
+-		}
+-	}
+-
+-	protected override void Render()
+-	{
+-		Window.Clear(Color.Black);
+-
+-		if (transitionStep != TransitionStep.Perform && transitionStep != TransitionStep.Hold)
+-		{
+-			// draw the world to the target
+-			if (scenes.TryPeek(out var scene))
+-				scene.Render(target);
+-
+-			// draw screen wipe over top
+-			if (transitionStep != TransitionStep.None && transition.ToBlack != null)
+-			{
+-				transition.ToBlack.Render(batcher, new Rect(0, 0, target.Width, target.Height));
+-				batcher.Render(target);
+-				batcher.Clear();
+-			}
+-
+-			// draw the target to the window
+-			{
+-				var scale = Math.Min(Window.WidthInPixels / (float)target.Width, Window.HeightInPixels / (float)target.Height);
+-				batcher.PushSampler(new(TextureFilter.Nearest, TextureWrap.Clamp, TextureWrap.Clamp));
+-				batcher.Image(target, Window.SizeInPixels / 2, target.Bounds.Size / 2, Vec2.One * scale, 0, Color.White);
+-				batcher.PopSampler();
+-				batcher.Render(Window);
+-				batcher.Clear();
+-			}
+-		}
+-	}
+-
+-	private FMOD.RESULT MusicTimelineCallback(FMOD.Studio.EVENT_CALLBACK_TYPE type, IntPtr _event, IntPtr parameters)
+-	{
+-		// notify that an audio event happened (but handle it on the main thread)
+-		if (transitionStep == TransitionStep.None)
+-			audioBeatCounterEvent = true;
+-		return FMOD.RESULT.OK;
+-	}
+-}
++﻿using System.Diagnostics;
++using System.Text.Json;
++
++namespace Celeste64;
++
++public struct Transition
++{
++	public enum Modes
++	{
++		Replace,
++		Push,
++		Pop
++	}
++
++	public Modes Mode;
++	public Func<Scene>? Scene;
++	public ScreenWipe? ToBlack;
++	public ScreenWipe? FromBlack;
++	public bool ToPause;
++	public bool FromPause;
++	public bool Saving;
++	public bool StopMusic;
++	public bool PerformAssetReload;
++	public float HoldOnBlackFor;
++}
++
++public class Game : App
++{
++	private enum TransitionStep
++	{
++		None,
++		FadeOut,
++		Hold,
++		Perform,
++		FadeIn
++	}
++
++	public const string GamePath = "Celeste64";
++	public const string GameTitle = "Celeste 64: Fragments of the Mountain";
 +#if VISIONOS_KIT
 +	// visionOS port: the host chooses the internal resolution before the game is created
 +	// (VisionOSKit.InternalWidth and InternalHeight). Properties rather than readonly fields,
@@ -1887,40 +2324,99 @@ index 312df59..12df0ab 100644
 +	public static int Width => VisionOSKit.InternalWidth;
 +	public static int Height => VisionOSKit.InternalHeight;
 +#else
- 	public const int Width = 640;
- 	public const int Height = 360;
++	public const int Width = 640;
++	public const int Height = 360;
 +#endif
- 	public static readonly Version Version = typeof(Game).Assembly.GetName().Version!;
- 	public static readonly string VersionString = $"v.{Version.Major}.{Version.Minor}.{Version.Build}";
- 
- 	/// <summary>
- 	/// Used by various rendering elements to proportionally scale if you change the default game resolution
- 	/// </summary>
++	public static readonly Version Version = typeof(Game).Assembly.GetName().Version!;
++	public static readonly string VersionString = $"v.{Version.Major}.{Version.Minor}.{Version.Build}";
++
++	/// <summary>
++	/// Used by various rendering elements to proportionally scale if you change the default game resolution
++	/// </summary>
 +#if VISIONOS_KIT
 +	public static float RelativeScale => Height / 360.0f;
 +#else
- 	public const float RelativeScale = Height / 360.0f;
++	public const float RelativeScale = Height / 360.0f;
 +#endif
- 
- 	private static Game? instance;
- 	public static Game Instance => instance ?? throw new Exception("Game isn't running");
-@@ -66,7 +80,12 @@ public class Game : App
- 
- 	public Game(AppConfig config) : base(config)
- 	{
++
++	private static Game? instance;
++	public static Game Instance => instance ?? throw new Exception("Game isn't running");
++
++	private readonly Stack<Scene> scenes = new();
++	private readonly Target target;
++	private readonly Batcher batcher;
++	private Transition transition;
++	private TransitionStep transitionStep = TransitionStep.None;
++	private readonly FMOD.Studio.EVENT_CALLBACK audioEventCallback;
++	private int audioBeatCounter;
++	private bool audioBeatCounterEvent;
++	private bool mouseCameraEnabled = false;
++
++	public AudioHandle Ambience;
++	public AudioHandle Music;
++	public Controls Controls;
++
++	public Game(AppConfig config) : base(config)
++	{
 +#if VISIONOS_KIT
 +		// visionOS-Port (K6d.2): Kantenglättung des Welt-Ziels per Schalter C64_MSAA (1, 2, 4, 8)
 +		target = VisionOSKit.CreateMainTarget(GraphicsDevice, Width, Height);
 +#else
- 		target = new(GraphicsDevice, Width, Height, [TextureFormat.Color, TextureFormat.Depth16]);
++		target = new(GraphicsDevice, Width, Height, [TextureFormat.Color, TextureFormat.Depth16]);
 +#endif
- 		batcher = new(GraphicsDevice);
- 
- 		GraphicsDevice.VSync = true;
-@@ -116,6 +135,25 @@ public class Game : App
- 
- 	protected override void Update()
- 	{
++		batcher = new(GraphicsDevice);
++
++		GraphicsDevice.VSync = true;
++		Controls = new(Input, new ControlsConfig());
++
++		// If this isn't stored, the delegate will get GC'd and everything will crash :)
++		audioEventCallback = MusicTimelineCallback;
++	}
++
++	protected override void Startup()
++	{
++		instance = this;
++		Audio.Init();
++		scenes.Push(new Startup());
++	}
++
++	protected override void Shutdown()
++	{
++		if (scenes.TryPeek(out var topScene))
++			topScene.Exited();
++
++		while (scenes.Count > 0)
++		{
++			var it = scenes.Pop();
++			it.Disposed();
++		}
++		
++		scenes.Clear();
++		instance = null;
++		Audio.Shutdown();
++	}
++
++	public bool IsMidTransition => transitionStep != TransitionStep.None;
++#if VISIONOS_KIT
++	/// <summary>visionOS port: the screen wipe that is running right now (fade out of the old scene or fade in of the new one), null otherwise; the stereo world draws it itself.</summary>
++	public ScreenWipe? ActiveWipe => transitionStep == TransitionStep.FadeOut || transitionStep == TransitionStep.FadeIn ? transition.ToBlack : null;
++#endif
++
++	public void Goto(Transition next)
++	{
++		Debug.Assert(
++			transitionStep == TransitionStep.None ||
++			transitionStep == TransitionStep.FadeIn);
++		transition = next;
++		transitionStep = scenes.Count > 0 ? TransitionStep.FadeOut : TransitionStep.Perform;
++		transition.ToBlack?.Restart(transitionStep != TransitionStep.FadeOut);
++
++		if (transition.StopMusic)
++			Music.Stop();
++	}
++
++	protected override void Update()
++	{
 +#if VISIONOS_KIT
 +		VisionOSKit.Tick();
 +		// visionOS port: the host asks for a pause after the device was taken off; only a running
@@ -1940,16 +2436,206 @@ index 312df59..12df0ab 100644
 +			Log.Info($"[c64-pause] pause request applied={(applied ? 1 : 0)} scene={top?.GetType().Name ?? "none"}");
 +		}
 +#endif
- 		Audio.Update();
- 
- 		// toggle mouse camera mode
-@@ -316,9 +354,24 @@ public class Game : App
- 
- 	protected override void Render()
- 	{
--		Window.Clear(Color.Black);
--
--		if (transitionStep != TransitionStep.Perform && transitionStep != TransitionStep.Hold)
++		Audio.Update();
++
++		// toggle mouse camera mode
++		if (Input.Keyboard.Pressed(Keys.Escape))
++			mouseCameraEnabled = false;
++		if (Window.Focused && Input.Mouse.LeftPressed)
++			mouseCameraEnabled = true;
++		Window.SetMouseRelativeMode(mouseCameraEnabled);
++
++		// update input filters depending on state
++		{
++			Input.BindingFilters.Clear();
++			Input.BindingFilters.Add(Controls.IsUsingNintendo
++				? ControlsConfig.FILTER_NINTENDO
++				: ControlsConfig.FILTER_XBOX);
++			Input.BindingFilters.Add(mouseCameraEnabled 
++				? ControlsConfig.FILTER_MOUSE_CAMERA
++				: ControlsConfig.FILTER_KEYBOARD_CAMERA);
++		}
++
++		// update top scene
++		if (scenes.TryPeek(out var scene))
++		{
++			var pausing = 
++				transitionStep == TransitionStep.FadeIn && transition.FromPause ||
++				transitionStep == TransitionStep.FadeOut && transition.ToPause;
++
++			if (!pausing)
++				scene.Update();
++		}
++
++		// handle transitions
++		if (transitionStep == TransitionStep.FadeOut)
++		{
++			if (transition.ToBlack == null || transition.ToBlack.IsFinished)
++			{
++				transitionStep = TransitionStep.Hold;
++			}
++			else
++			{
++				transition.ToBlack.Update(Time);
++			}
++		}
++		else if (transitionStep == TransitionStep.Hold)
++        {
++            transition.HoldOnBlackFor -= Time.Delta;
++			if (transition.HoldOnBlackFor <= 0)
++            {
++                if (transition.FromBlack != null)
++                    transition.ToBlack = transition.FromBlack;
++                transition.ToBlack?.Restart(true);
++				transitionStep = TransitionStep.Perform;
++            }
++        }
++		else if (transitionStep == TransitionStep.Perform)
++		{
++			Audio.StopBus(Sfx.bus_gameplay_world, false);
++
++			// exit last scene
++			if (scenes.TryPeek(out var lastScene))
++			{
++				lastScene?.Exited();
++				if (transition.Mode != Transition.Modes.Push)
++					lastScene?.Disposed();
++			}
++
++			// reload assets if requested
++			if (transition.PerformAssetReload)
++			{
++				Assets.Load(GraphicsDevice);
++			}
++
++			// perform game save between transitions
++			if (transition.Saving)
++				Save.Instance.SaveToFile(UserPath);
++
++			// perform transition
++			switch (transition.Mode)
++			{
++			case Transition.Modes.Replace:
++			Debug.Assert(transition.Scene != null);
++			if (scenes.Count > 0)
++				scenes.Pop();
++			scenes.Push(transition.Scene());
++			break;
++			case Transition.Modes.Push:
++			Debug.Assert(transition.Scene != null);
++			scenes.Push(transition.Scene());
++			audioBeatCounter = 0;
++			break;
++			case Transition.Modes.Pop:
++			scenes.Pop();
++			break;
++			}
++
++			// don't let the game sit in a sceneless place
++			if (scenes.Count <= 0)
++				scenes.Push(new Overworld(false));
++
++			// run a single update when transition happens so stuff gets established
++			if (scenes.TryPeek(out var nextScene))
++			{
++				nextScene.Entered();
++				nextScene.Update();
++			}
++
++			// switch music
++			{
++				var last = Music.IsPlaying && lastScene != null ? lastScene.Music : string.Empty;
++				var next = nextScene?.Music ?? string.Empty;
++				if (next != last)
++				{
++					Music.Stop();
++					Music = Audio.Play(next);
++					if (Music)
++						Music.SetCallback(audioEventCallback);
++				}
++			}
++
++			// switch ambience
++			{
++				var last = Ambience.IsPlaying && lastScene != null ? lastScene.Ambience : string.Empty;
++				var next = nextScene?.Ambience ?? string.Empty;
++				if (next != last)
++				{
++					Ambience.Stop();
++					Ambience = Audio.Play(next);
++				}
++			}
++
++			// in case new music was played
++			Save.Instance.ApplySettings(this);
++			transitionStep = TransitionStep.FadeIn;
++		}
++		else if (transitionStep == TransitionStep.FadeIn)
++		{
++			if (transition.ToBlack == null || transition.ToBlack.IsFinished)
++			{
++				transitionStep = TransitionStep.None;
++				transition = new();
++			}
++			else
++			{
++				transition.ToBlack.Update(Time);
++			}
++		}
++		else if (transitionStep == TransitionStep.None)
++		{
++			// handle audio beat events on main thread
++			if (audioBeatCounterEvent)
++			{
++				audioBeatCounterEvent = false;
++				audioBeatCounter++;
++
++				if (scene is World world)
++				{
++					foreach (var listener in world.All<IListenToAudioCallback>())
++						(listener as IListenToAudioCallback)?.AudioCallbackEvent(audioBeatCounter);
++				}
++			}
++		}
++
++		
++		if (scene is not Celeste64.Startup)
++		{
++			// toggle fullsrceen
++			if ((Input.Keyboard.Alt && Input.Keyboard.Pressed(Keys.Enter)) || Input.Keyboard.Pressed(Keys.F4))
++				Save.Instance.ToggleFullscreen(this);
++
++			// reload state
++			if (Input.Keyboard.Ctrl && Input.Keyboard.Pressed(Keys.R) && !IsMidTransition)
++			{
++				if (scene is World world)
++				{
++					Goto(new Transition()
++					{
++						Mode = Transition.Modes.Replace,
++						Scene = () => new World(world.Entry),
++						ToPause = true,
++						ToBlack = new AngledWipe(),
++						PerformAssetReload = true
++					});
++				}
++				else
++				{
++					Goto(new Transition()
++					{
++						Mode = Transition.Modes.Replace,
++						Scene = () => new Titlescreen(),
++						ToPause = true,
++						ToBlack = new AngledWipe(),
++						PerformAssetReload = true
++					});
++				}
++			}
++		}
++	}
++
++	protected override void Render()
++	{
 +		// visionOS-Port (K6d): das Endbild geht in die Ausgabeziele des Hosts statt ins Fenster,
 +		// ein Durchgang pro Ziel (eine Schicht pro Ziel); ohne Host bleibt es das Fenster
 +#if VISIONOS_KIT
@@ -1968,19 +2654,23 @@ index 312df59..12df0ab 100644
 +#endif
 +		}
 +		else
- 		{
- 			// draw the world to the target
- 			if (scenes.TryPeek(out var scene))
-@@ -332,16 +385,42 @@ public class Game : App
- 				batcher.Clear();
- 			}
- 
--			// draw the target to the window
++		{
++			// draw the world to the target
++			if (scenes.TryPeek(out var scene))
++				scene.Render(target);
++
++			// draw screen wipe over top
++			if (transitionStep != TransitionStep.None && transition.ToBlack != null)
++			{
++				transition.ToBlack.Render(batcher, new Rect(0, 0, target.Width, target.Height));
++				batcher.Render(target);
++				batcher.Clear();
++			}
++
 +#if VISIONOS_KIT
 +			VisionOSKit.AfterSceneRender?.Invoke(target);
 +			if (VisionOSKit.FrameRendered)
- 			{
--				var scale = Math.Min(Window.WidthInPixels / (float)target.Width, Window.HeightInPixels / (float)target.Height);
++			{
 +				// stereo frame (M4b.3a): World wrote the host's drawable; the host shows it, not the
 +				// canvas, so the output pass is skipped (the wipe over the 2D target is not shown)
 +				VisionOSKit.AfterRender?.Invoke();
@@ -1999,25 +2689,30 @@ index 312df59..12df0ab 100644
 +				output.Clear(Color.Black, 1, 0, ClearMask.Color | ClearMask.Depth);
 +#endif
 +				var scale = Math.Min(output.WidthInPixels / (float)target.Width, output.HeightInPixels / (float)target.Height);
- 				batcher.PushSampler(new(TextureFilter.Nearest, TextureWrap.Clamp, TextureWrap.Clamp));
--				batcher.Image(target, Window.SizeInPixels / 2, target.Bounds.Size / 2, Vec2.One * scale, 0, Color.White);
++				batcher.PushSampler(new(TextureFilter.Nearest, TextureWrap.Clamp, TextureWrap.Clamp));
 +				batcher.Image(target, output.SizeInPixels() / 2, target.Bounds.Size / 2, Vec2.One * scale, 0, Color.White);
- 				batcher.PopSampler();
--				batcher.Render(Window);
++				batcher.PopSampler();
 +				batcher.Render(output);
- 				batcher.Clear();
++				batcher.Clear();
 +#if VISIONOS_KIT
 +				VisionOSKit.AfterOutput?.Invoke(output);
 +#endif
- 			}
- 		}
++			}
++		}
 +
 +#if VISIONOS_KIT
 +		VisionOSKit.AfterRender?.Invoke();
 +#endif
- 	}
- 
- 	private FMOD.RESULT MusicTimelineCallback(FMOD.Studio.EVENT_CALLBACK_TYPE type, IntPtr _event, IntPtr parameters)
++	}
++
++	private FMOD.RESULT MusicTimelineCallback(FMOD.Studio.EVENT_CALLBACK_TYPE type, IntPtr _event, IntPtr parameters)
++	{
++		// notify that an audio event happened (but handle it on the main thread)
++		if (transitionStep == TransitionStep.None)
++			audioBeatCounterEvent = true;
++		return FMOD.RESULT.OK;
++	}
++}
 diff --git a/Source/Graphics/Camera.cs b/Source/Graphics/Camera.cs
 index e184bbf..41a8d39 100644
 --- a/Source/Graphics/Camera.cs
@@ -2383,7 +3078,7 @@ index aae3c23..1a2a566 100644
  				IndexOffset = batch.Index,
  				IndexCount = batch.Count
 diff --git a/Source/Graphics/UniformBuffers.cs b/Source/Graphics/UniformBuffers.cs
-index ff1be6e..265f1c6 100644
+index ff1be6e..56cc52a 100644
 --- a/Source/Graphics/UniformBuffers.cs
 +++ b/Source/Graphics/UniformBuffers.cs
 @@ -9,6 +9,13 @@ public unsafe struct DefaultVertex
@@ -2411,7 +3106,7 @@ index ff1be6e..265f1c6 100644
  }
  
  [StructLayout(LayoutKind.Sequential, Pack = 1)]
-@@ -42,16 +53,116 @@ public struct EdgeFragment
+@@ -42,16 +53,123 @@ public struct EdgeFragment
  	public Vec2 Pixel;
  }
  
@@ -2479,6 +3174,13 @@ index ff1be6e..265f1c6 100644
 +	public Vec4 Corner1;
 +	public Vec4 Corner2;
 +	public Vec4 Corner3;
++	// head-locked mode (screen wipes): view tangents per eye (left, right, top, bottom), the union
++	// rectangle of both eyes (uMin, uMax, vMin, vMax) and Mode (x 1 = head-locked, y fixed depth,
++	// zw used part of the layer)
++	public Vec4 Tangents0;
++	public Vec4 Tangents1;
++	public Vec4 Union;
++	public Vec4 Mode;
 +}
 +
 +/// <summary>visionOS port, UI panel: SrgbOut decodes the gamma-encoded layer for an sRGB drawable; Opacity scales the premultiplied colour; Dim 1 outputs black with DimAlpha instead of the texture (full-view darkening).</summary>
@@ -2686,7 +3388,7 @@ index 33da870..7590a36 100644
  			CutoutMode = false,
  		};
 diff --git a/Source/Scenes/World.cs b/Source/Scenes/World.cs
-index bdfb740..da7c90c 100644
+index bdfb740..27772c5 100644
 --- a/Source/Scenes/World.cs
 +++ b/Source/Scenes/World.cs
 @@ -70,9 +70,20 @@ public class World : Scene
@@ -2829,7 +3531,7 @@ index bdfb740..da7c90c 100644
  			it.DepthMask = false;
  			it.Silhouette = true;
  			RenderModels(ref it, models, ModelFlags.Silhouette);
-@@ -735,8 +801,26 @@ public class World : Scene
+@@ -735,8 +801,33 @@ public class World : Scene
  
  		// render main models
  		RenderModels(ref state, models, ModelFlags.Default);
@@ -2846,6 +3548,13 @@ index bdfb740..da7c90c 100644
 +			// drawable; the panel quad follows the sprites in that same pass (no extra load)
 +			if (Paused && VisionOSKit.Ui.Enabled)
 +				RenderUiLayer();
++			// screen wipe of a running transition into its own layer (the output pass of Game
++			// that draws it in 2D is skipped on the stereo path)
++			activeWipe = VisionOSKit.Wipe.Enabled ? Game.Instance.ActiveWipe : null;
++			if (activeWipe != null)
++				RenderWipeLayer(activeWipe, vr);
++			else
++				VisionOSKit.WipeProbe.End();
 +			ApplyPostEffectsStereo(vr);
 +			VisionOSKit.FlushPass(GraphicsDevice, "edge");
 +			// world pixel look: the rest of the frame draws into the drawable; raster: into B
@@ -2857,7 +3566,7 @@ index bdfb740..da7c90c 100644
  		ApplyPostEffects();
  
  		// render alpha threshold transparent stuff
-@@ -762,22 +846,57 @@ public class World : Scene
+@@ -762,21 +853,59 @@ public class World : Scene
  		// strawberry collect effect
  		if (models.Any((it) => it.Model.Flags.Has(ModelFlags.StrawberryGetEffect)))
  		{
@@ -2893,15 +3602,15 @@ index bdfb740..da7c90c 100644
 +				batch.Image(img, bounds.Center, orig, Vec2.One, 0, Color.White);
 +				batch.Render(Camera.Target);
 +				batch.Clear();
- 
--			RenderModels(ref state, models, ModelFlags.StrawberryGetEffect);
++
 +				RenderModels(ref state, models, ModelFlags.StrawberryGetEffect);
  
--			ApplyPostEffects();
+-			RenderModels(ref state, models, ModelFlags.StrawberryGetEffect);
 +				ApplyPostEffects();
 +			}
- 		}
++		}
  
+-			ApplyPostEffects();
 +#if VISIONOS_KIT
 +		if (vr != null)
 +		{
@@ -2910,6 +3619,9 @@ index bdfb740..da7c90c 100644
 +			// pause panel: the UI layer as a quad in the world, after the sprites, always on top
 +			if (Paused && VisionOSKit.Ui.Enabled)
 +				DrawUiPanel(vr);
++			// the wipe over everything, head-locked across the whole view
++			if (activeWipe != null)
++				DrawWipeQuad(vr);
 +			VisionOSKit.FlushPass(GraphicsDevice, "sprites");
 +			// diagnosis of the unrest: changed pixels of B between two frames, once per second
 +			VisionOSKit.SampleStillness();
@@ -2919,13 +3631,12 @@ index bdfb740..da7c90c 100644
 +			lastDebugRndTime = debugRndTimer.Elapsed;
 +			debugRndTimer.Stop();
 +			return;
-+		}
+ 		}
 +#endif
-+
+ 
  		// ui
  		{
- 			batch.PushSampler(new TextureSampler(TextureFilter.Linear, TextureWrap.Clamp, TextureWrap.Clamp));
-@@ -872,9 +991,31 @@ public class World : Scene
+@@ -872,9 +1001,31 @@ public class World : Scene
  			// apply post fx
  			postMaterial.CopyFrom(Assets.Materials["Edge"]);
  			postMaterial.Fragment.Samplers[1] = new(target.Attachments[1], new(TextureFilter.Nearest, TextureWrap.Clamp, TextureWrap.Clamp));
@@ -2958,7 +3669,7 @@ index bdfb740..da7c90c 100644
  				Edge = new Color(0x110d33).ToVector4()
  			});
  			batch.PushMaterial(postMaterial);
-@@ -889,6 +1030,313 @@ public class World : Scene
+@@ -889,6 +1040,401 @@ public class World : Scene
  		}
  	}
  
@@ -3101,6 +3812,94 @@ index bdfb740..da7c90c 100644
 +	private Point2 uiQuadSize;
 +	private readonly Material uiMaterial = new();
 +	private readonly Material uiDimMaterial = new();
++	private readonly Material wipeMaterial = new();
++	private VisionOSKit.WipeGeometry wipeGeometry;
++	private ScreenWipe? activeWipe;   // the wipe of the running transition in this frame, null if none
++
++	/// <summary>
++	/// visionOS port, stereo frame: the running screen wipe into the transparent wipe layer, with
++	/// bounds that map the union of both eyes' view tangents (so shapes and the final radius reach
++	/// the whole view) and, for the spotlight, the gaze direction as focus and the hole radius of
++	/// the switch (Modifier offsets the private small radius 96 * RelativeScale).
++	/// </summary>
++	private void RenderWipeLayer(ScreenWipe wipe, VisionOSKit.VRFrame vr)
++	{
++		var layer = VisionOSKit.EnsureWipeLayer(GraphicsDevice);
++		layer.Clear(Color.Transparent, 0, 0, ClearMask.Color);
++		wipeGeometry = new VisionOSKit.WipeGeometry(vr.Projection0, vr.Projection1, layer.Width, layer.Height);
++		if (VisionOSKit.Wipe.IsFade(wipe))
++		{
++			// spotlight and angled wipe: a plain fade to black over the whole view with the wipe's
++			// own timing (their shapes do not work in stereo); black with alpha = covered share
++			var alpha = wipe.IsFromBlack ? 1 - wipe.Percent : wipe.Percent;
++			batch.Rect(wipeGeometry.Bounds, Color.Black * alpha);
++			batch.Render(layer);
++			batch.Clear();
++			VisionOSKit.WipeProbe.Frame(wipe, wipeGeometry, layer.Width, layer.Height, (long)Time.Frame);
++			return;
++		}
++		var spotlight = wipe as SpotlightWipe;
++		Vec2? savedFocus = null;
++		float savedModifier = 0;
++		if (spotlight != null)
++		{
++			savedFocus = spotlight.FocusPoint;
++			savedModifier = spotlight.Modifier;
++			spotlight.FocusPoint = wipeGeometry.Focus;
++			spotlight.Modifier = wipeGeometry.HoleRadiusPixels - 96 * Game.RelativeScale;
++		}
++		wipe.Render(batch, wipeGeometry.Bounds);
++		if (spotlight != null)
++		{
++			spotlight.FocusPoint = savedFocus;
++			spotlight.Modifier = savedModifier;
++		}
++		batch.Render(layer);
++		batch.Clear();
++		VisionOSKit.WipeProbe.Frame(wipe, wipeGeometry, layer.Width, layer.Height, (long)Time.Frame);
++	}
++
++	/// <summary>
++	/// visionOS port, stereo frame: the wipe layer head-locked over the whole view of both eyes
++	/// (UIVRArray in its tangent-mapped mode: clip-space quad, texture by the eye's tangents, the
++	/// same angular geometry in both eyes), premultiplied, depth written at C64_WIPE_DIST with
++	/// Always so the compositor keeps the black.
++	/// </summary>
++	private void DrawWipeQuad(VisionOSKit.VRFrame vr)
++	{
++		var layer = VisionOSKit.WipeLayer;
++		if (layer == null)
++			return;
++		var quad = StereoQuad(ref uiQuad, ref uiQuadSize, new Point2(1, 1), "ui-panel-quad");
++		var nearMeters = VisionOSKit.NearMeters > 0 ? VisionOSKit.NearMeters : 0.1;
++		var depth = (float)(nearMeters / VisionOSKit.Wipe.DistanceMeters);
++		wipeMaterial.CopyFrom(Assets.Materials["UIVRArray"]);
++		wipeMaterial.Vertex.SetUniformBuffer(new UniformBuffers.UiVertexVR()
++		{
++			ViewProjection0 = Matrix.Identity,
++			ViewProjection1 = Matrix.Identity,
++			Tangents0 = wipeGeometry.Tangents0,
++			Tangents1 = wipeGeometry.Tangents1,
++			Union = wipeGeometry.Union,
++			Mode = new Vec4(1, depth, wipeGeometry.Used.X, wipeGeometry.Used.Y),
++		});
++		wipeMaterial.Fragment.Samplers[0] = new(layer.Attachments[0], new TextureSampler(TextureFilter.Linear, TextureWrap.Clamp, TextureWrap.Clamp));
++		wipeMaterial.Fragment.SetUniformBuffer(new UniformBuffers.UiFragmentVR()
++		{
++			SrgbOut = vr.ColorSrgb || VisionOSKit.Ui.ForceSrgbDecode ? 1 : 0,
++			Opacity = 1,
++			Dim = 0,
++			DimAlpha = 0,
++		});
++		GraphicsDevice.Draw(new DrawCommand(Camera.Target, quad, wipeMaterial)
++		{
++			BlendMode = BlendMode.Premultiply,
++			DepthTestEnabled = true,
++			DepthWriteEnabled = true,
++			DepthCompare = DepthCompare.Always,
++			CullMode = CullMode.None,
++		});
++	}
 +
 +	/// <summary>
 +	/// visionOS port, stereo frame: the 2D UI into the transparent UI layer (the internal size, so
@@ -3287,10 +4086,10 @@ index 650a35e..68b1c05 100644
  	private const float EaseClosePercent = 0.3f; // how long (in percent) it eases the entire screen
 diff --git a/Source/VisionOSKit.cs b/Source/VisionOSKit.cs
 new file mode 100644
-index 0000000..82c847b
+index 0000000..f2d126c
 --- /dev/null
 +++ b/Source/VisionOSKit.cs
-@@ -0,0 +1,1467 @@
+@@ -0,0 +1,1610 @@
 +#if VISIONOS_KIT
 +// VisionOSKit.cs — Schalter des visionOS-Ports für Mac-Läufe (K6b, nur mit UseLocalFoster gebaut).
 +//
@@ -4245,6 +5044,149 @@ index 0000000..82c847b
 +			var yaw = MathF.Atan2(forward.X, -forward.Z) * 180 / MathF.PI;
 +			TryGetWorld(out var m);
 +			return $"head=({head.M41:F2}, {head.M42:F2}, {head.M43:F2}) m headYaw={yaw:F1} panel=({relative.M41:F2}, {relative.M42:F2}, {relative.M43:F2}) m rel. O world=({m.M41:F1}, {m.M42:F1}, {m.M43:F1}) size={width:F2}x{height:F2} m ({Ui.FovDegrees:F1}x{verticalDegrees:F1} deg) dist={Ui.DistanceMeters:F2} m scale={WorldScale:F1}";
++		}
++	}
++
++	// ---- Screen wipes in the stereo world ----
++
++	/// <summary>
++	/// Wipe switches, read once from the environment; the static constructor logs the values.
++	/// C64_WIPE: 1 (default; the game's screen wipes head-locked over the whole view) or 0 (hard
++	/// cut as before). C64_WIPE_HOLE_DEG: angular radius of the spotlight's small hole (default 7.5,
++	/// the size it has on the 50-degree canvas). C64_WIPE_DIST: distance in metres the wipe's depth
++	/// is written at (default 2, like the UI panel).
++	/// </summary>
++	public static class Wipe
++	{
++		public static readonly bool Enabled;
++		public static readonly float HoleDegrees;
++		public static readonly float DistanceMeters;
++		/// <summary>C64_WIPE_STYLE: fade (default; spotlight and angled wipe become a plain fade to black of the same duration, the slide wipe keeps its shape) or original (all shapes over the whole view).</summary>
++		public static readonly WipeStyle Style;
++
++		static Wipe()
++		{
++			Enabled = Environment.GetEnvironmentVariable("C64_WIPE") != "0";
++			HoleDegrees = ReadFloat("C64_WIPE_HOLE_DEG", 7.5f, 1f, 45f);
++			DistanceMeters = ReadFloat("C64_WIPE_DIST", 2f, 0.3f, 50f);
++			var style = Environment.GetEnvironmentVariable("C64_WIPE_STYLE");
++			Style = style == "original" ? WipeStyle.Original : WipeStyle.Fade;
++			if (style != null && style != "original" && style != "fade")
++				Log.Warning($"[c64-wipe] C64_WIPE_STYLE={style} unknown, using fade");
++			Log.Info($"[c64-wipe] C64_WIPE={(Enabled ? 1 : 0)} ({(Enabled ? "screen wipes head-locked over the whole view" : "hard cut, wipes not shown")}) C64_WIPE_STYLE={(Style == WipeStyle.Original ? "original" : "fade")} ({(Style == WipeStyle.Original ? "all shapes" : "spotlight and angled wipe as a fade to black, slide wipe as a shape")}) C64_WIPE_HOLE_DEG={HoleDegrees.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)} C64_WIPE_DIST={DistanceMeters.ToString("F2", System.Globalization.CultureInfo.InvariantCulture)} m");
++		}
++
++		/// <summary>True when this wipe is shown as a plain fade in the stereo world (its shape works poorly in stereo).</summary>
++		public static bool IsFade(ScreenWipe wipe) => Style == WipeStyle.Fade && wipe is not SlideWipe;
++
++		private static float ReadFloat(string name, float fallback, float min, float max)
++		{
++			var text = Environment.GetEnvironmentVariable(name);
++			if (text == null)
++				return fallback;
++			if (float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var value) && value >= min && value <= max)
++				return value;
++			Log.Warning($"[c64-wipe] {name}={text} invalid, using {fallback}");
++			return fallback;
++		}
++	}
++
++	public enum WipeStyle { Fade, Original }
++
++	/// <summary>The transparent layer the screen wipe is drawn into (colour only, the internal size); null until first needed.</summary>
++	public static Target? WipeLayer { get; private set; }
++
++	public static Target EnsureWipeLayer(GraphicsDevice device)
++	{
++		if (WipeLayer == null || WipeLayer.Width != InternalWidth || WipeLayer.Height != InternalHeight)
++		{
++			WipeLayer = new Target(device, InternalWidth, InternalHeight, [TextureFormat.Color], name: "wipe-layer");
++			Log.Info($"[c64-wipe] layer {InternalWidth}x{InternalHeight} (colour only, cleared transparent in every frame with a wipe)");
++		}
++		return WipeLayer;
++	}
++
++	/// <summary>
++	/// Where the wipe is drawn on its layer so that it covers the whole view of both eyes: the
++	/// union of the view tangents (plus a margin) is mapped onto a rectangle of the layer with the
++	/// same aspect ratio (circles stay round). The gaze direction (tangent 0, 0) is the focus of
++	/// the spotlight, its small hole gets the angular radius of the switch.
++	/// </summary>
++	public readonly struct WipeGeometry
++	{
++		public readonly Vec4 Tangents0, Tangents1;
++		/// <summary>uMin, uMax, vMin, vMax of the union in tangent units (v up).</summary>
++		public readonly Vec4 Union;
++		/// <summary>Bounds for ScreenWipe.Render in layer pixels (top-left of the layer).</summary>
++		public readonly Rect Bounds;
++		/// <summary>Used part of the layer (bounds / layer size).</summary>
++		public readonly Vec2 Used;
++		/// <summary>Layer pixel of the gaze direction.</summary>
++		public readonly Vec2 Focus;
++		/// <summary>Radius of the spotlight's small hole in layer pixels.</summary>
++		public readonly float HoleRadiusPixels;
++		public readonly float PixelsPerTangent;
++
++		public WipeGeometry(in Matrix projection0, in Matrix projection1, int layerWidth, int layerHeight, float margin = 0.03f)
++		{
++			var (l0, r0, t0, b0) = Tangents(projection0);
++			var (l1, r1, t1, b1) = Tangents(projection1);
++			Tangents0 = new Vec4(l0, r0, t0, b0);
++			Tangents1 = new Vec4(l1, r1, t1, b1);
++			var scale = 1 + margin;
++			Union = new Vec4(-MathF.Max(l0, l1) * scale, MathF.Max(r0, r1) * scale, -MathF.Max(b0, b1) * scale, MathF.Max(t0, t1) * scale);
++			var uSpan = Union.Y - Union.X;
++			var vSpan = Union.W - Union.Z;
++			PixelsPerTangent = MathF.Min(layerWidth / uSpan, layerHeight / vSpan);
++			var width = uSpan * PixelsPerTangent;
++			var height = vSpan * PixelsPerTangent;
++			Bounds = new Rect(0, 0, width, height);
++			Used = new Vec2(width / layerWidth, height / layerHeight);
++			Focus = new Vec2((0 - Union.X) * PixelsPerTangent, (Union.W - 0) * PixelsPerTangent);
++			HoleRadiusPixels = MathF.Tan(Wipe.HoleDegrees * MathF.PI / 180) * PixelsPerTangent;
++		}
++	}
++
++	/// <summary>[c64-wipe]: one line when a wipe starts to be drawn in the stereo world and one when it ends, with the rendered frame count.</summary>
++	public static class WipeProbe
++	{
++		private static ScreenWipe? current;
++		private static bool currentFromBlack;
++		private static int frames;
++
++		private static float DurationOf(ScreenWipe wipe) => wipe switch
++		{
++			SpotlightWipe => 1.2f,
++			AngledWipe => 0.5f,
++			SlideWipe => 0.2f,
++			_ => 0,
++		};
++
++		private static long startFrame, lastFrame;
++
++		public static void Frame(ScreenWipe wipe, in WipeGeometry geometry, int layerWidth, int layerHeight, long frame)
++		{
++			if (!ReferenceEquals(wipe, current) || wipe.IsFromBlack != currentFromBlack)
++			{
++				End();
++				current = wipe;
++				currentFromBlack = wipe.IsFromBlack;
++				frames = 0;
++				startFrame = frame;
++				Log.Info($"[c64-wipe] start frame={frame} type={wipe.GetType().Name} shown={(Wipe.IsFade(wipe) ? "fade" : "shape")} dir={(wipe.IsFromBlack ? "fromBlack" : "toBlack")} duration={DurationOf(wipe):F1} s percent={wipe.Percent:F2} layer={layerWidth}x{layerHeight} bounds={geometry.Bounds.Width:F0}x{geometry.Bounds.Height:F0} union=[{geometry.Union.X:F3}..{geometry.Union.Y:F3}]x[{geometry.Union.Z:F3}..{geometry.Union.W:F3}] tan focus=({geometry.Focus.X:F0}, {geometry.Focus.Y:F0}) px hole={geometry.HoleRadiusPixels:F0} px ({Wipe.HoleDegrees:F1} deg) pxPerTan={geometry.PixelsPerTangent:F0}");
++			}
++			frames++;
++			lastFrame = frame;
++		}
++
++		/// <summary>Closes the open entry (no wipe drawn in this frame, or another one started).</summary>
++		public static void End()
++		{
++			if (current == null)
++				return;
++			Log.Info($"[c64-wipe] end type={current.GetType().Name} dir={(currentFromBlack ? "fromBlack" : "toBlack")} frames={frames} ({startFrame}..{lastFrame}) percent={current.Percent:F2}");
++			current = null;
++			frames = 0;
 +		}
 +	}
 +

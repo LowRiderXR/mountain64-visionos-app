@@ -57,6 +57,8 @@
 //   --minimize-at T,T   K6f.3: am ersten Tick das Fenster minimieren, am zweiten zurückholen;
 //                       der Lauf muss ohne Ausnahme weitergehen
 //   --tap-pause T       M4c.1: an Tick T die Pausentaste (Escape) kurz drücken (SDL_PushEvent)
+//   --tap-down T,T      M4c.1c: an diesen Ticks die Menütaste Abwärts kurz drücken
+//   --layer-dump-ticks T,T  M4c.1c: zusätzlich an diesen Ticks Schichtvergleich und -dump
 //   --key-probe N       K6f.4: vor Tick N ein F7-Tastenereignis einspeisen (SDL_PushEvent), zwei
 //                       Ticks später loslassen; meldet, nach welchem Tick Foster die Taste als
 //                       gedrückt bzw. losgelassen sieht (vor da3b23a N+1, nachher N)
@@ -175,6 +177,8 @@ bool passSelftest = false;
 var minimizeAt = new List<long>();
 long keyProbeAt = -1;
 long tapPauseAt = -1;   // M4c.1: Escape (pause) at this tick, released two ticks later
+var tapDown = new List<long>();      // M4c.1c: menu Down key at these ticks
+var layerDumpTicks = new List<long>(); // M4c.1c: additional layer dumps at these ticks
 long keyProbeSeenDown = -1, keyProbeSeenUp = -1;
 // M4b.2: Reverse-Z-Pfad, Testprojektion, Tiefenprüfung
 bool vrDepth = false, testProjection = false;
@@ -236,6 +240,8 @@ for (int i = 0; i < args.Length; i++)
 		case "--minimize-at": foreach (var t in args[++i].Split(',')) minimizeAt.Add(long.Parse(t)); break;
 		case "--key-probe": keyProbeAt = long.Parse(args[++i]); break;
 		case "--tap-pause": tapPauseAt = long.Parse(args[++i]); break;
+		case "--tap-down": foreach (var t in args[++i].Split(',')) tapDown.Add(long.Parse(t)); break;
+		case "--layer-dump-ticks": foreach (var t in args[++i].Split(',')) layerDumpTicks.Add(long.Parse(t)); break;
 		case "--vr-depth": vrDepth = true; break;
 		case "--test-projection": testProjection = true; break;
 		case "--depth-check": depthCheck = int.Parse(args[++i]); break;
@@ -788,6 +794,8 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 	// M4c.1: pause key (Escape) at a fixed tick, released two ticks later; opens the pause menu in the level
 	if (tapPauseAt >= 0 && totalTicks == tapPauseAt) PushKey(true, SDL_Scancode.SDL_SCANCODE_ESCAPE);
 	if (tapPauseAt >= 0 && totalTicks == tapPauseAt + 2) PushKey(false, SDL_Scancode.SDL_SCANCODE_ESCAPE);
+	// M4c.1c: menu Down at fixed ticks (released two ticks later), e.g. to reach Retry in the pause menu
+	foreach (var t in tapDown) { if (totalTicks == t) PushKey(true, SDL_Scancode.SDL_SCANCODE_DOWN); if (totalTicks == t + 2) PushKey(false, SDL_Scancode.SDL_SCANCODE_DOWN); }
 
 	// M4b.4-N2: unruhige Wanduhr simulieren; der Tick bekommt trotzdem das Raster-Delta
 	if (jitterMs > 0)
@@ -1046,7 +1054,7 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 	lastReportedDelta = game.Time.Delta;
 
 	// Schichtvergleich: beide Schichten zurücklesen, Pixel zählen, die sich unterscheiden
-	if (layerColor != null && pixels0 != null && pixels1 != null && layerCheck > 0 && totalTicks % layerCheck == 0)
+	if (layerColor != null && pixels0 != null && pixels1 != null && ((layerCheck > 0 && totalTicks % layerCheck == 0) || layerDumpTicks.Contains(totalTicks)))
 	{
 		var rect = new RectInt(0, 0, LayerW, LayerH);
 		layerColor.GetData<Color>(pixels0, rect, 0);
