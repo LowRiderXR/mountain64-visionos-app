@@ -583,10 +583,10 @@ index 0000000..34f0f2e
 +{ "samplers": 1, "storage_textures": 0, "storage_buffers": 0, "uniform_buffers": 1, "inputs": [{ "name": "in.var.TEXCOORD0", "type": "float2", "location": 0 }, { "name": "in.var.TEXCOORD1", "type": "float4", "location": 1 }], "outputs": [{ "name": "out.var.SV_Target0", "type": "float4", "location": 0 }] }
 diff --git a/Content/Shaders/Compiled/SpriteVR.fragment.msl b/Content/Shaders/Compiled/SpriteVR.fragment.msl
 new file mode 100644
-index 0000000..5e28416
+index 0000000..5e672c2
 --- /dev/null
 +++ b/Content/Shaders/Compiled/SpriteVR.fragment.msl
-@@ -0,0 +1,33 @@
+@@ -0,0 +1,44 @@
 +#include <metal_stdlib>
 +#include <simd/simd.h>
 +
@@ -597,6 +597,7 @@ index 0000000..5e28416
 +    float u_near;
 +    float u_far;
 +    float u_srgb_out;
++    float u_soft_edge;
 +};
 +
 +struct fragment_main_out
@@ -613,10 +614,20 @@ index 0000000..5e28416
 +fragment fragment_main_out fragment_main(fragment_main_in in [[stage_in]], constant type_FragmentUniforms& FragmentUniforms [[buffer(0)]], texture2d<float> Texture [[texture(0)]], sampler Sampler [[sampler(0)]])
 +{
 +    fragment_main_out out = {};
-+    float4 _45 = Texture.sample(Sampler, in.in_var_TEXCOORD0) * in.in_var_TEXCOORD1;
-+    float3 _46 = _45.xyz;
-+    float3 _56 = mix(_46, mix(_46 * float3(0.077399380505084991455078125), powr((_46 + float3(0.054999999701976776123046875)) * float3(0.947867333889007568359375), float3(2.400000095367431640625)), step(float3(0.040449999272823333740234375), _46)), float3(FragmentUniforms.u_srgb_out));
-+    out.out_var_SV_Target0 = float4(_56.x, _56.y, _56.z, _45.w);
++    float4 _49 = Texture.sample(Sampler, in.in_var_TEXCOORD0);
++    float4 _90;
++    if (FragmentUniforms.u_soft_edge > 0.0)
++    {
++        float2 _57 = dfdx(in.in_var_TEXCOORD0) * FragmentUniforms.u_soft_edge;
++        float2 _59 = dfdy(in.in_var_TEXCOORD0) * FragmentUniforms.u_soft_edge;
++        _90 = (((((Texture.sample(Sampler, in.in_var_TEXCOORD0) + Texture.sample(Sampler, (in.in_var_TEXCOORD0 + _57))) + Texture.sample(Sampler, (in.in_var_TEXCOORD0 - _57))) + Texture.sample(Sampler, (in.in_var_TEXCOORD0 + _59))) + Texture.sample(Sampler, (in.in_var_TEXCOORD0 - _59))) * float4(0.20000000298023223876953125)) * in.in_var_TEXCOORD1;
++    }
++    else
++    {
++        _90 = _49 * in.in_var_TEXCOORD1;
++    }
++    float3 _101 = mix(_90.xyz, mix(_90.xyz * float3(0.077399380505084991455078125), powr((_90.xyz + float3(0.054999999701976776123046875)) * float3(0.947867333889007568359375), float3(2.400000095367431640625)), step(float3(0.040449999272823333740234375), _90.xyz)), float3(FragmentUniforms.u_srgb_out));
++    out.out_var_SV_Target0 = float4(_101.x, _101.y, _101.z, _90.w);
 +    return out;
 +}
 +
@@ -1314,7 +1325,7 @@ index 18bf955..3b3bd23 100644
 +	return lerp(low, high, step(0.04045, c));
 +}
 diff --git a/Content/Shaders/Sprite.hlsl b/Content/Shaders/Sprite.hlsl
-index ae89d7f..a6d13dc 100644
+index ae89d7f..68c5b3e 100644
 --- a/Content/Shaders/Sprite.hlsl
 +++ b/Content/Shaders/Sprite.hlsl
 @@ -5,6 +5,10 @@
@@ -1353,18 +1364,21 @@ index ae89d7f..a6d13dc 100644
  
  // Fragment Shader:
  
-@@ -36,6 +51,10 @@ cbuffer FragmentUniforms : register(b0, space3)
+@@ -36,6 +51,13 @@ cbuffer FragmentUniforms : register(b0, space3)
  {
  	float   u_near;
  	float   u_far;
 +#ifdef VISIONOS_VR
 +	// 1 when writing an sRGB-encoded target (see Default.hlsl)
 +	float   u_srgb_out;
++	// > 0 softens a binary alpha edge: five taps this many screen pixels apart (the magnified
++	// strawberry splash, whose source texels are 2.7 pixels wide); 0 for every other sprite
++	float   u_soft_edge;
 +#endif
  };
  
  Texture2D<float4> Texture : register(t0, space2);
-@@ -44,13 +63,21 @@ SamplerState Sampler : register(s0, space2);
+@@ -44,13 +66,32 @@ SamplerState Sampler : register(s0, space2);
  struct FragmentOutput
  {
      float4 color : SV_Target0;
@@ -1379,7 +1393,18 @@ index ae89d7f..a6d13dc 100644
 -	output.depth = LinearizeDepth(input.position.z, u_near, u_far);
  	output.color = Texture.Sample(Sampler, input.tex) * input.color;
 +#ifdef VISIONOS_VR
-+	// visionOS VR variant: hardware depth from the reverse-Z projection, no depth output;
++	// visionOS VR variant: optional soft edge, a small blur in screen space (premultiplied colour,
++	// so the average is valid as it is)
++	if (u_soft_edge > 0.0)
++	{
++		float2 dx = ddx(input.tex) * u_soft_edge;
++		float2 dy = ddy(input.tex) * u_soft_edge;
++		float4 sum = Texture.Sample(Sampler, input.tex)
++			+ Texture.Sample(Sampler, input.tex + dx) + Texture.Sample(Sampler, input.tex - dx)
++			+ Texture.Sample(Sampler, input.tex + dy) + Texture.Sample(Sampler, input.tex - dy);
++		output.color = sum / 5.0 * input.color;
++	}
++	// hardware depth from the reverse-Z projection, no depth output;
 +	// linear output for an sRGB target (the uniform buffer stays declared through u_srgb_out)
 +	output.color.rgb = lerp(output.color.rgb, SrgbToLinear(output.color.rgb), u_srgb_out);
 +#else
@@ -2450,10 +2475,19 @@ index 583434c..89678b0 100644
  			CullMode = CullMode.Back
  		});
 diff --git a/Source/Graphics/SpriteRenderer.cs b/Source/Graphics/SpriteRenderer.cs
-index aae3c23..1a2a566 100644
+index aae3c23..27c441b 100644
 --- a/Source/Graphics/SpriteRenderer.cs
 +++ b/Source/Graphics/SpriteRenderer.cs
-@@ -59,7 +59,12 @@ public class SpriteRenderer
+@@ -11,7 +11,7 @@ public class SpriteRenderer
+ 	private readonly Mesh<SpriteVertex> spriteMesh = new(Game.Instance.GraphicsDevice);
+ 	private readonly Material spriteMaterial = new(Assets.Materials["Sprite"]);
+ 
+-	public void Render(ref RenderState state, List<Sprite> sprites, bool postEffects)
++	public void Render(ref RenderState state, List<Sprite> sprites, bool postEffects, float softEdge = 0)
+ 	{
+ 		spriteVertices.Clear();
+ 		spriteIndices.Clear();
+@@ -59,8 +59,17 @@ public class SpriteRenderer
  		spriteMesh.SetVertices(CollectionsMarshal.AsSpan(spriteVertices));
  		spriteMesh.SetIndices(CollectionsMarshal.AsSpan(spriteIndices));
  
@@ -2463,10 +2497,15 @@ index aae3c23..1a2a566 100644
 +#else
  		spriteMaterial.Vertex.SetUniformBuffer(new UniformBuffers.SpriteVertex(state.Camera.ViewProjection));
 +#endif
++#if VISIONOS_KIT
++		spriteMaterial.Fragment.SetUniformBuffer(new UniformBuffers.SpriteFragment(state.Camera) { SoftEdge = softEdge });
++#else
  		spriteMaterial.Fragment.SetUniformBuffer(new UniformBuffers.SpriteFragment(state.Camera));
++#endif
  
  		foreach (var batch in spriteBatches)
-@@ -71,7 +76,11 @@ public class SpriteRenderer
+ 		{
+@@ -71,7 +80,11 @@ public class SpriteRenderer
  				BlendMode = BlendMode.Premultiply,
  				DepthTestEnabled = true,
  				DepthWriteEnabled = false,
@@ -2479,7 +2518,7 @@ index aae3c23..1a2a566 100644
  				IndexOffset = batch.Index,
  				IndexCount = batch.Count
 diff --git a/Source/Graphics/UniformBuffers.cs b/Source/Graphics/UniformBuffers.cs
-index ff1be6e..56cc52a 100644
+index ff1be6e..ffc8923 100644
 --- a/Source/Graphics/UniformBuffers.cs
 +++ b/Source/Graphics/UniformBuffers.cs
 @@ -9,6 +9,13 @@ public unsafe struct DefaultVertex
@@ -2507,7 +2546,7 @@ index ff1be6e..56cc52a 100644
  }
  
  [StructLayout(LayoutKind.Sequential, Pack = 1)]
-@@ -42,16 +53,123 @@ public struct EdgeFragment
+@@ -42,16 +53,125 @@ public struct EdgeFragment
  	public Vec2 Pixel;
  }
  
@@ -2632,6 +2671,8 @@ index ff1be6e..56cc52a 100644
 +#if VISIONOS_KIT
 +	// visionOS port: 1 when the pass writes the host's sRGB-encoded drawable (VR shader variants)
 +	public float SrgbOut = VisionOSKit.IsSrgbTarget(camera.Target) ? 1 : 0;
++	// visionOS port: 1 smooths a binary alpha edge in the VR sprite shader (strawberry splash)
++	public float SoftEdge = 0;
 +#endif
  }
 -
@@ -2789,7 +2830,7 @@ index 33da870..7590a36 100644
  			CutoutMode = false,
  		};
 diff --git a/Source/Scenes/World.cs b/Source/Scenes/World.cs
-index bdfb740..197ae95 100644
+index bdfb740..d484c0d 100644
 --- a/Source/Scenes/World.cs
 +++ b/Source/Scenes/World.cs
 @@ -70,9 +70,20 @@ public class World : Scene
@@ -2990,13 +3031,22 @@ index bdfb740..197ae95 100644
  		ApplyPostEffects();
  
  		// render alpha threshold transparent stuff
-@@ -762,21 +876,67 @@ public class World : Scene
+@@ -762,21 +876,96 @@ public class World : Scene
  		// strawberry collect effect
  		if (models.Any((it) => it.Model.Flags.Has(ModelFlags.StrawberryGetEffect)))
  		{
 -			var img = Assets.Subtextures["splash"];
 -			var orig = new Vec2(img.Width, img.Height) / 2;
 -			var bounds = new Rect(0, 0, Camera.Target.WidthInPixels, Camera.Target.HeightInPixels);
+-
+-			Camera.Target.Clear(Color.Black, 1, 0, ClearMask.Depth);
+-
+-			batch.Rect(bounds, Color.Black * 0.90f);
+-			batch.Image(img, bounds.Center, orig, Vec2.One, 0, Color.White);
+-			batch.Render(Camera.Target);
+-			batch.Clear();
+-
+-			RenderModels(ref state, models, ModelFlags.StrawberryGetEffect);
 +#if VISIONOS_KIT
 +			// stereo frame: the dimming and the splash image come from the UI layer, the effect
 +			// model follows after them (below, with depth Always as the original's depth clear)
@@ -3009,31 +3059,30 @@ index bdfb740..197ae95 100644
 +				var img = Assets.Subtextures["splash"];
 +				var orig = new Vec2(img.Width, img.Height) / 2;
 +				var bounds = new Rect(0, 0, Camera.Target.WidthInPixels, Camera.Target.HeightInPixels);
- 
--			Camera.Target.Clear(Color.Black, 1, 0, ClearMask.Depth);
++
 +#if VISIONOS_KIT
 +				Camera.Target.Clear(Color.Black, VisionOSKit.DepthClearValue, 0, ClearMask.Depth);
 +#else
 +				Camera.Target.Clear(Color.Black, 1, 0, ClearMask.Depth);
 +#endif
- 
--			batch.Rect(bounds, Color.Black * 0.90f);
--			batch.Image(img, bounds.Center, orig, Vec2.One, 0, Color.White);
--			batch.Render(Camera.Target);
--			batch.Clear();
++
 +				batch.Rect(bounds, Color.Black * 0.90f);
++#if VISIONOS_KIT
++				// visionOS port: the splash is drawn for the 640x360 target; scaled with the internal size
++				batch.Image(img, bounds.Center, orig, Vec2.One * Game.RelativeScale, 0, Color.White);
++#else
 +				batch.Image(img, bounds.Center, orig, Vec2.One, 0, Color.White);
++#endif
 +				batch.Render(Camera.Target);
 +				batch.Clear();
- 
--			RenderModels(ref state, models, ModelFlags.StrawberryGetEffect);
++
 +				RenderModels(ref state, models, ModelFlags.StrawberryGetEffect);
- 
--			ApplyPostEffects();
++
 +				ApplyPostEffects();
 +			}
 +		}
-+
+ 
+-			ApplyPostEffects();
 +#if VISIONOS_KIT
 +		if (vr != null)
 +		{
@@ -3041,16 +3090,40 @@ index bdfb740..197ae95 100644
 +			// enlarged into the drawable (submitted with the frame's final flush); no 2D UI (M4b.3b)
 +			// pause panel: the UI layer as a quad in the world, after the sprites, always on top
 +			if (uiLayerActive)
-+				DrawUiPanel(vr);
-+			// strawberry collect effect: the model on top of the dimming and the splash image, as the
-+			// original draws it after its depth clear
-+			if (uiSplashActive)
++				DrawUiDim(vr);
++			// strawberry collect effect: the splash as a quad in the world at Madeline's look-at
++			// point, facing the game camera, 71 % of the picture height the game's 45-degree camera
++			// would show at that distance (the original centres the unscaled 256-pixel splash on its
++			// 640x360 picture); drawn as a post sprite (depth Always) over the dimmed world, so it has
++			// Madeline's depth in stereo and the effect model follows on top as in the original
++			if (uiSplashActive && Get<Player>() is { } splashPlayer)
 +			{
-+				var savedCompare = state.DepthCompare;
-+				state.DepthCompare = DepthCompare.Always;
-+				RenderModels(ref state, models, ModelFlags.StrawberryGetEffect);
-+				state.DepthCompare = savedCompare;
++				var centre = splashPlayer.Position + Vec3.UnitZ * 6;
++				var distance = (Camera.Position - centre).Length();
++				var half = 0.71f * distance * MathF.Tan(MathF.PI / 8) * VisionOSKit.Ui.SplashScale;
++				var basis = VisionOSKit.BaseRotation(Camera.Position, Camera.LookAt);
++				var right = new Vec3(basis.M11, basis.M12, basis.M13) * half;
++				var up = new Vec3(basis.M31, basis.M32, basis.M33) * half;
++				splashSprites.Clear();
++				splashSprites.Add(new Sprite
++				{
++					Subtexture = Assets.Subtextures["splash"],
++					A = centre - right + up,
++					B = centre + right + up,
++					C = centre + right - up,
++					D = centre - right - up,
++					Color = Color.White,
++					Post = true,
++				});
++				spriteRenderer.Render(ref state, splashSprites, true, VisionOSKit.Ui.SplashSoftEdge);
 +			}
++			// the effect model with the normal depth test against the 50 m written by the dim quad:
++			// in front of the dimmed world and the splash, occluding itself as in the original
++			if (uiSplashActive)
++				RenderModels(ref state, models, ModelFlags.StrawberryGetEffect);
++			// the UI layer last (it writes its depth at 2 m, so the effect model must come before it)
++			if (uiLayerActive)
++				DrawUiPanel(vr);
 +			// the wipe over everything, head-locked across the whole view
 +			if (activeWipe != null)
 +				DrawWipeQuad(vr);
@@ -3068,7 +3141,7 @@ index bdfb740..197ae95 100644
  
  		// ui
  		{
-@@ -872,9 +1032,31 @@ public class World : Scene
+@@ -872,9 +1061,31 @@ public class World : Scene
  			// apply post fx
  			postMaterial.CopyFrom(Assets.Materials["Edge"]);
  			postMaterial.Fragment.Samplers[1] = new(target.Attachments[1], new(TextureFilter.Nearest, TextureWrap.Clamp, TextureWrap.Clamp));
@@ -3101,7 +3174,7 @@ index bdfb740..197ae95 100644
  				Edge = new Color(0x110d33).ToVector4()
  			});
  			batch.PushMaterial(postMaterial);
-@@ -889,6 +1071,580 @@ public class World : Scene
+@@ -889,6 +1100,577 @@ public class World : Scene
  		}
  	}
  
@@ -3249,7 +3322,8 @@ index bdfb740..197ae95 100644
 +	private ScreenWipe? activeWipe;   // the wipe of the running transition in this frame, null if none
 +	private bool uiLayerActive;       // the UI layer is drawn in this frame (pause, or timer and counter during play)
 +	private bool uiDialogActive;      // a cutscene exists (dialog box and portrait on the layer)
-+	private bool uiSplashActive;      // strawberry collect effect (dimming, splash image, model on top)
++	private bool uiSplashActive;      // strawberry collect effect (dimming, splash quad, model on top)
++	private readonly List<Sprite> splashSprites = new();
 +	private bool hudWasVisible;
 +	private int hudFrames;
 +
@@ -3520,15 +3594,6 @@ index bdfb740..197ae95 100644
 +				batch.PopMatrix();
 +		}
 +
-+		// strawberry collect: the splash image centred (the world is dimmed by the quad, the
-+		// effect model is drawn on top afterwards)
-+		if (uiSplashActive)
-+		{
-+			// the original draws it unscaled at 640x360, so it is scaled with the internal size
-+			var img = Assets.Subtextures["splash"];
-+			batch.Image(img, bounds.Center, new Vec2(img.Width, img.Height) / 2, Vec2.One * Game.RelativeScale, 0, Color.White);
-+		}
-+
 +		// pause menu
 +		if (Paused)
 +			pauseMenu.Render(batch, bounds.Center);
@@ -3567,6 +3632,52 @@ index bdfb740..197ae95 100644
 +	/// following it until O is set anew). Always on top, with the quad's real depth written for
 +	/// the compositor, premultiplied blend, sRGB decoding for the device's drawable.
 +	/// </summary>
++	/// <summary>
++	/// visionOS port, stereo frame: the full-view dimming (70 % in the pause with the original
++	/// style, 90 % during the strawberry collect) as a clip-space quad; during the collect it also
++	/// writes a flat depth 50 m behind the scene (the original clears the depth), in the pause it
++	/// leaves the world's depth alone.
++	/// </summary>
++	private void DrawUiDim(VisionOSKit.VRFrame vr)
++	{
++		var layer = VisionOSKit.UILayer;
++		if (layer == null)
++			return;
++		var quad = StereoQuad(ref uiQuad, ref uiQuadSize, new Point2(1, 1), "ui-panel-quad");
++		var srgbOut = vr.ColorSrgb || VisionOSKit.Ui.ForceSrgbDecode ? 1 : 0;
++		var linearSampler = new TextureSampler(TextureFilter.Linear, TextureWrap.Clamp, TextureWrap.Clamp);
++		var dimAlpha = Paused && VisionOSKit.Ui.Style == VisionOSKit.UiStyle.Original ? 0.70f : uiSplashActive ? 0.90f : 0f;
++		if (dimAlpha <= 0)
++			return;
++		var dimDepth = uiSplashActive ? (float)((VisionOSKit.NearMeters > 0 ? VisionOSKit.NearMeters : 0.1) / 50.0) : 0.5f;
++		uiDimMaterial.CopyFrom(Assets.Materials["UIVRArray"]);
++		uiDimMaterial.Vertex.SetUniformBuffer(new UniformBuffers.UiVertexVR()
++		{
++			ViewProjection0 = Matrix.Identity,
++			ViewProjection1 = Matrix.Identity,
++			Corner0 = new Vec4(-1, 1, dimDepth, 1),
++			Corner1 = new Vec4(1, 1, dimDepth, 1),
++			Corner2 = new Vec4(1, -1, dimDepth, 1),
++			Corner3 = new Vec4(-1, -1, dimDepth, 1),
++		});
++		uiDimMaterial.Fragment.Samplers[0] = new(layer.Attachments[0], linearSampler);
++		uiDimMaterial.Fragment.SetUniformBuffer(new UniformBuffers.UiFragmentVR()
++		{
++			SrgbOut = srgbOut,
++			Opacity = 1,
++			Dim = 1,
++			DimAlpha = dimAlpha,
++		});
++		GraphicsDevice.Draw(new DrawCommand(Camera.Target, quad, uiDimMaterial)
++		{
++			BlendMode = BlendMode.Premultiply,
++			DepthTestEnabled = uiSplashActive,
++			DepthWriteEnabled = uiSplashActive,
++			DepthCompare = DepthCompare.Always,
++			CullMode = CullMode.None,
++		});
++	}
++
 +	private void DrawUiPanel(VisionOSKit.VRFrame vr)
 +	{
 +		var layer = VisionOSKit.UILayer;
@@ -3581,13 +3692,6 @@ index bdfb740..197ae95 100644
 +			if (!VisionOSKit.UiTablet.TryGetCorners(aspect, out c0, out c1, out c2, out c3))
 +				return;
 +		}
-+		else if (uiSplashActive)
-+		{
-+			// strawberry collect: locked to the game camera (its whole rotation, see the player's
-+			// override), so the splash stays behind Madeline while the head looks around
-+			if (!VisionOSKit.UiTablet.TryGetCameraLockedCorners(aspect, Camera.Position, Camera.LookAt, out c0, out c1, out c2, out c3))
-+				return;
-+		}
 +		else
 +		{
 +			// play: head-locked with the full head pose of this frame (timer, strawberry counter)
@@ -3599,40 +3703,6 @@ index bdfb740..197ae95 100644
 +		var vp1 = Camera.ViewProjectionFor(1);
 +		var srgbOut = vr.ColorSrgb || VisionOSKit.Ui.ForceSrgbDecode ? 1 : 0;
 +		var linearSampler = new TextureSampler(TextureFilter.Linear, TextureWrap.Clamp, TextureWrap.Clamp);
-+
-+		var dimAlpha = Paused && VisionOSKit.Ui.Style == VisionOSKit.UiStyle.Original ? 0.70f : uiSplashActive ? 0.90f : 0f;
-+		if (dimAlpha > 0)
-+		{
-+			// the original's full-screen dimming (black, 70 %) over the whole view of both eyes:
-+			// clip-space corners with identity matrices, no depth test and no depth write, so the
-+			// world keeps its depth; the shader maps the alpha for the linear blending of an sRGB
-+			// drawable like the panel's colours
-+			uiDimMaterial.CopyFrom(Assets.Materials["UIVRArray"]);
-+			uiDimMaterial.Vertex.SetUniformBuffer(new UniformBuffers.UiVertexVR()
-+			{
-+				ViewProjection0 = Matrix.Identity,
-+				ViewProjection1 = Matrix.Identity,
-+				Corner0 = new Vec4(-1, 1, 0.5f, 1),
-+				Corner1 = new Vec4(1, 1, 0.5f, 1),
-+				Corner2 = new Vec4(1, -1, 0.5f, 1),
-+				Corner3 = new Vec4(-1, -1, 0.5f, 1),
-+			});
-+			uiDimMaterial.Fragment.Samplers[0] = new(layer.Attachments[0], linearSampler);
-+			uiDimMaterial.Fragment.SetUniformBuffer(new UniformBuffers.UiFragmentVR()
-+			{
-+				SrgbOut = srgbOut,
-+				Opacity = 1,
-+				Dim = 1,
-+				DimAlpha = dimAlpha,
-+			});
-+			GraphicsDevice.Draw(new DrawCommand(Camera.Target, quad, uiDimMaterial)
-+			{
-+				BlendMode = BlendMode.Premultiply,
-+				DepthTestEnabled = false,
-+				DepthWriteEnabled = false,
-+				CullMode = CullMode.None,
-+			});
-+		}
 +
 +		uiMaterial.CopyFrom(Assets.Materials["UIVRArray"]);
 +		uiMaterial.Vertex.SetUniformBuffer(new UniformBuffers.UiVertexVR()
@@ -3697,10 +3767,10 @@ index 650a35e..68b1c05 100644
  	private const float EaseClosePercent = 0.3f; // how long (in percent) it eases the entire screen
 diff --git a/Source/VisionOSKit.cs b/Source/VisionOSKit.cs
 new file mode 100644
-index 0000000..e44c43b
+index 0000000..54f3e06
 --- /dev/null
 +++ b/Source/VisionOSKit.cs
-@@ -0,0 +1,1721 @@
+@@ -0,0 +1,1714 @@
 +#if VISIONOS_KIT
 +// VisionOSKit.cs — Schalter des visionOS-Ports für Mac-Läufe (K6b, nur mit UseLocalFoster gebaut).
 +//
@@ -4474,6 +4544,10 @@ index 0000000..e44c43b
 +		public static readonly float DialogYDegrees;
 +		/// <summary>Diagnostics (Mac check): C64_UI_TEST_MEASURE=1 measures every dialog line of every language against the layer once.</summary>
 +		public static readonly bool TestMeasure;
++		/// <summary>C64_UI_SPLASH_SCALE: factor on the strawberry splash quad in the world (default 1 = 71 % of the picture height of the game's camera at Madeline's distance, as in the original).</summary>
++		public static readonly float SplashScale;
++		/// <summary>C64_UI_SPLASH_EDGE: blur radius of the splash's edge in screen pixels (five taps this far apart in the sprite shader; default 1.5, 0 = raw bilinear sampling).</summary>
++		public static readonly float SplashSoftEdge;
 +		/// <summary>True while a stereo frame is being rendered and the bars are switched off: Cutscene.RenderUI skips them.</summary>
 +		public static bool SkipLetterbox => Frame != null && !Letterbox;
 +		/// <summary>Diagnostics (Mac check): C64_UI_TEST_TALK=frame starts the first NPC's dialog at that game frame, C64_UI_TEST_STRAWB=frame the collect effect of the first strawberry; -1 = off.</summary>
@@ -4506,6 +4580,11 @@ index 0000000..e44c43b
 +			DialogYSet = Environment.GetEnvironmentVariable("C64_UI_DIALOG_Y") != "off";
 +			DialogYDegrees = ReadFloat("C64_UI_DIALOG_Y", 1.5f, -14f, 14f);
 +			TestMeasure = Environment.GetEnvironmentVariable("C64_UI_TEST_MEASURE") == "1";
++			SplashScale = ReadFloat("C64_UI_SPLASH_SCALE", 1f, 0.2f, 4f);
++			SplashSoftEdge = Environment.GetEnvironmentVariable("C64_UI_SPLASH_EDGE") == "raw" ? 0 : ReadFloat("C64_UI_SPLASH_EDGE", 1.5f, 0f, 6f);
++			Log.Info($"[c64-ui] C64_UI_SPLASH_EDGE={SplashSoftEdge.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)} px (blur radius of the splash edge, 0 = raw)");
++			if (SplashScale != 1)
++				Log.Info($"[c64-ui] C64_UI_SPLASH_SCALE={SplashScale.ToString("F2", System.Globalization.CultureInfo.InvariantCulture)} (factor on the strawberry splash quad)");
 +			Log.Info($"[c64-ui] C64_UI_DIALOG_Y={(DialogYSet ? DialogYDegrees.ToString("F1", System.Globalization.CultureInfo.InvariantCulture) : "off")} deg above the gaze (centre of the dialog box; off = 100 layer pixels below the top edge)");
 +			Log.Info($"[c64-ui] C64_UI_LETTERBOX={(Letterbox ? 1 : 0)} ({(Letterbox ? "cutscene bars drawn head-locked" : "cutscene bars left out in the stereo world")}) C64_UI_DIALOG_SCALE={DialogScale.ToString("F2", System.Globalization.CultureInfo.InvariantCulture)} (dialog box and portrait about their top-centre anchor)");
 +			if (HudInset)
@@ -4707,22 +4786,6 @@ index 0000000..e44c43b
 +				return false;
 +			var relativeNow = Matrix.CreateTranslation(0, 0, -Ui.DistanceMeters) * session.Head;
 +			var m = WorldFromRelative(relativeNow, cameraPosition, BaseRotation(cameraPosition, cameraLookAt));
-+			CornersOf(m, aspect, out c0, out c1, out c2, out c3);
-+			return true;
-+		}
-+
-+		/// <summary>
-+		/// Corners of a layer locked to the game camera (the strawberry splash): straight ahead of the
-+		/// camera base (its position and rotation, no head), DistanceMeters ahead; the head looks
-+		/// around it like around the world.
-+		/// </summary>
-+		public static bool TryGetCameraLockedCorners(float aspect, Vec3 cameraPosition, Vec3 cameraLookAt, out Vec3 c0, out Vec3 c1, out Vec3 c2, out Vec3 c3)
-+		{
-+			c0 = c1 = c2 = c3 = default;
-+			if (StereoSession == null)
-+				return false;
-+			var relativeAhead = Matrix.CreateTranslation(0, 0, -Ui.DistanceMeters);
-+			var m = WorldFromRelative(relativeAhead, cameraPosition, BaseRotation(cameraPosition, cameraLookAt));
 +			CornersOf(m, aspect, out c0, out c1, out c2, out c3);
 +			return true;
 +		}
