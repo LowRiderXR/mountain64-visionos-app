@@ -1594,11 +1594,18 @@ index 0000000..3033fb7
 +	return output;
 +}
 diff --git a/Source/Actors/Cutscene.cs b/Source/Actors/Cutscene.cs
-index 3b98afe..111db92 100644
+index 3b98afe..b065dcf 100644
 --- a/Source/Actors/Cutscene.cs
 +++ b/Source/Actors/Cutscene.cs
-@@ -204,11 +204,11 @@ public class Cutscene : Actor, IHaveUI
+@@ -202,16 +202,27 @@ public class Cutscene : Actor, IHaveUI
+ 			World.Destroy(this);
+ 	}
  
++#if VISIONOS_KIT
++	/// <summary>visionOS port: the line being said (face and text) while its box is visible, else null; the stereo world fits the box to its layer.</summary>
++	public (string Face, string Text)? CurrentSaying => saying.Ease > 0 && !string.IsNullOrEmpty(saying.Text) && !World.Paused ? (saying.Face, saying.Text) : null;
++#endif
++
  	public void RenderUI(Batcher batch, Rect bounds)
  	{
 -		const float BarSize = 40 * Game.RelativeScale;
@@ -1606,16 +1613,28 @@ index 3b98afe..111db92 100644
 -		const float TopOffset = 100 * Game.RelativeScale;
 -		const float EaseOffset = 32 * Game.RelativeScale;
 -		const float Padding = 8 * Game.RelativeScale;
+-
+-		batch.Rect(new Rect(bounds.X, bounds.Y, bounds.Width, BarSize * ease), Color.Black);
+-		batch.Rect(new Rect(bounds.X, bounds.Bottom - BarSize * ease, bounds.Width, BarSize * ease), Color.Black);
 +		float BarSize = 40 * Game.RelativeScale;
 +		float PortraitSize = 128 * Game.RelativeScale;
 +		float TopOffset = 100 * Game.RelativeScale;
 +		float EaseOffset = 32 * Game.RelativeScale;
 +		float Padding = 8 * Game.RelativeScale;
++
++#if VISIONOS_KIT
++		// visionOS port: no letterbox bars in the stereo world (head-locked black bands across the view), unless C64_UI_LETTERBOX=1
++		if (!VisionOSKit.Ui.SkipLetterbox)
++#endif
++		{
++			batch.Rect(new Rect(bounds.X, bounds.Y, bounds.Width, BarSize * ease), Color.Black);
++			batch.Rect(new Rect(bounds.X, bounds.Bottom - BarSize * ease, bounds.Width, BarSize * ease), Color.Black);
++		}
  
- 		batch.Rect(new Rect(bounds.X, bounds.Y, bounds.Width, BarSize * ease), Color.Black);
- 		batch.Rect(new Rect(bounds.X, bounds.Bottom - BarSize * ease, bounds.Width, BarSize * ease), Color.Black);
+ 		if (saying.Ease > 0 && !string.IsNullOrEmpty(saying.Text) && !World.Paused)
+ 		{
 diff --git a/Source/Actors/Player.cs b/Source/Actors/Player.cs
-index dd52d78..2431b6b 100644
+index dd52d78..5560c9d 100644
 --- a/Source/Actors/Player.cs
 +++ b/Source/Actors/Player.cs
 @@ -271,6 +271,11 @@ public class Player : Actor, IHaveModels, IHaveSprites, IRidePlatforms, ICastPoi
@@ -1711,6 +1730,25 @@ index dd52d78..2431b6b 100644
  			if (cameraForward.X == 0 && cameraForward.Y == 0)
  				forward = targetFacing;
  			else
+@@ -1654,11 +1692,18 @@ public class Player : Actor, IHaveModels, IHaveSprites, IRidePlatforms, ICastPoi
+ 		velocity = Vec3.Zero;
+ 		strawbGetForward = (World.Camera.Position - Position).XY().Normalized();
+ 		cameraOverride = new(World.Camera.Position, World.Camera.LookAt);
++#if VISIONOS_KIT
++		// visionOS port: the sequence's camera looks down at Madeline; the head takes that whole rotation
++		VisionOSKit.CameraFullRotationOverride = true;
++#endif
+ 	}
+ 
+ 	private void StStrawbGetExit()
+ 	{
+ 		cameraOverride = null;
++#if VISIONOS_KIT
++		VisionOSKit.CameraFullRotationOverride = false;
++#endif
+ 
+ 		Model.Flags = ModelFlags.Default | ModelFlags.Silhouette;
+ 		Hair.Flags = ModelFlags.Default | ModelFlags.Silhouette;
 diff --git a/Source/Actors/Snow.cs b/Source/Actors/Snow.cs
 index 623a700..2b52833 100644
 --- a/Source/Actors/Snow.cs
@@ -1918,403 +1956,13 @@ index f2ba5d0..9814c98 100644
  		Audio.SetVCAVolume("vca:/sfx", Calc.Clamp(SfxVolume / 10.0f, 0, 1));
  	}
 diff --git a/Source/Game.cs b/Source/Game.cs
-index 312df59..4133935 100644
+index 312df59..41d0de9 100644
 --- a/Source/Game.cs
 +++ b/Source/Game.cs
-@@ -1,354 +1,437 @@
--﻿using System.Diagnostics;
--using System.Text.Json;
--
--namespace Celeste64;
--
--public struct Transition
--{
--	public enum Modes
--	{
--		Replace,
--		Push,
--		Pop
--	}
--
--	public Modes Mode;
--	public Func<Scene>? Scene;
--	public ScreenWipe? ToBlack;
--	public ScreenWipe? FromBlack;
--	public bool ToPause;
--	public bool FromPause;
--	public bool Saving;
--	public bool StopMusic;
--	public bool PerformAssetReload;
--	public float HoldOnBlackFor;
--}
--
--public class Game : App
--{
--	private enum TransitionStep
--	{
--		None,
--		FadeOut,
--		Hold,
--		Perform,
--		FadeIn
--	}
--
--	public const string GamePath = "Celeste64";
--	public const string GameTitle = "Celeste 64: Fragments of the Mountain";
--	public const int Width = 640;
--	public const int Height = 360;
--	public static readonly Version Version = typeof(Game).Assembly.GetName().Version!;
--	public static readonly string VersionString = $"v.{Version.Major}.{Version.Minor}.{Version.Build}";
--
--	/// <summary>
--	/// Used by various rendering elements to proportionally scale if you change the default game resolution
--	/// </summary>
--	public const float RelativeScale = Height / 360.0f;
--
--	private static Game? instance;
--	public static Game Instance => instance ?? throw new Exception("Game isn't running");
--
--	private readonly Stack<Scene> scenes = new();
--	private readonly Target target;
--	private readonly Batcher batcher;
--	private Transition transition;
--	private TransitionStep transitionStep = TransitionStep.None;
--	private readonly FMOD.Studio.EVENT_CALLBACK audioEventCallback;
--	private int audioBeatCounter;
--	private bool audioBeatCounterEvent;
--	private bool mouseCameraEnabled = false;
--
--	public AudioHandle Ambience;
--	public AudioHandle Music;
--	public Controls Controls;
--
--	public Game(AppConfig config) : base(config)
--	{
--		target = new(GraphicsDevice, Width, Height, [TextureFormat.Color, TextureFormat.Depth16]);
--		batcher = new(GraphicsDevice);
--
--		GraphicsDevice.VSync = true;
--		Controls = new(Input, new ControlsConfig());
--
--		// If this isn't stored, the delegate will get GC'd and everything will crash :)
--		audioEventCallback = MusicTimelineCallback;
--	}
--
--	protected override void Startup()
--	{
--		instance = this;
--		Audio.Init();
--		scenes.Push(new Startup());
--	}
--
--	protected override void Shutdown()
--	{
--		if (scenes.TryPeek(out var topScene))
--			topScene.Exited();
--
--		while (scenes.Count > 0)
--		{
--			var it = scenes.Pop();
--			it.Disposed();
--		}
--		
--		scenes.Clear();
--		instance = null;
--		Audio.Shutdown();
--	}
--
--	public bool IsMidTransition => transitionStep != TransitionStep.None;
--
--	public void Goto(Transition next)
--	{
--		Debug.Assert(
--			transitionStep == TransitionStep.None ||
--			transitionStep == TransitionStep.FadeIn);
--		transition = next;
--		transitionStep = scenes.Count > 0 ? TransitionStep.FadeOut : TransitionStep.Perform;
--		transition.ToBlack?.Restart(transitionStep != TransitionStep.FadeOut);
--
--		if (transition.StopMusic)
--			Music.Stop();
--	}
--
--	protected override void Update()
--	{
--		Audio.Update();
--
--		// toggle mouse camera mode
--		if (Input.Keyboard.Pressed(Keys.Escape))
--			mouseCameraEnabled = false;
--		if (Window.Focused && Input.Mouse.LeftPressed)
--			mouseCameraEnabled = true;
--		Window.SetMouseRelativeMode(mouseCameraEnabled);
--
--		// update input filters depending on state
--		{
--			Input.BindingFilters.Clear();
--			Input.BindingFilters.Add(Controls.IsUsingNintendo
--				? ControlsConfig.FILTER_NINTENDO
--				: ControlsConfig.FILTER_XBOX);
--			Input.BindingFilters.Add(mouseCameraEnabled 
--				? ControlsConfig.FILTER_MOUSE_CAMERA
--				: ControlsConfig.FILTER_KEYBOARD_CAMERA);
--		}
--
--		// update top scene
--		if (scenes.TryPeek(out var scene))
--		{
--			var pausing = 
--				transitionStep == TransitionStep.FadeIn && transition.FromPause ||
--				transitionStep == TransitionStep.FadeOut && transition.ToPause;
--
--			if (!pausing)
--				scene.Update();
--		}
--
--		// handle transitions
--		if (transitionStep == TransitionStep.FadeOut)
--		{
--			if (transition.ToBlack == null || transition.ToBlack.IsFinished)
--			{
--				transitionStep = TransitionStep.Hold;
--			}
--			else
--			{
--				transition.ToBlack.Update(Time);
--			}
--		}
--		else if (transitionStep == TransitionStep.Hold)
--        {
--            transition.HoldOnBlackFor -= Time.Delta;
--			if (transition.HoldOnBlackFor <= 0)
--            {
--                if (transition.FromBlack != null)
--                    transition.ToBlack = transition.FromBlack;
--                transition.ToBlack?.Restart(true);
--				transitionStep = TransitionStep.Perform;
--            }
--        }
--		else if (transitionStep == TransitionStep.Perform)
--		{
--			Audio.StopBus(Sfx.bus_gameplay_world, false);
--
--			// exit last scene
--			if (scenes.TryPeek(out var lastScene))
--			{
--				lastScene?.Exited();
--				if (transition.Mode != Transition.Modes.Push)
--					lastScene?.Disposed();
--			}
--
--			// reload assets if requested
--			if (transition.PerformAssetReload)
--			{
--				Assets.Load(GraphicsDevice);
--			}
--
--			// perform game save between transitions
--			if (transition.Saving)
--				Save.Instance.SaveToFile(UserPath);
--
--			// perform transition
--			switch (transition.Mode)
--			{
--			case Transition.Modes.Replace:
--			Debug.Assert(transition.Scene != null);
--			if (scenes.Count > 0)
--				scenes.Pop();
--			scenes.Push(transition.Scene());
--			break;
--			case Transition.Modes.Push:
--			Debug.Assert(transition.Scene != null);
--			scenes.Push(transition.Scene());
--			audioBeatCounter = 0;
--			break;
--			case Transition.Modes.Pop:
--			scenes.Pop();
--			break;
--			}
--
--			// don't let the game sit in a sceneless place
--			if (scenes.Count <= 0)
--				scenes.Push(new Overworld(false));
--
--			// run a single update when transition happens so stuff gets established
--			if (scenes.TryPeek(out var nextScene))
--			{
--				nextScene.Entered();
--				nextScene.Update();
--			}
--
--			// switch music
--			{
--				var last = Music.IsPlaying && lastScene != null ? lastScene.Music : string.Empty;
--				var next = nextScene?.Music ?? string.Empty;
--				if (next != last)
--				{
--					Music.Stop();
--					Music = Audio.Play(next);
--					if (Music)
--						Music.SetCallback(audioEventCallback);
--				}
--			}
--
--			// switch ambience
--			{
--				var last = Ambience.IsPlaying && lastScene != null ? lastScene.Ambience : string.Empty;
--				var next = nextScene?.Ambience ?? string.Empty;
--				if (next != last)
--				{
--					Ambience.Stop();
--					Ambience = Audio.Play(next);
--				}
--			}
--
--			// in case new music was played
--			Save.Instance.ApplySettings(this);
--			transitionStep = TransitionStep.FadeIn;
--		}
--		else if (transitionStep == TransitionStep.FadeIn)
--		{
--			if (transition.ToBlack == null || transition.ToBlack.IsFinished)
--			{
--				transitionStep = TransitionStep.None;
--				transition = new();
--			}
--			else
--			{
--				transition.ToBlack.Update(Time);
--			}
--		}
--		else if (transitionStep == TransitionStep.None)
--		{
--			// handle audio beat events on main thread
--			if (audioBeatCounterEvent)
--			{
--				audioBeatCounterEvent = false;
--				audioBeatCounter++;
--
--				if (scene is World world)
--				{
--					foreach (var listener in world.All<IListenToAudioCallback>())
--						(listener as IListenToAudioCallback)?.AudioCallbackEvent(audioBeatCounter);
--				}
--			}
--		}
--
--		
--		if (scene is not Celeste64.Startup)
--		{
--			// toggle fullsrceen
--			if ((Input.Keyboard.Alt && Input.Keyboard.Pressed(Keys.Enter)) || Input.Keyboard.Pressed(Keys.F4))
--				Save.Instance.ToggleFullscreen(this);
--
--			// reload state
--			if (Input.Keyboard.Ctrl && Input.Keyboard.Pressed(Keys.R) && !IsMidTransition)
--			{
--				if (scene is World world)
--				{
--					Goto(new Transition()
--					{
--						Mode = Transition.Modes.Replace,
--						Scene = () => new World(world.Entry),
--						ToPause = true,
--						ToBlack = new AngledWipe(),
--						PerformAssetReload = true
--					});
--				}
--				else
--				{
--					Goto(new Transition()
--					{
--						Mode = Transition.Modes.Replace,
--						Scene = () => new Titlescreen(),
--						ToPause = true,
--						ToBlack = new AngledWipe(),
--						PerformAssetReload = true
--					});
--				}
--			}
--		}
--	}
--
--	protected override void Render()
--	{
--		Window.Clear(Color.Black);
--
--		if (transitionStep != TransitionStep.Perform && transitionStep != TransitionStep.Hold)
--		{
--			// draw the world to the target
--			if (scenes.TryPeek(out var scene))
--				scene.Render(target);
--
--			// draw screen wipe over top
--			if (transitionStep != TransitionStep.None && transition.ToBlack != null)
--			{
--				transition.ToBlack.Render(batcher, new Rect(0, 0, target.Width, target.Height));
--				batcher.Render(target);
--				batcher.Clear();
--			}
--
--			// draw the target to the window
--			{
--				var scale = Math.Min(Window.WidthInPixels / (float)target.Width, Window.HeightInPixels / (float)target.Height);
--				batcher.PushSampler(new(TextureFilter.Nearest, TextureWrap.Clamp, TextureWrap.Clamp));
--				batcher.Image(target, Window.SizeInPixels / 2, target.Bounds.Size / 2, Vec2.One * scale, 0, Color.White);
--				batcher.PopSampler();
--				batcher.Render(Window);
--				batcher.Clear();
--			}
--		}
--	}
--
--	private FMOD.RESULT MusicTimelineCallback(FMOD.Studio.EVENT_CALLBACK_TYPE type, IntPtr _event, IntPtr parameters)
--	{
--		// notify that an audio event happened (but handle it on the main thread)
--		if (transitionStep == TransitionStep.None)
--			audioBeatCounterEvent = true;
--		return FMOD.RESULT.OK;
--	}
--}
-+﻿using System.Diagnostics;
-+using System.Text.Json;
-+
-+namespace Celeste64;
-+
-+public struct Transition
-+{
-+	public enum Modes
-+	{
-+		Replace,
-+		Push,
-+		Pop
-+	}
-+
-+	public Modes Mode;
-+	public Func<Scene>? Scene;
-+	public ScreenWipe? ToBlack;
-+	public ScreenWipe? FromBlack;
-+	public bool ToPause;
-+	public bool FromPause;
-+	public bool Saving;
-+	public bool StopMusic;
-+	public bool PerformAssetReload;
-+	public float HoldOnBlackFor;
-+}
-+
-+public class Game : App
-+{
-+	private enum TransitionStep
-+	{
-+		None,
-+		FadeOut,
-+		Hold,
-+		Perform,
-+		FadeIn
-+	}
-+
-+	public const string GamePath = "Celeste64";
-+	public const string GameTitle = "Celeste 64: Fragments of the Mountain";
+@@ -37,15 +37,29 @@ public class Game : App
+ 
+ 	public const string GamePath = "Celeste64";
+ 	public const string GameTitle = "Celeste 64: Fragments of the Mountain";
 +#if VISIONOS_KIT
 +	// visionOS port: the host chooses the internal resolution before the game is created
 +	// (VisionOSKit.InternalWidth and InternalHeight). Properties rather than readonly fields,
@@ -2324,99 +1972,51 @@ index 312df59..4133935 100644
 +	public static int Width => VisionOSKit.InternalWidth;
 +	public static int Height => VisionOSKit.InternalHeight;
 +#else
-+	public const int Width = 640;
-+	public const int Height = 360;
+ 	public const int Width = 640;
+ 	public const int Height = 360;
 +#endif
-+	public static readonly Version Version = typeof(Game).Assembly.GetName().Version!;
-+	public static readonly string VersionString = $"v.{Version.Major}.{Version.Minor}.{Version.Build}";
-+
-+	/// <summary>
-+	/// Used by various rendering elements to proportionally scale if you change the default game resolution
-+	/// </summary>
+ 	public static readonly Version Version = typeof(Game).Assembly.GetName().Version!;
+ 	public static readonly string VersionString = $"v.{Version.Major}.{Version.Minor}.{Version.Build}";
+ 
+ 	/// <summary>
+ 	/// Used by various rendering elements to proportionally scale if you change the default game resolution
+ 	/// </summary>
 +#if VISIONOS_KIT
 +	public static float RelativeScale => Height / 360.0f;
 +#else
-+	public const float RelativeScale = Height / 360.0f;
+ 	public const float RelativeScale = Height / 360.0f;
 +#endif
-+
-+	private static Game? instance;
-+	public static Game Instance => instance ?? throw new Exception("Game isn't running");
-+
-+	private readonly Stack<Scene> scenes = new();
-+	private readonly Target target;
-+	private readonly Batcher batcher;
-+	private Transition transition;
-+	private TransitionStep transitionStep = TransitionStep.None;
-+	private readonly FMOD.Studio.EVENT_CALLBACK audioEventCallback;
-+	private int audioBeatCounter;
-+	private bool audioBeatCounterEvent;
-+	private bool mouseCameraEnabled = false;
-+
-+	public AudioHandle Ambience;
-+	public AudioHandle Music;
-+	public Controls Controls;
-+
-+	public Game(AppConfig config) : base(config)
-+	{
+ 
+ 	private static Game? instance;
+ 	public static Game Instance => instance ?? throw new Exception("Game isn't running");
+@@ -66,7 +80,12 @@ public class Game : App
+ 
+ 	public Game(AppConfig config) : base(config)
+ 	{
 +#if VISIONOS_KIT
 +		// visionOS-Port (K6d.2): Kantenglättung des Welt-Ziels per Schalter C64_MSAA (1, 2, 4, 8)
 +		target = VisionOSKit.CreateMainTarget(GraphicsDevice, Width, Height);
 +#else
-+		target = new(GraphicsDevice, Width, Height, [TextureFormat.Color, TextureFormat.Depth16]);
+ 		target = new(GraphicsDevice, Width, Height, [TextureFormat.Color, TextureFormat.Depth16]);
 +#endif
-+		batcher = new(GraphicsDevice);
-+
-+		GraphicsDevice.VSync = true;
-+		Controls = new(Input, new ControlsConfig());
-+
-+		// If this isn't stored, the delegate will get GC'd and everything will crash :)
-+		audioEventCallback = MusicTimelineCallback;
-+	}
-+
-+	protected override void Startup()
-+	{
-+		instance = this;
-+		Audio.Init();
-+		scenes.Push(new Startup());
-+	}
-+
-+	protected override void Shutdown()
-+	{
-+		if (scenes.TryPeek(out var topScene))
-+			topScene.Exited();
-+
-+		while (scenes.Count > 0)
-+		{
-+			var it = scenes.Pop();
-+			it.Disposed();
-+		}
-+		
-+		scenes.Clear();
-+		instance = null;
-+		Audio.Shutdown();
-+	}
-+
-+	public bool IsMidTransition => transitionStep != TransitionStep.None;
+ 		batcher = new(GraphicsDevice);
+ 
+ 		GraphicsDevice.VSync = true;
+@@ -100,6 +119,10 @@ public class Game : App
+ 	}
+ 
+ 	public bool IsMidTransition => transitionStep != TransitionStep.None;
 +#if VISIONOS_KIT
 +	/// <summary>visionOS port: the screen wipe that is running right now (fade out of the old scene or fade in of the new one), null otherwise; the stereo world draws it itself.</summary>
 +	public ScreenWipe? ActiveWipe => transitionStep == TransitionStep.FadeOut || transitionStep == TransitionStep.FadeIn ? transition.ToBlack : null;
 +#endif
-+
-+	public void Goto(Transition next)
-+	{
-+		Debug.Assert(
-+			transitionStep == TransitionStep.None ||
-+			transitionStep == TransitionStep.FadeIn);
-+		transition = next;
-+		transitionStep = scenes.Count > 0 ? TransitionStep.FadeOut : TransitionStep.Perform;
-+		transition.ToBlack?.Restart(transitionStep != TransitionStep.FadeOut);
-+
-+		if (transition.StopMusic)
-+			Music.Stop();
-+	}
-+
-+	protected override void Update()
-+	{
+ 
+ 	public void Goto(Transition next)
+ 	{
+@@ -116,6 +139,25 @@ public class Game : App
+ 
+ 	protected override void Update()
+ 	{
 +#if VISIONOS_KIT
 +		VisionOSKit.Tick();
 +		// visionOS port: the host asks for a pause after the device was taken off; only a running
@@ -2436,206 +2036,16 @@ index 312df59..4133935 100644
 +			Log.Info($"[c64-pause] pause request applied={(applied ? 1 : 0)} scene={top?.GetType().Name ?? "none"}");
 +		}
 +#endif
-+		Audio.Update();
-+
-+		// toggle mouse camera mode
-+		if (Input.Keyboard.Pressed(Keys.Escape))
-+			mouseCameraEnabled = false;
-+		if (Window.Focused && Input.Mouse.LeftPressed)
-+			mouseCameraEnabled = true;
-+		Window.SetMouseRelativeMode(mouseCameraEnabled);
-+
-+		// update input filters depending on state
-+		{
-+			Input.BindingFilters.Clear();
-+			Input.BindingFilters.Add(Controls.IsUsingNintendo
-+				? ControlsConfig.FILTER_NINTENDO
-+				: ControlsConfig.FILTER_XBOX);
-+			Input.BindingFilters.Add(mouseCameraEnabled 
-+				? ControlsConfig.FILTER_MOUSE_CAMERA
-+				: ControlsConfig.FILTER_KEYBOARD_CAMERA);
-+		}
-+
-+		// update top scene
-+		if (scenes.TryPeek(out var scene))
-+		{
-+			var pausing = 
-+				transitionStep == TransitionStep.FadeIn && transition.FromPause ||
-+				transitionStep == TransitionStep.FadeOut && transition.ToPause;
-+
-+			if (!pausing)
-+				scene.Update();
-+		}
-+
-+		// handle transitions
-+		if (transitionStep == TransitionStep.FadeOut)
-+		{
-+			if (transition.ToBlack == null || transition.ToBlack.IsFinished)
-+			{
-+				transitionStep = TransitionStep.Hold;
-+			}
-+			else
-+			{
-+				transition.ToBlack.Update(Time);
-+			}
-+		}
-+		else if (transitionStep == TransitionStep.Hold)
-+        {
-+            transition.HoldOnBlackFor -= Time.Delta;
-+			if (transition.HoldOnBlackFor <= 0)
-+            {
-+                if (transition.FromBlack != null)
-+                    transition.ToBlack = transition.FromBlack;
-+                transition.ToBlack?.Restart(true);
-+				transitionStep = TransitionStep.Perform;
-+            }
-+        }
-+		else if (transitionStep == TransitionStep.Perform)
-+		{
-+			Audio.StopBus(Sfx.bus_gameplay_world, false);
-+
-+			// exit last scene
-+			if (scenes.TryPeek(out var lastScene))
-+			{
-+				lastScene?.Exited();
-+				if (transition.Mode != Transition.Modes.Push)
-+					lastScene?.Disposed();
-+			}
-+
-+			// reload assets if requested
-+			if (transition.PerformAssetReload)
-+			{
-+				Assets.Load(GraphicsDevice);
-+			}
-+
-+			// perform game save between transitions
-+			if (transition.Saving)
-+				Save.Instance.SaveToFile(UserPath);
-+
-+			// perform transition
-+			switch (transition.Mode)
-+			{
-+			case Transition.Modes.Replace:
-+			Debug.Assert(transition.Scene != null);
-+			if (scenes.Count > 0)
-+				scenes.Pop();
-+			scenes.Push(transition.Scene());
-+			break;
-+			case Transition.Modes.Push:
-+			Debug.Assert(transition.Scene != null);
-+			scenes.Push(transition.Scene());
-+			audioBeatCounter = 0;
-+			break;
-+			case Transition.Modes.Pop:
-+			scenes.Pop();
-+			break;
-+			}
-+
-+			// don't let the game sit in a sceneless place
-+			if (scenes.Count <= 0)
-+				scenes.Push(new Overworld(false));
-+
-+			// run a single update when transition happens so stuff gets established
-+			if (scenes.TryPeek(out var nextScene))
-+			{
-+				nextScene.Entered();
-+				nextScene.Update();
-+			}
-+
-+			// switch music
-+			{
-+				var last = Music.IsPlaying && lastScene != null ? lastScene.Music : string.Empty;
-+				var next = nextScene?.Music ?? string.Empty;
-+				if (next != last)
-+				{
-+					Music.Stop();
-+					Music = Audio.Play(next);
-+					if (Music)
-+						Music.SetCallback(audioEventCallback);
-+				}
-+			}
-+
-+			// switch ambience
-+			{
-+				var last = Ambience.IsPlaying && lastScene != null ? lastScene.Ambience : string.Empty;
-+				var next = nextScene?.Ambience ?? string.Empty;
-+				if (next != last)
-+				{
-+					Ambience.Stop();
-+					Ambience = Audio.Play(next);
-+				}
-+			}
-+
-+			// in case new music was played
-+			Save.Instance.ApplySettings(this);
-+			transitionStep = TransitionStep.FadeIn;
-+		}
-+		else if (transitionStep == TransitionStep.FadeIn)
-+		{
-+			if (transition.ToBlack == null || transition.ToBlack.IsFinished)
-+			{
-+				transitionStep = TransitionStep.None;
-+				transition = new();
-+			}
-+			else
-+			{
-+				transition.ToBlack.Update(Time);
-+			}
-+		}
-+		else if (transitionStep == TransitionStep.None)
-+		{
-+			// handle audio beat events on main thread
-+			if (audioBeatCounterEvent)
-+			{
-+				audioBeatCounterEvent = false;
-+				audioBeatCounter++;
-+
-+				if (scene is World world)
-+				{
-+					foreach (var listener in world.All<IListenToAudioCallback>())
-+						(listener as IListenToAudioCallback)?.AudioCallbackEvent(audioBeatCounter);
-+				}
-+			}
-+		}
-+
-+		
-+		if (scene is not Celeste64.Startup)
-+		{
-+			// toggle fullsrceen
-+			if ((Input.Keyboard.Alt && Input.Keyboard.Pressed(Keys.Enter)) || Input.Keyboard.Pressed(Keys.F4))
-+				Save.Instance.ToggleFullscreen(this);
-+
-+			// reload state
-+			if (Input.Keyboard.Ctrl && Input.Keyboard.Pressed(Keys.R) && !IsMidTransition)
-+			{
-+				if (scene is World world)
-+				{
-+					Goto(new Transition()
-+					{
-+						Mode = Transition.Modes.Replace,
-+						Scene = () => new World(world.Entry),
-+						ToPause = true,
-+						ToBlack = new AngledWipe(),
-+						PerformAssetReload = true
-+					});
-+				}
-+				else
-+				{
-+					Goto(new Transition()
-+					{
-+						Mode = Transition.Modes.Replace,
-+						Scene = () => new Titlescreen(),
-+						ToPause = true,
-+						ToBlack = new AngledWipe(),
-+						PerformAssetReload = true
-+					});
-+				}
-+			}
-+		}
-+	}
-+
-+	protected override void Render()
-+	{
+ 		Audio.Update();
+ 
+ 		// toggle mouse camera mode
+@@ -316,9 +358,24 @@ public class Game : App
+ 
+ 	protected override void Render()
+ 	{
+-		Window.Clear(Color.Black);
+-
+-		if (transitionStep != TransitionStep.Perform && transitionStep != TransitionStep.Hold)
 +		// visionOS-Port (K6d): das Endbild geht in die Ausgabeziele des Hosts statt ins Fenster,
 +		// ein Durchgang pro Ziel (eine Schicht pro Ziel); ohne Host bleibt es das Fenster
 +#if VISIONOS_KIT
@@ -2654,23 +2064,19 @@ index 312df59..4133935 100644
 +#endif
 +		}
 +		else
-+		{
-+			// draw the world to the target
-+			if (scenes.TryPeek(out var scene))
-+				scene.Render(target);
-+
-+			// draw screen wipe over top
-+			if (transitionStep != TransitionStep.None && transition.ToBlack != null)
-+			{
-+				transition.ToBlack.Render(batcher, new Rect(0, 0, target.Width, target.Height));
-+				batcher.Render(target);
-+				batcher.Clear();
-+			}
-+
+ 		{
+ 			// draw the world to the target
+ 			if (scenes.TryPeek(out var scene))
+@@ -332,16 +389,42 @@ public class Game : App
+ 				batcher.Clear();
+ 			}
+ 
+-			// draw the target to the window
 +#if VISIONOS_KIT
 +			VisionOSKit.AfterSceneRender?.Invoke(target);
 +			if (VisionOSKit.FrameRendered)
-+			{
+ 			{
+-				var scale = Math.Min(Window.WidthInPixels / (float)target.Width, Window.HeightInPixels / (float)target.Height);
 +				// stereo frame (M4b.3a): World wrote the host's drawable; the host shows it, not the
 +				// canvas, so the output pass is skipped (the wipe over the 2D target is not shown)
 +				VisionOSKit.AfterRender?.Invoke();
@@ -2689,30 +2095,25 @@ index 312df59..4133935 100644
 +				output.Clear(Color.Black, 1, 0, ClearMask.Color | ClearMask.Depth);
 +#endif
 +				var scale = Math.Min(output.WidthInPixels / (float)target.Width, output.HeightInPixels / (float)target.Height);
-+				batcher.PushSampler(new(TextureFilter.Nearest, TextureWrap.Clamp, TextureWrap.Clamp));
+ 				batcher.PushSampler(new(TextureFilter.Nearest, TextureWrap.Clamp, TextureWrap.Clamp));
+-				batcher.Image(target, Window.SizeInPixels / 2, target.Bounds.Size / 2, Vec2.One * scale, 0, Color.White);
 +				batcher.Image(target, output.SizeInPixels() / 2, target.Bounds.Size / 2, Vec2.One * scale, 0, Color.White);
-+				batcher.PopSampler();
+ 				batcher.PopSampler();
+-				batcher.Render(Window);
 +				batcher.Render(output);
-+				batcher.Clear();
+ 				batcher.Clear();
 +#if VISIONOS_KIT
 +				VisionOSKit.AfterOutput?.Invoke(output);
 +#endif
-+			}
-+		}
+ 			}
+ 		}
 +
 +#if VISIONOS_KIT
 +		VisionOSKit.AfterRender?.Invoke();
 +#endif
-+	}
-+
-+	private FMOD.RESULT MusicTimelineCallback(FMOD.Studio.EVENT_CALLBACK_TYPE type, IntPtr _event, IntPtr parameters)
-+	{
-+		// notify that an audio event happened (but handle it on the main thread)
-+		if (transitionStep == TransitionStep.None)
-+			audioBeatCounterEvent = true;
-+		return FMOD.RESULT.OK;
-+	}
-+}
+ 	}
+ 
+ 	private FMOD.RESULT MusicTimelineCallback(FMOD.Studio.EVENT_CALLBACK_TYPE type, IntPtr _event, IntPtr parameters)
 diff --git a/Source/Graphics/Camera.cs b/Source/Graphics/Camera.cs
 index e184bbf..41a8d39 100644
 --- a/Source/Graphics/Camera.cs
@@ -3388,7 +2789,7 @@ index 33da870..7590a36 100644
  			CutoutMode = false,
  		};
 diff --git a/Source/Scenes/World.cs b/Source/Scenes/World.cs
-index bdfb740..88ff96e 100644
+index bdfb740..197ae95 100644
 --- a/Source/Scenes/World.cs
 +++ b/Source/Scenes/World.cs
 @@ -70,9 +70,20 @@ public class World : Scene
@@ -3412,18 +2813,31 @@ index bdfb740..88ff96e 100644
  		Camera.FOVMultiplier = 1;
  
  		strawbCounterWas = Save.CurrentRecord.Strawberries.Count;
-@@ -394,6 +405,10 @@ public class World : Scene
+@@ -394,6 +405,23 @@ public class World : Scene
  			foreach (var actor in Actors)
  				if (actor.UpdateOffScreen || actor.WorldBounds.Intersects(view))
  					actor.LateUpdate();
 +#if VISIONOS_KIT
 +			// visionOS port: camera probe [c64-cam], one line per second (the player updated the camera above)
 +			VisionOSKit.CamProbe.Update(Camera, Time.Delta);
++			// diagnostics of the Mac check: start a dialog or a strawberry collect at a fixed frame
++			if ((long)Time.Frame == VisionOSKit.Ui.TestTalkFrame)
++			{
++				// Granny's first lines (with portrait) as a plain cutscene; her own Interact would
++				// first walk the player to her
++				Add(new Cutscene(cs => cs.Say(Loc.Lines("Granny1"))));
++				Log.Info($"[c64-ui] diagnostics: test talk (Granny1 lines) at frame {Time.Frame}");
++			}
++			if ((long)Time.Frame == VisionOSKit.Ui.TestStrawbFrame && Get<Player>() is { } strawbPlayer && Get<Strawberry>() is { } strawb)
++			{
++				strawbPlayer.StrawbGet(strawb);
++				Log.Info($"[c64-ui] diagnostics: test strawberry collect at frame {Time.Frame}");
++			}
 +#endif
  		}
  		// unpause
  		else
-@@ -432,6 +447,13 @@ public class World : Scene
+@@ -432,6 +460,13 @@ public class World : Scene
  
  			Controls.Consume();
  			Paused = paused;
@@ -3437,7 +2851,7 @@ index bdfb740..88ff96e 100644
  		}
  	}
  
-@@ -658,8 +680,26 @@ public class World : Scene
+@@ -658,8 +693,26 @@ public class World : Scene
  	public override void Render(Target target)
  	{
  		debugRndTimer.Restart();
@@ -3464,7 +2878,7 @@ index bdfb740..88ff96e 100644
  
  		// create render state
  		RenderState state = new(GraphicsDevice, Time);
-@@ -668,7 +708,11 @@ public class World : Scene
+@@ -668,7 +721,11 @@ public class World : Scene
  			state.ModelMatrix = Matrix.Identity;
  			state.SunDirection = new Vec3(0, -.7f, -1).Normalized();
  			state.Silhouette = false;
@@ -3476,7 +2890,7 @@ index bdfb740..88ff96e 100644
  			state.DepthMask = true;
  			state.VerticalFogColor = 0xdceaf0;
  		}
-@@ -698,9 +742,17 @@ public class World : Scene
+@@ -698,9 +755,17 @@ public class World : Scene
  			}
  
  			// sort models by distance (for transparency)
@@ -3494,7 +2908,7 @@ index bdfb740..88ff96e 100644
  
  			// perp all models
  			foreach (var it in models)
-@@ -709,13 +761,23 @@ public class World : Scene
+@@ -709,13 +774,23 @@ public class World : Scene
  
  		// draw the skybox first
  		{
@@ -3519,7 +2933,7 @@ index bdfb740..88ff96e 100644
  			}
  		}
  
-@@ -725,7 +787,11 @@ public class World : Scene
+@@ -725,7 +800,11 @@ public class World : Scene
  		// render silhouettes
  		{
  			var it = state;
@@ -3531,7 +2945,7 @@ index bdfb740..88ff96e 100644
  			it.DepthMask = false;
  			it.Silhouette = true;
  			RenderModels(ref it, models, ModelFlags.Silhouette);
-@@ -735,8 +801,41 @@ public class World : Scene
+@@ -735,8 +814,43 @@ public class World : Scene
  
  		// render main models
  		RenderModels(ref state, models, ModelFlags.Default);
@@ -3548,7 +2962,9 @@ index bdfb740..88ff96e 100644
 +			// drawable; the panel quad follows the sprites in that same pass (no extra load)
 +			// the UI layer only in frames with something to show: the pause menu, or the timer and
 +			// the strawberry counter during play (head-locked); otherwise no pass at all
-+			var hudVisible = IsInEndingArea || Save.Instance.SpeedrunTimer || strawbCounterEase > 0;
++			uiDialogActive = Get<Cutscene>() != null;
++			uiSplashActive = models.Any((it) => it.Model.Flags.Has(ModelFlags.StrawberryGetEffect));
++			var hudVisible = IsInEndingArea || Save.Instance.SpeedrunTimer || strawbCounterEase > 0 || uiDialogActive || uiSplashActive;
 +			uiLayerActive = VisionOSKit.Ui.Enabled && (Paused || hudVisible);
 +			if (uiLayerActive)
 +				RenderUiLayer();
@@ -3574,7 +2990,7 @@ index bdfb740..88ff96e 100644
  		ApplyPostEffects();
  
  		// render alpha threshold transparent stuff
-@@ -762,22 +861,60 @@ public class World : Scene
+@@ -762,21 +876,67 @@ public class World : Scene
  		// strawberry collect effect
  		if (models.Any((it) => it.Model.Flags.Has(ModelFlags.StrawberryGetEffect)))
  		{
@@ -3582,11 +2998,10 @@ index bdfb740..88ff96e 100644
 -			var orig = new Vec2(img.Width, img.Height) / 2;
 -			var bounds = new Rect(0, 0, Camera.Target.WidthInPixels, Camera.Target.HeightInPixels);
 +#if VISIONOS_KIT
-+			// stereo frame: only the model, the 2D splash and the second edge pass belong to the
-+			// HUD layer (M4b.3b)
++			// stereo frame: the dimming and the splash image come from the UI layer, the effect
++			// model follows after them (below, with depth Always as the original's depth clear)
 +			if (vr != null)
 +			{
-+				RenderModels(ref state, models, ModelFlags.StrawberryGetEffect);
 +			}
 +			else
 +#endif
@@ -3617,8 +3032,8 @@ index bdfb740..88ff96e 100644
 -			ApplyPostEffects();
 +				ApplyPostEffects();
 +			}
- 		}
- 
++		}
++
 +#if VISIONOS_KIT
 +		if (vr != null)
 +		{
@@ -3627,6 +3042,15 @@ index bdfb740..88ff96e 100644
 +			// pause panel: the UI layer as a quad in the world, after the sprites, always on top
 +			if (uiLayerActive)
 +				DrawUiPanel(vr);
++			// strawberry collect effect: the model on top of the dimming and the splash image, as the
++			// original draws it after its depth clear
++			if (uiSplashActive)
++			{
++				var savedCompare = state.DepthCompare;
++				state.DepthCompare = DepthCompare.Always;
++				RenderModels(ref state, models, ModelFlags.StrawberryGetEffect);
++				state.DepthCompare = savedCompare;
++			}
 +			// the wipe over everything, head-locked across the whole view
 +			if (activeWipe != null)
 +				DrawWipeQuad(vr);
@@ -3639,13 +3063,12 @@ index bdfb740..88ff96e 100644
 +			lastDebugRndTime = debugRndTimer.Elapsed;
 +			debugRndTimer.Stop();
 +			return;
-+		}
+ 		}
 +#endif
-+
+ 
  		// ui
  		{
- 			batch.PushSampler(new TextureSampler(TextureFilter.Linear, TextureWrap.Clamp, TextureWrap.Clamp));
-@@ -872,9 +1009,31 @@ public class World : Scene
+@@ -872,9 +1032,31 @@ public class World : Scene
  			// apply post fx
  			postMaterial.CopyFrom(Assets.Materials["Edge"]);
  			postMaterial.Fragment.Samplers[1] = new(target.Attachments[1], new(TextureFilter.Nearest, TextureWrap.Clamp, TextureWrap.Clamp));
@@ -3678,7 +3101,7 @@ index bdfb740..88ff96e 100644
  				Edge = new Color(0x110d33).ToVector4()
  			});
  			batch.PushMaterial(postMaterial);
-@@ -889,6 +1048,451 @@ public class World : Scene
+@@ -889,6 +1071,580 @@ public class World : Scene
  		}
  	}
  
@@ -3825,12 +3248,73 @@ index bdfb740..88ff96e 100644
 +	private VisionOSKit.WipeGeometry wipeGeometry;
 +	private ScreenWipe? activeWipe;   // the wipe of the running transition in this frame, null if none
 +	private bool uiLayerActive;       // the UI layer is drawn in this frame (pause, or timer and counter during play)
++	private bool uiDialogActive;      // a cutscene exists (dialog box and portrait on the layer)
++	private bool uiSplashActive;      // strawberry collect effect (dimming, splash image, model on top)
 +	private bool hudWasVisible;
 +	private int hudFrames;
 +
 +	/// <summary>[c64-ui] once when the head-locked HUD (timer, counter) appears during play, with its pixel box in eye 0, and once when it disappears.</summary>
++	private bool dialogWasActive, splashWasActive, interactablesLogged, dialogFitLogged, linesMeasured;
++
++	/// <summary>Diagnostics (C64_UI_TEST_MEASURE=1): every dialog line of every language against the layer, once.</summary>
++	private void MeasureDialogLines(int layerWidth, int layerHeight)
++	{
++		if (linesMeasured || !VisionOSKit.Ui.TestMeasure)
++			return;
++		linesMeasured = true;
++		var rs = Game.RelativeScale;
++		// the current language's font for every language's texts (only the current one has a font
++		// loaded; Korean glyphs are not in the Latin font, its widths are not meaningful)
++		var font = Language.Current.SpriteFont;
++		foreach (var language in Assets.Languages.Values)
++		{
++			float minLeft = float.MaxValue, maxRight = float.MinValue, maxHeight = 0;
++			string widest = "", tallest = "";
++			var exceeding = 0;
++			foreach (var (key, lines) in language.Dialog)
++			{
++				foreach (var line in lines)
++				{
++					var size = font.SizeOf(line.Text) + Vec2.One * 16 * rs;
++					var shift = string.IsNullOrEmpty(line.Face) ? 0 : 128 * rs / 3;
++					var left = layerWidth / 2f + shift - size.X / 2 - (string.IsNullOrEmpty(line.Face) ? 0 : 0.8f * 128 * rs);
++					var right = layerWidth / 2f + shift + size.X / 2;
++					if (left < minLeft) { minLeft = left; }
++					if (right > maxRight) { maxRight = right; widest = $"{key}[{lines.IndexOf(line)}]"; }
++					if (size.Y > maxHeight) { maxHeight = size.Y; tallest = $"{key}[{lines.IndexOf(line)}]"; }
++					if (left < 0 || right > layerWidth) exceeding++;
++				}
++			}
++			Log.Info($"[c64-ui] measure {language.ID}: layer {layerWidth}x{layerHeight} box extents left={minLeft:F0} right={maxRight:F0} (widest {widest}) height={maxHeight:F0} (tallest {tallest}) exceeding={exceeding}");
++		}
++	}
++
 +	private void NoteHudVisibility(bool visible, VisionOSKit.VRFrame vr)
 +	{
++		// per element: dialog and splash episodes (the HUD line below only marks the whole layer)
++		if (uiDialogActive != dialogWasActive)
++		{
++			dialogWasActive = uiDialogActive;
++			Log.Info($"[c64-ui] dialog {(uiDialogActive ? "shown" : "hidden")} frame={Time.Frame}");
++		}
++		if (uiSplashActive != splashWasActive)
++		{
++			splashWasActive = uiSplashActive;
++			Log.Info($"[c64-ui] splash {(uiSplashActive ? "shown" : "hidden")} frame={Time.Frame}");
++		}
++		if (VisionOSKit.UILayer is { } measureLayer)
++			MeasureDialogLines(measureLayer.Width, measureLayer.Height);
++		else
++			MeasureDialogLines(VisionOSKit.InternalWidth, VisionOSKit.InternalHeight);
++		// once: where the signposts stand relative to the player (Mac check: walk there by script)
++		if (!interactablesLogged && Get<Player>() is { } player)
++		{
++			interactablesLogged = true;
++			var parts = new List<string>();
++			foreach (var actor in All<NPC>())
++				parts.Add($"{actor.GetType().Name}({actor.Position.X:F0}, {actor.Position.Y:F0}, {actor.Position.Z:F0}) d={(actor.Position - player.Position).Length():F0}");
++			Log.Info($"[c64-ui] interactables: player=({player.Position.X:F0}, {player.Position.Y:F0}, {player.Position.Z:F0}) cameraFwd=({Camera.Forward.X:F2}, {Camera.Forward.Y:F2}) {string.Join(" ", parts)}");
++		}
 +		if (visible == hudWasVisible)
 +		{
 +			if (visible) hudFrames++;
@@ -3857,7 +3341,7 @@ index bdfb740..88ff96e 100644
 +				text = $"eye0 bbox px=[{minX:F0}..{maxX:F0}]x[{minY:F0}..{maxY:F0}] of {vr.LogicalWidth}x{vr.LogicalHeight}";
 +			}
 +			var anchor = layer != null && VisionOSKit.Ui.HudInset ? VisionOSKit.Ui.HudAnchor(layer.Width, layer.Height) : new Vec2(4, 8);
-+			Log.Info($"[c64-ui] hud shown timer={(IsInEndingArea || Save.Instance.SpeedrunTimer ? 1 : 0)} counter={(strawbCounterEase > 0 ? 1 : 0)} mode=head-locked anchor=({anchor.X:F0}, {anchor.Y:F0}) layer px {text}");
++			Log.Info($"[c64-ui] hud shown timer={(IsInEndingArea || Save.Instance.SpeedrunTimer ? 1 : 0)} counter={(strawbCounterEase > 0 ? 1 : 0)} dialog={(uiDialogActive ? 1 : 0)} splash={(uiSplashActive ? 1 : 0)} mode=head-locked anchor=({anchor.X:F0}, {anchor.Y:F0}) layer px {text}");
 +		}
 +		else
 +			Log.Info($"[c64-ui] hud hidden after {hudFrames} frames");
@@ -3985,6 +3469,66 @@ index bdfb740..88ff96e 100644
 +	/// </summary>
 +	private void RenderUiBlockForLayer(Rect bounds)
 +	{
++		// cutscene dialog box and portrait (head-locked, top centre as in the original; the bars
++		// are skipped in Cutscene.RenderUI); C64_UI_DIALOG_SCALE shrinks them about that anchor
++		if (uiDialogActive)
++		{
++			// the original puts the box's centre 100 (* RelativeScale) below the top edge; here it
++			// goes to C64_UI_DIALOG_Y degrees above the gaze (the layer's centre), and a box that
++			// would leave the layer (long lines, the portrait to its left) is shrunk to fit
++			var rs = Game.RelativeScale;
++			var font = Language.Current.SpriteFont;
++			var anchor = bounds.TopCenter + new Vec2(0, 100 * rs);
++			var dy = 0f;
++			if (VisionOSKit.Ui.DialogYSet)
++			{
++				var pixelsPerTangent = bounds.Width / (2 * MathF.Tan(VisionOSKit.Ui.FovDegrees * MathF.PI / 360));
++				var targetCentre = bounds.Height / 2 - MathF.Tan(VisionOSKit.Ui.DialogYDegrees * MathF.PI / 180) * pixelsPerTangent;
++				dy = targetCentre - 100 * rs;
++			}
++			var scale = VisionOSKit.Ui.DialogScale;
++			foreach (var actor in All<IHaveUI>())
++			{
++				if (actor is Cutscene { CurrentSaying: { } saying })
++				{
++					// extents as Cutscene.RenderUI lays them out: box centred, shifted right by a
++					// third of the portrait with a face, the portrait 0.8 portrait sizes left of the box
++					var size = font.SizeOf(saying.Text) + Vec2.One * 16 * rs;
++					var shift = string.IsNullOrEmpty(saying.Face) ? 0 : 128 * rs / 3;
++					var left = bounds.Center.X + shift - size.X / 2 - (string.IsNullOrEmpty(saying.Face) ? 0 : 0.8f * 128 * rs);
++					var right = bounds.Center.X + shift + size.X / 2;
++					var margin = 8 * rs;
++					var halfSpan = MathF.Max(bounds.Center.X - left, right - bounds.Center.X);
++					var fit = MathF.Min(1, (bounds.Width / 2 - margin) / halfSpan);
++					if (fit < scale)
++					{
++						scale = fit;
++						if (!dialogFitLogged)
++						{
++							dialogFitLogged = true;
++							Log.Info($"[c64-ui] dialog box exceeds the layer (left={left:F0} right={right:F0} of {bounds.Width:F0}), fitted with scale {fit:F2}: \"{saying.Text.Replace("\n", " / ")}\"");
++						}
++					}
++				}
++			}
++			var pivot = anchor + new Vec2(0, dy);
++			if (scale != 1 || dy != 0)
++				batch.PushMatrix(Matrix3x2.CreateTranslation(-anchor) * Matrix3x2.CreateScale(scale) * Matrix3x2.CreateTranslation(pivot));
++			foreach (var actor in All<IHaveUI>())
++				(actor as IHaveUI)!.RenderUI(batch, bounds);
++			if (scale != 1 || dy != 0)
++				batch.PopMatrix();
++		}
++
++		// strawberry collect: the splash image centred (the world is dimmed by the quad, the
++		// effect model is drawn on top afterwards)
++		if (uiSplashActive)
++		{
++			// the original draws it unscaled at 640x360, so it is scaled with the internal size
++			var img = Assets.Subtextures["splash"];
++			batch.Image(img, bounds.Center, new Vec2(img.Width, img.Height) / 2, Vec2.One * Game.RelativeScale, 0, Color.White);
++		}
++
 +		// pause menu
 +		if (Paused)
 +			pauseMenu.Render(batch, bounds.Center);
@@ -4037,6 +3581,13 @@ index bdfb740..88ff96e 100644
 +			if (!VisionOSKit.UiTablet.TryGetCorners(aspect, out c0, out c1, out c2, out c3))
 +				return;
 +		}
++		else if (uiSplashActive)
++		{
++			// strawberry collect: locked to the game camera (its whole rotation, see the player's
++			// override), so the splash stays behind Madeline while the head looks around
++			if (!VisionOSKit.UiTablet.TryGetCameraLockedCorners(aspect, Camera.Position, Camera.LookAt, out c0, out c1, out c2, out c3))
++				return;
++		}
 +		else
 +		{
 +			// play: head-locked with the full head pose of this frame (timer, strawberry counter)
@@ -4049,7 +3600,8 @@ index bdfb740..88ff96e 100644
 +		var srgbOut = vr.ColorSrgb || VisionOSKit.Ui.ForceSrgbDecode ? 1 : 0;
 +		var linearSampler = new TextureSampler(TextureFilter.Linear, TextureWrap.Clamp, TextureWrap.Clamp);
 +
-+		if (Paused && VisionOSKit.Ui.Style == VisionOSKit.UiStyle.Original)
++		var dimAlpha = Paused && VisionOSKit.Ui.Style == VisionOSKit.UiStyle.Original ? 0.70f : uiSplashActive ? 0.90f : 0f;
++		if (dimAlpha > 0)
 +		{
 +			// the original's full-screen dimming (black, 70 %) over the whole view of both eyes:
 +			// clip-space corners with identity matrices, no depth test and no depth write, so the
@@ -4071,7 +3623,7 @@ index bdfb740..88ff96e 100644
 +				SrgbOut = srgbOut,
 +				Opacity = 1,
 +				Dim = 1,
-+				DimAlpha = 0.70f,
++				DimAlpha = dimAlpha,
 +			});
 +			GraphicsDevice.Draw(new DrawCommand(Camera.Target, quad, uiDimMaterial)
 +			{
@@ -4145,10 +3697,10 @@ index 650a35e..68b1c05 100644
  	private const float EaseClosePercent = 0.3f; // how long (in percent) it eases the entire screen
 diff --git a/Source/VisionOSKit.cs b/Source/VisionOSKit.cs
 new file mode 100644
-index 0000000..5b2c108
+index 0000000..e44c43b
 --- /dev/null
 +++ b/Source/VisionOSKit.cs
-@@ -0,0 +1,1678 @@
+@@ -0,0 +1,1721 @@
 +#if VISIONOS_KIT
 +// VisionOSKit.cs — Schalter des visionOS-Ports für Mac-Läufe (K6b, nur mit UseLocalFoster gebaut).
 +//
@@ -4753,9 +4305,12 @@ index 0000000..5b2c108
 +	/// the game camera (forward = LookAt - Position, up from the world's Z), falls back to the
 +	/// yaw when the camera looks straight up or down.
 +	/// </summary>
++	/// <summary>Set by the player while a strawberry is collected: the game camera's whole rotation carries the head (the world is dimmed to 10 %, the tilted horizon hardly shows), so Madeline and the berry stay framed as in the original.</summary>
++	public static bool CameraFullRotationOverride { get; set; }
++
 +	public static Matrix BaseRotation(Vec3 position, Vec3 lookAt)
 +	{
-+		if (Cam.Mode == CameraBaseMode.Full)
++		if (Cam.Mode == CameraBaseMode.Full || CameraFullRotationOverride)
 +		{
 +			var forward = lookAt - position;
 +			var length = forward.Length();
@@ -4910,6 +4465,19 @@ index 0000000..5b2c108
 +		/// </summary>
 +		public static readonly bool HudInset;
 +		public static readonly float HudXDegrees, HudYDegrees;
++		/// <summary>C64_UI_LETTERBOX=1 draws the cutscene's black bars in the stereo world too (default off: head-locked bars across the view).</summary>
++		public static readonly bool Letterbox;
++		/// <summary>C64_UI_DIALOG_SCALE: scale of the dialog box and portrait about their top-centre anchor on the layer (default 1 = original size).</summary>
++		public static readonly float DialogScale;
++		/// <summary>C64_UI_DIALOG_Y: centre of the dialog box in degrees above the gaze (default 1.5: the portrait's top stays below the timer at 16/11 degrees with a margin, the box lies in the sharp zone); `off` = the original 100 layer pixels below the top edge.</summary>
++		public static readonly bool DialogYSet;
++		public static readonly float DialogYDegrees;
++		/// <summary>Diagnostics (Mac check): C64_UI_TEST_MEASURE=1 measures every dialog line of every language against the layer once.</summary>
++		public static readonly bool TestMeasure;
++		/// <summary>True while a stereo frame is being rendered and the bars are switched off: Cutscene.RenderUI skips them.</summary>
++		public static bool SkipLetterbox => Frame != null && !Letterbox;
++		/// <summary>Diagnostics (Mac check): C64_UI_TEST_TALK=frame starts the first NPC's dialog at that game frame, C64_UI_TEST_STRAWB=frame the collect effect of the first strawberry; -1 = off.</summary>
++		public static readonly long TestTalkFrame = -1, TestStrawbFrame = -1;
 +
 +		static Ui()
 +		{
@@ -4927,8 +4495,19 @@ index 0000000..5b2c108
 +			var hudX = Environment.GetEnvironmentVariable("C64_UI_HUD_X");
 +			var hudY = Environment.GetEnvironmentVariable("C64_UI_HUD_Y");
 +			HudInset = hudX != "off" && hudY != "off";
-+			HudXDegrees = ReadFloat("C64_UI_HUD_X", 12f, 0f, 40f);
-+			HudYDegrees = ReadFloat("C64_UI_HUD_Y", 9f, -20f, 20f);
++			HudXDegrees = ReadFloat("C64_UI_HUD_X", 16f, 0f, 40f);
++			HudYDegrees = ReadFloat("C64_UI_HUD_Y", 11f, -20f, 20f);
++			Letterbox = Environment.GetEnvironmentVariable("C64_UI_LETTERBOX") == "1";
++			if (long.TryParse(Environment.GetEnvironmentVariable("C64_UI_TEST_TALK"), out var talk)) TestTalkFrame = talk;
++			if (long.TryParse(Environment.GetEnvironmentVariable("C64_UI_TEST_STRAWB"), out var strawb)) TestStrawbFrame = strawb;
++			if (TestTalkFrame >= 0 || TestStrawbFrame >= 0)
++				Log.Info($"[c64-ui] diagnostics: test talk at frame {TestTalkFrame}, test strawberry at frame {TestStrawbFrame}");
++			DialogScale = ReadFloat("C64_UI_DIALOG_SCALE", 1f, 0.3f, 1f);
++			DialogYSet = Environment.GetEnvironmentVariable("C64_UI_DIALOG_Y") != "off";
++			DialogYDegrees = ReadFloat("C64_UI_DIALOG_Y", 1.5f, -14f, 14f);
++			TestMeasure = Environment.GetEnvironmentVariable("C64_UI_TEST_MEASURE") == "1";
++			Log.Info($"[c64-ui] C64_UI_DIALOG_Y={(DialogYSet ? DialogYDegrees.ToString("F1", System.Globalization.CultureInfo.InvariantCulture) : "off")} deg above the gaze (centre of the dialog box; off = 100 layer pixels below the top edge)");
++			Log.Info($"[c64-ui] C64_UI_LETTERBOX={(Letterbox ? 1 : 0)} ({(Letterbox ? "cutscene bars drawn head-locked" : "cutscene bars left out in the stereo world")}) C64_UI_DIALOG_SCALE={DialogScale.ToString("F2", System.Globalization.CultureInfo.InvariantCulture)} (dialog box and portrait about their top-centre anchor)");
 +			if (HudInset)
 +				Log.Info($"[c64-ui] C64_UI_HUD_X={HudXDegrees.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)} C64_UI_HUD_Y={HudYDegrees.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)} deg left/above the gaze during play, estimated density {EstimateDensity(HudXDegrees, HudYDegrees):F2} (model from M4a.4b: centre 1.0, 25 deg 0.33, up 14.7 deg 0.82); pause keeps the original corner");
 +			else
@@ -5128,6 +4707,22 @@ index 0000000..5b2c108
 +				return false;
 +			var relativeNow = Matrix.CreateTranslation(0, 0, -Ui.DistanceMeters) * session.Head;
 +			var m = WorldFromRelative(relativeNow, cameraPosition, BaseRotation(cameraPosition, cameraLookAt));
++			CornersOf(m, aspect, out c0, out c1, out c2, out c3);
++			return true;
++		}
++
++		/// <summary>
++		/// Corners of a layer locked to the game camera (the strawberry splash): straight ahead of the
++		/// camera base (its position and rotation, no head), DistanceMeters ahead; the head looks
++		/// around it like around the world.
++		/// </summary>
++		public static bool TryGetCameraLockedCorners(float aspect, Vec3 cameraPosition, Vec3 cameraLookAt, out Vec3 c0, out Vec3 c1, out Vec3 c2, out Vec3 c3)
++		{
++			c0 = c1 = c2 = c3 = default;
++			if (StereoSession == null)
++				return false;
++			var relativeAhead = Matrix.CreateTranslation(0, 0, -Ui.DistanceMeters);
++			var m = WorldFromRelative(relativeAhead, cameraPosition, BaseRotation(cameraPosition, cameraLookAt));
 +			CornersOf(m, aspect, out c0, out c1, out c2, out c3);
 +			return true;
 +		}

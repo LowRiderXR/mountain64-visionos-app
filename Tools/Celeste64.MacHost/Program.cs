@@ -59,6 +59,7 @@
 //   --tap-pause T,T     M4c.1: an diesen Ticks die Pausentaste (Escape) kurz drücken (SDL_PushEvent)
 //   --tap-down T,T      M4c.1c: an diesen Ticks die Menütaste Abwärts kurz drücken
 //   --layer-dump-ticks T,T  M4c.1c: zusätzlich an diesen Ticks Schichtvergleich und -dump
+//   --hold-key K:T0:T1  M4c.3: Taste K (w a s d c) von Tick T0 bis T1 halten (Bewegung)
 //   --key-probe N       K6f.4: vor Tick N ein F7-Tastenereignis einspeisen (SDL_PushEvent), zwei
 //                       Ticks später loslassen; meldet, nach welchem Tick Foster die Taste als
 //                       gedrückt bzw. losgelassen sieht (vor da3b23a N+1, nachher N)
@@ -179,6 +180,7 @@ long keyProbeAt = -1;
 var tapPause = new List<long>();     // M4c.1: Escape (pause) at these ticks, released two ticks later
 var tapDown = new List<long>();      // M4c.1c: menu Down key at these ticks
 var layerDumpTicks = new List<long>(); // M4c.1c: additional layer dumps at these ticks
+var holdKeys = new List<(SDL_Scancode key, long from, long to)>(); // M4c.3: hold a movement key between two ticks
 long keyProbeSeenDown = -1, keyProbeSeenUp = -1;
 // M4b.2: Reverse-Z-Pfad, Testprojektion, Tiefenprüfung
 bool vrDepth = false, testProjection = false;
@@ -242,6 +244,14 @@ for (int i = 0; i < args.Length; i++)
 		case "--tap-pause": foreach (var t in args[++i].Split(',')) tapPause.Add(long.Parse(t)); break;
 		case "--tap-down": foreach (var t in args[++i].Split(',')) tapDown.Add(long.Parse(t)); break;
 		case "--layer-dump-ticks": foreach (var t in args[++i].Split(',')) layerDumpTicks.Add(long.Parse(t)); break;
+		case "--hold-key":
+		{
+			// NAME:FROM:TO, NAME one of w a s d c
+			var parts = args[++i].Split(':');
+			var key = parts[0] switch { "w" => SDL_Scancode.SDL_SCANCODE_W, "a" => SDL_Scancode.SDL_SCANCODE_A, "s" => SDL_Scancode.SDL_SCANCODE_S, "d" => SDL_Scancode.SDL_SCANCODE_D, _ => SDL_Scancode.SDL_SCANCODE_C };
+			holdKeys.Add((key, long.Parse(parts[1]), long.Parse(parts[2])));
+			break;
+		}
 		case "--vr-depth": vrDepth = true; break;
 		case "--test-projection": testProjection = true; break;
 		case "--depth-check": depthCheck = int.Parse(args[++i]); break;
@@ -793,6 +803,8 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 	if (keyProbeAt >= 0 && totalTicks == keyProbeAt + 2) PushKey(false, SDL_Scancode.SDL_SCANCODE_F7);
 	// M4c.1: pause key (Escape) at a fixed tick, released two ticks later; opens the pause menu in the level
 	foreach (var t in tapPause) { if (totalTicks == t) PushKey(true, SDL_Scancode.SDL_SCANCODE_ESCAPE); if (totalTicks == t + 2) PushKey(false, SDL_Scancode.SDL_SCANCODE_ESCAPE); }
+	// M4c.3: held keys (movement) between two ticks
+	foreach (var h in holdKeys) { if (totalTicks == h.from) PushKey(true, h.key); if (totalTicks == h.to) PushKey(false, h.key); }
 	// M4c.1c: menu Down at fixed ticks (released two ticks later), e.g. to reach Retry in the pause menu
 	foreach (var t in tapDown) { if (totalTicks == t) PushKey(true, SDL_Scancode.SDL_SCANCODE_DOWN); if (totalTicks == t + 2) PushKey(false, SDL_Scancode.SDL_SCANCODE_DOWN); }
 
