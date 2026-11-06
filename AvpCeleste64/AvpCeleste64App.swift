@@ -8,7 +8,7 @@
 //  unsichtbar (.plain, Color.clear, klein) und öffnet in seinem .task sofort den Raum; bei
 //  .opened schliesst es sich (dismissWindow). Der direkte Start in eine CP-Szene liess den Raum
 //  auf der M5 im gemischten Stil (Passthrough) und das World Tracking in paused.
-//  Reihenfolge wie im alten Knopf-Pfad (M4a.5b-6): im Startfenster zuerst Leinwand, Queue,
+//  Reihenfolge (M4a.5b-6): im Startfenster zuerst Leinwand, Queue,
 //  Audio-Session, celeste_init mit den Ladeticks und celeste_set_canvas, solange nur die
 //  Fensterszene verbunden ist (SDLs verstecktes UIWindow hängt sich an sie); dann
 //  openImmersiveSpace, im Layer-Closure Renderer und ARKit, bei .opened dismissWindow. Der
@@ -42,6 +42,8 @@ struct AvpCeleste64App: App {
 
     init() {
         _ = LaunchClock.reference
+        // Probe-Datei anlegen und rotieren (oder nur die alte Documents-Datei löschen, ohne Probe).
+        _ = ProgressFile.shared
     }
 
     var body: some Scene {
@@ -95,7 +97,7 @@ struct LauncherView: View {
                     appModel.immersiveState = .open
                     c64Record("[c64-launch] tMs=\(LaunchClock.tMs) opened; \(CelesteProbe.lifecycleLine)")
                     CelesteProbe.windowSnapshot("before-dismiss", since: LaunchClock.reference)
-                    if CelesteProbe.isRequested, CelesteProbe.mode != .probe, CelesteProbe.mode != .window {
+                    if CelesteProbe.gameEnabled {
                         CelesteProbe.sdlWindowInfo("before-dismiss")
                     }
                     GameStartup.logAfterLauncherClosed()
@@ -145,28 +147,20 @@ struct ImmersiveContent: CompositorContent {
 
 /// Start des Spiels auf dem Hauptthread im Startfenster (M4a.5b-6), vor dem Öffnen des Raums:
 /// prepareHost (Device, Queue, Leinwand), run (Audio-Session, celeste_init, Ladeticks,
-/// celeste_set_canvas, Freigabe). Die Statuszeilen gehen ins Log ([c64-start]).
-/// Standard ist der Modus play (C64_CELESTE unset); die Testmodi bleiben über C64_CELESTE und
-/// die Kit-Modi über C64_KIT erreichbar.
+/// celeste_set_canvas, Freigabe). Die Statuszeilen gehen in die Probe ([c64-start]). In
+/// Debug-Builds schaltet ein Kit-Modus (C64_KIT) das Spiel aus und startet die Kit-Testszene.
 @MainActor
 enum GameStartup {
     static let launcherWindowID = "c64-launcher"
     private static var startTask: Task<Void, Never>?
 
     /// Vor dem Öffnen des Raums: Device und Queue (der Renderer übernimmt sie im Layer-Closure)
-    /// und die Leinwandtextur für die Modi canvas und play. Kein SDL, kein Celeste.
+    /// und die Leinwandtextur. Kein SDL, kein Celeste.
     static func prepareHost() {
-        let mode = CelesteProbe.mode
-        c64Record("[c64-start] prepareHost mode=\(mode.rawValue) C64_CELESTE=\(ProbeContext.environment(CelesteProbe.environmentKey)) C64_KIT=\(ProbeContext.environment(KitProbe.environmentKey))")
-        switch mode {
-        case .canvas, .play:
-            if !CelesteProbe.prepareCanvas() {
-                c64Record("[c64-start] Leinwand konnte nicht angelegt werden")
-            }
-        case .tick, .initialize, .probe:
-            _ = CelesteProbe.ensureHostDevice()
-        case .off, .window:
-            break
+        c64Record("[c64-start] prepareHost game=\(CelesteProbe.gameEnabled ? 1 : 0)")
+        guard CelesteProbe.gameEnabled else { return }
+        if !CelesteProbe.prepareCanvas() {
+            c64Error("[c64-start] Leinwand konnte nicht angelegt werden")
         }
     }
 
@@ -189,7 +183,7 @@ enum GameStartup {
             }
             c64Record("[c64-launch] tMs=\(LaunchClock.tMs) launcher closed after \(polls) polls; \(CelesteProbe.lifecycleLine)")
             CelesteProbe.windowSnapshot("after-dismiss", since: LaunchClock.reference)
-            if CelesteProbe.isRequested, CelesteProbe.mode != .probe, CelesteProbe.mode != .window {
+            if CelesteProbe.gameEnabled {
                 CelesteProbe.sdlWindowInfo("after-dismiss")
             }
         }
@@ -197,65 +191,38 @@ enum GameStartup {
 
     static func run(appModel: AppModel) {
         let start = DispatchTime.now()
-        let celesteMode = CelesteProbe.mode
-        c64Record("[c64-start] tMs=\(LaunchClock.tMs) mode=\(celesteMode.rawValue) thread=\(Thread.isMainThread ? "main" : "other")")
-        if celesteMode != .off, celesteMode != .window, celesteMode != .probe {
+        c64Record("[c64-start] tMs=\(LaunchClock.tMs) game=\(CelesteProbe.gameEnabled ? 1 : 0) thread=\(Thread.isMainThread ? "main" : "other")")
+        if CelesteProbe.gameEnabled {
             // Vor celeste_init: Audio-Session unabhängig von Fensterszenen (Vice City: ohne
             // .playback starb der Ton mit dem 2D-Fenster; FMOD überlässt die Kategorie der App).
             CelesteProbe.configureAudioSession()
             // Lebenszyklus- und Audio-Signale ins Log (M4a.5c).
             CelesteProbe.LifecycleMonitor.shared.start()
-        }
-
-        switch celesteMode {
-        case .off:
-            c64Record("[c64-start] Celeste aus")
-        case .probe:
-            // M1a.2: celeste_version und celeste_capabilities_get, kein celeste_init.
-            let result = CelesteProbe.runProbe()
-            c64Record("[c64-start] Celeste-Hülle: \(result.ok ? "\(result.version); \(result.capabilitiesLine)" : "Fähigkeitsprüfung fehlgeschlagen")")
-        case .initialize:
-            // M1a.4: celeste_init mit verstecktem Fenster und die ersten Ticks; Szenen-Schnappschüsse
-            // bei 0,2, 1 und 2 s laufen nebenher.
-            let result = CelesteProbe.runInit(since: start)
-            c64Record("[c64-start] Celeste gestartet: \(result.ok ? "\(result.version); nach init \(result.capabilitiesLine)" : "fehlgeschlagen, \(result.capabilitiesLine)")")
-            Task { await snapshotMarks(since: start) }
-        case .window:
-            c64Record("[c64-start] Vergleichslauf ohne Celeste: Szenen-Schnappschüsse bei 0, 0,2, 1 und 2 s")
-            Task { await snapshotMarks(since: start) }
-        case .canvas:
-            // M4a.2: Leinwand ohne Celeste (angelegt in prepareHost).
-            c64Record("[c64-start] Leinwand \(CelesteProbe.canvasTexture != nil ? "bereit (\(CelesteProbe.canvasWidth)×\(CelesteProbe.canvasHeight), \(CelesteProbe.canvasFovDegrees)°)" : "fehlt")")
-        case .play:
             // M4a.3: Celeste laden, Endbild in die Leinwand (ohne laufenden Tick), Freigabe; die
             // Leinwand kommt aus prepareHost.
-            guard CelesteProbe.canvasTexture != nil else {
-                c64Record("[c64-start] Leinwand fehlt (prepareHost), Celeste nicht gestartet")
-                break
-            }
-            let result = CelesteProbe.runInit(since: start)
-            if result.ok, CelesteProbe.attachCanvasToGame() {
-                // M4b L6: der Leinwand-Schnappschuss nach 600 Ticks (Blit, waitUntilCompleted, PNG
-                // in Documents, rund 100 ms auf dem Render-Thread) nur noch mit C64_SNAPSHOT=1;
-                // er war der eine Ausreisser kurz nach dem Levelstart
-                let snapshot = ProcessInfo.processInfo.environment["C64_SNAPSHOT"] == "1"
-                CelesteProbe.tickState.markReady(snapshotQueue: snapshot ? CelesteProbe.commandQueue : nil,
-                                                 snapshotTexture: snapshot ? CelesteProbe.canvasTexture : nil)
-                c64Record("[c64-start] Celeste geladen (\(result.version)), Endbild auf der Leinwand; der Render-Thread tickt ab dem ersten Frame\(snapshot ? "" : "; Leinwand-Schnappschuss aus (C64_SNAPSHOT=1)")")
+            if CelesteProbe.canvasTexture == nil {
+                c64Error("[c64-start] Leinwand fehlt (prepareHost), Celeste nicht gestartet")
             } else {
-                c64Record("[c64-start] Celeste-Start oder Leinwand fehlgeschlagen: \(result.capabilitiesLine)")
+                let result = CelesteProbe.runInit(since: start)
+                if result.ok, CelesteProbe.attachCanvasToGame() {
+                    CelesteProbe.tickState.markReady()
+                    #if DEBUG
+                    // M4b L6: der Leinwand-Schnappschuss nach 600 Ticks (Blit, waitUntilCompleted,
+                    // PNG in Documents, rund 100 ms auf dem Render-Thread) nur mit C64_SNAPSHOT=1.
+                    if HostEnvironment.string("C64_SNAPSHOT") == "1", let queue = CelesteProbe.commandQueue, let texture = CelesteProbe.canvasTexture {
+                        CelesteProbe.tickState.enableSnapshot(queue: queue, texture: texture)
+                    }
+                    #endif
+                    c64Record("[c64-start] Celeste geladen (\(result.version)), Endbild auf der Leinwand; der Render-Thread tickt ab dem ersten Frame")
+                } else {
+                    c64Error("[c64-start] Celeste-Start oder Leinwand fehlgeschlagen: \(result.capabilitiesLine)")
+                }
             }
-        case .tick:
-            // M1a.5: init und Laden, dann Freigabe ohne Leinwand.
-            let result = CelesteProbe.runInit(since: start)
-            if result.ok {
-                CelesteProbe.tickState.markReady()
-                c64Record("[c64-start] Celeste geladen (\(result.version)); der Render-Thread tickt ab dem ersten Frame")
-            } else {
-                c64Record("[c64-start] Celeste-Start fehlgeschlagen: \(result.capabilitiesLine)")
-            }
+        } else {
+            c64Record("[c64-start] Spiel aus (Kit-Modus)")
         }
 
+        #if DEBUG
         // Kit-Testszenen hinter C64_KIT (Standard aus), auf dem Hauptthread vor der Schleife:
         //   =1       K0: ganze Szene hier, SDL erzeugt Device und Queue selbst, SDL_Quit am Ende.
         //   =inject  K1a: hier nur SDL_Init; die Szene läuft im Render-Thread vor dem ersten Frame.
@@ -270,20 +237,10 @@ enum GameStartup {
                 c64Record("[c64-start] SDL_Init für Kit-Modus \(kitMode.rawValue): \(ok ? "ok" : "fehlgeschlagen")")
             }
         }
+        #endif
 
         let ms = Double(DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000
         c64Record("[c64-start] tMs=\(LaunchClock.tMs) done ms=\(CelesteProbe.format(ms))")
-    }
-
-    /// Szenen-Schnappschüsse bei 0,2 s, 1 s und 2 s nach dem Start (Modi init und window).
-    private static func snapshotMarks(since start: DispatchTime) async {
-        for mark in [0.2, 1.0, 2.0] {
-            let elapsed = Double(DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000_000
-            if elapsed < mark {
-                try? await Task.sleep(for: .seconds(mark - elapsed))
-            }
-            CelesteProbe.windowSnapshot("t\(mark)s", since: start)
-        }
     }
 }
 
@@ -292,7 +249,7 @@ enum GameStartup {
 nonisolated struct ProbeLayerConfiguration: CompositorLayerConfiguration {
     func makeConfiguration(capabilities: LayerRenderer.Capabilities,
                            configuration: inout LayerRenderer.Configuration) {
-        let environment = ProcessInfo.processInfo.environment
+        let environment = HostEnvironment.values
 
         // Foveation an (Standard des Produkts, M4a.5b); C64_FOVEATION=0 schaltet sie aus.
         let foveation = environment["C64_FOVEATION"] != "0" && capabilities.supportsFoveation
@@ -339,7 +296,7 @@ nonisolated struct ProbeLayerConfiguration: CompositorLayerConfiguration {
         let maxQuality = configuration.maxRenderQuality.rawValue
         let defaultQuality = capabilities.defaultRenderQuality.rawValue
         let layoutMode = foveation ? "foveated" : "plain"
-        c64Log.notice("[c64-caps] supportsFoveation=\(capabilities.supportsFoveation, privacy: .public) layouts(\(layoutMode, privacy: .public))=\(layoutNames, privacy: .public) colorFormats=\(colorNames, privacy: .public) depthFormats=\(depthNames, privacy: .public) defaultRenderQuality=\(defaultQuality, privacy: .public) maxRenderQuality=\(maxQuality, privacy: .public)")
+        c64Record("[c64-caps] supportsFoveation=\(capabilities.supportsFoveation) layouts(\(layoutMode))=\(layoutNames) colorFormats=\(colorNames) depthFormats=\(depthNames) defaultRenderQuality=\(defaultQuality) maxRenderQuality=\(maxQuality)")
     }
 
     static func name(_ layout: LayerRenderer.Layout) -> String {

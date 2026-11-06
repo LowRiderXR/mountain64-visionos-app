@@ -253,9 +253,10 @@ public static unsafe class Exports
 	}
 
 	/// <summary>
-	/// Logs controller connections and button presses as Foster's input sees them after a tick,
-	/// so a host can verify that SDL's events reach the thread that ticks (gamepads are the
-	/// input of the port; the keyboard is not probed).
+	/// Logs controller connections and disconnections as Foster's input sees them after a tick
+	/// (gamepads are the input of the port; the keyboard is not probed). Single button presses
+	/// are not logged: they filled the probe without telling anything new once the thread
+	/// question was settled.
 	/// </summary>
 	private static void LogControllerChanges(Game game)
 	{
@@ -268,13 +269,6 @@ public static unsafe class Exports
 			{
 				controllerConnected[i] = controller.Connected;
 				Log.Info($"{Tag} controller index={i} connected={(controller.Connected ? 1 : 0)} name=\"{controller.Name}\" gamepad={(controller.IsGamepad ? 1 : 0)} type={controller.GamepadType} thread={threadId} tick={ticks}");
-			}
-			if (!controller.Connected)
-				continue;
-			for (int button = 0; button < ControllerState.MaxButtons; button++)
-			{
-				if (controller.Pressed(button))
-					Log.Info($"{Tag} controller index={i} pressed={(Buttons)button} ({button}) thread={threadId} tick={ticks}");
 			}
 		}
 	}

@@ -2,7 +2,7 @@
 //  AppModel.swift
 //  AvpCeleste64
 //
-//  Zustand für das Fenster: ob der ImmersiveSpace offen ist und was die Statuszeile zeigt.
+//  Zustand für das Startfenster: ob der ImmersiveSpace offen ist.
 //
 
 import Foundation
@@ -20,6 +20,4 @@ final class AppModel {
     let immersiveSpaceID = "c64-immersive"
 
     var immersiveState: ImmersiveState = .closed
-    var statusLine = "Bereit. Stall-Probe: \(StallPlan.fromEnvironment().isEmpty ? "aus" : "an")."
-    var frameLine = ""
 }

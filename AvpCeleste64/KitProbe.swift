@@ -23,8 +23,8 @@
 //                       store_op der MSAA-Tiefe und schaltet die Tiefenprobe ein (step=depth-probe).
 //
 //  Prüft Risiko R1 (K0), die Besitzregeln von P1 (K1a), den Texturimport P3 (K1b) und Multiview
-//  P6 (K2) aus Docs/celeste64/sdl-gpu-kit-analyse.md. Jede Zeile der Szene geht ins Unified Log
-//  und in die Fortschrittsdatei.
+//  P6 (K2) aus Docs/celeste64/sdl-gpu-kit-analyse.md. Jede Zeile der Szene geht in die Probe.
+//  Nur in Debug-Builds übersetzt (Release und Diagnostics kennen keinen Kit-Modus).
 //
 //  Thread-Belege (SDL main 4cfdb71ee): SDL_Init(VIDEO) läuft über UIKit_VideoInit
 //  (SDL_uikitvideo.m:153) und gehört auf den Hauptthread; SDL_CreateGPUDevice und
@@ -36,6 +36,7 @@ import Metal
 import os
 import simd
 
+#if DEBUG
 nonisolated enum KitProbe {
     static let environmentKey = "C64_KIT"
 
@@ -46,15 +47,11 @@ nonisolated enum KitProbe {
         case multiview = "multiview"
     }
 
-    static var mode: Mode? {
-        Mode(rawValue: ProcessInfo.processInfo.environment[environmentKey] ?? "")
-    }
+    static let mode: Mode? = Mode(rawValue: HostEnvironment.string(environmentKey) ?? "")
 
     static var isRequested: Bool { mode != nil }
 
-    private static var debugRequested: Bool {
-        ProcessInfo.processInfo.environment["C64_KIT_DEBUG"] == "1"
-    }
+    private static let debugRequested: Bool = HostEnvironment.string("C64_KIT_DEBUG") == "1"
 
     /// C-Callback ohne Kontext: schreibt jede Zeile der Szene ins Log und in die Datei.
     static let logLine: kit_log_fn = { line, _ in
@@ -122,9 +119,8 @@ nonisolated enum KitProbe {
     /// Diagnose-Schalter: C64_KIT_WAIT=1 (auf SDLs Fence warten, bevor das Gerüst committet),
     /// C64_KIT_VERIFY=1 (alle 90 Frames den Mittelpixel der importierten Farbtextur zurücklesen).
     static func beginImport(device: MTLDevice, queue: MTLCommandQueue) -> OpaquePointer? {
-        let environment = ProcessInfo.processInfo.environment
-        let wait = environment["C64_KIT_WAIT"] == "1"
-        let verify = environment["C64_KIT_VERIFY"] == "1"
+        let wait = HostEnvironment.string("C64_KIT_WAIT") == "1"
+        let verify = HostEnvironment.string("C64_KIT_VERIFY") == "1"
         c64Record("[c64-kit] start mode=import thread=\(Thread.current.name ?? "?") device=\"\(device.name)\" queue=\"\(queue.label ?? "-")\" C64_KIT_WAIT=\(wait) C64_KIT_VERIFY=\(verify)")
         guard let session = kit_import_begin(pointer(device as AnyObject), pointer(queue as AnyObject), logLine, nil) else {
             return nil
@@ -282,3 +278,4 @@ nonisolated struct KitQuadPlacement {
         return (center, right, up)
     }
 }
+#endif

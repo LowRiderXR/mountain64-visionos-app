@@ -2,11 +2,12 @@
 //  TestScene.swift
 //  AvpCeleste64
 //
-//  Testszene P0b-2 hinter dem Schalter C64_TESTSCENE=1: ein Quad mit feinem Schachbrett,
-//  rund 1 m × 1 m, 1,5 m vor der Startposition auf Augenhöhe, in der Welt verankert.
+//  Testszene P0b-2 hinter dem Schalter C64_TESTSCENE=1 (nur Debug-Builds): ein Quad mit feinem
+//  Schachbrett, rund 1 m × 1 m, 1,5 m vor der Startposition auf Augenhöhe, in der Welt verankert.
 //  Gezeichnet im bestehenden Clear-Pass über beide Schichten, beide Augen in einem Draw per
 //  Vertex Amplification (Anzahl 2, View-Mapping auf Schicht 0 und 1), Reverse-Z mit
-//  Tiefenschreiben, damit der Compositor gültige Tiefe bekommt.
+//  Tiefenschreiben, damit der Compositor gültige Tiefe bekommt. TestUniforms bleibt in jedem
+//  Build: die Leinwand (CanvasScene) nutzt denselben Vertex-Shader.
 //
 
 import ARKit
@@ -25,6 +26,7 @@ struct TestUniforms {
     var up: SIMD4<Float>
 }
 
+#if DEBUG
 nonisolated final class TestScene: @unchecked Sendable {
     static let environmentKey = "C64_TESTSCENE"
 
@@ -32,13 +34,13 @@ nonisolated final class TestScene: @unchecked Sendable {
     /// Weltpose: das Quad muss dann immer vor den Augen liegen).
     enum Mode { case world, headLocked }
 
-    static var requestedMode: Mode? {
-        switch ProcessInfo.processInfo.environment[environmentKey] {
+    static let requestedMode: Mode? = {
+        switch HostEnvironment.string(environmentKey) {
         case "1": return .world
         case "2": return .headLocked
         default: return nil
         }
-    }
+    }()
 
     static var isRequested: Bool { requestedMode != nil }
 
@@ -196,3 +198,4 @@ nonisolated final class TestScene: @unchecked Sendable {
         encoder.popDebugGroup()
     }
 }
+#endif

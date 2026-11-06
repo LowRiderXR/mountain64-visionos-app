@@ -2,27 +2,18 @@
 //  CelesteProbe.swift
 //  AvpCeleste64
 //
-//  Schalter C64_CELESTE (Standard aus):
-//    C64_CELESTE=probe  Stufe M1a.2: beim Start im Hauptthread celeste_version und
-//                       celeste_capabilities_get aus Celeste64.VisionOS.framework aufrufen und
-//                       loggen. Kein celeste_init, kein SDL, kein Spiel; die Hülle beweist nur,
-//                       dass die Native-AOT-Bibliothek geladen ist und die Fähigkeitsprüfung
-//                       vor dem Spiel läuft (Docs port-analyse.md, «Analyse M1a», Wege a und c).
-//    C64_CELESTE=init   Stufe M1a.4 (Variante B, Teil 1): wie probe, dann celeste_init auf dem
-//                       Hauptthread vor dem ImmersiveSpace mit verstecktem Fenster, Device und
-//                       Queue des Hosts und dem Bundle als Content-Root; danach acht Ticks mit
-//                       present 0 auf dem Hauptthread, bis Celeste seine Inhalte geladen hat
-//                       (Startup.cs: Laden im fünften Update), und die Fähigkeiten nach init.
-//                       Fensterprüfung: UIKit-Fenster der Szene vor, direkt nach und eine
-//                       Sekunde nach init. celeste_end wird nicht gerufen (SDL_Quit beendet
-//                       SDL im ganzen Prozess). Kein Tick auf dem Render-Thread (M1a.5).
+//  Start und Betrieb des Spiels im Host: celeste_init auf dem Hauptthread im Startfenster
+//  (verstecktes SDL-Fenster, Device und Queue des Hosts, Bundle als Content-Root, Ladeticks,
+//  celeste_set_canvas), danach tickt der Render-Thread des Compositors (TickState: Update in der
+//  Update-Phase, Render nach dem Device Anchor, Stereo-Weltpass über celeste_render_frame_vr),
+//  Pause und Ton (PauseState, suspendAudio), sauberes Ende (requestExit), Bezugspunkt O der
+//  Kopfpose (StereoOrigin) und die Statistik je Sekunde (tick-stats).
 //
-//  Unabhängig von C64_KIT; init und ein Kit-Modus zusammen sind nicht sinnvoll (zwei SDL_GPU-
-//  Devices auf demselben MTLDevice), die Kit-Modi laufen aber unverändert danach.
-//
-//  Weitere Schalter (M4a.4, siehe GameSettings): C64_RES für die interne Auflösung des Spiels
-//  (Standard 1920x1080) und C64_LINE für die Umrissbreite (Standard auto); die Leinwand hat die
-//  interne Auflösung, C64_CANVAS_FOV ihre Winkelbreite, C64_CANVAS_FILTER den Filter.
+//  Schalter (siehe GameSettings): C64_RES für die interne Auflösung des Spiels (Standard
+//  1920x1080) und C64_LINE für die Umrissbreite (Standard auto); die Leinwand hat die interne
+//  Auflösung, C64_CANVAS_FOV ihre Winkelbreite, C64_CANVAS_FILTER den Filter. In Debug-Builds
+//  schaltet ein Kit-Modus (C64_KIT) das Spiel aus, und C64_SNAPSHOT=1 liest die Leinwand einmal
+//  zurück.
 //
 
 import AVFAudio
@@ -35,43 +26,13 @@ import simd
 import UIKit
 
 nonisolated enum CelesteProbe {
-    static let environmentKey = "C64_CELESTE"
-
-    enum Mode: String {
-        /// Celeste aus (Kit-Modi oder reines Gerüst).
-        case off
-        case probe
-        case initialize = "init"
-        /// M1a.4b: Vergleichslauf ohne Celeste, nur die Fenster-Schnappschüsse der Szene zu
-        /// denselben Zeitpunkten (Start, 0,2 s, 1 s, 2 s). Zeigt, was SwiftUI allein mit dem
-        /// Fenster macht (Standardgrösse 1280×720, dann Layout auf die Inhaltsgrösse).
-        case window
-        /// M1a.5 (Variante B, Teil 2): wie init, danach übernimmt der Render-Thread des
-        /// Compositors das Ticken, ein celeste_tick pro Frame in der Update-Phase
-        /// (Renderer.renderFrame, zwischen startUpdate und endUpdate), present 0, Delta aus dem
-        /// Frame-Takt begrenzt auf 1/30 s. Kein Bild in die Drawables (M4a). Beim Pausieren des
-        /// Layers pausieren die Ticks; das Schliessen des ImmersiveSpace (Digital Crown) und
-        /// «Exit» im Spiel beenden die App sauber über requestExit (M4a.5a: celeste_end, exit(0)).
-        case tick
-        /// M4a.2: Leinwand ohne Celeste. Der Host legt Device, Queue und eine 1280×720-Textur
-        /// (RGBA8Unorm, PixelFormatView) an, füllt sie einmal (Verlauf, Gitter, Markierung oben
-        /// links) und der Renderer zeichnet sie als Quad in 500 m in beide Augen (CanvasScene).
-        /// Prüft Pass, Tiefe, Grund-Clear, Verankerung, Foveation und die gemeinsame Queue, bevor
-        /// Celestes Bild kommt (M4a.3). Kein celeste_init.
-        case canvas
-        /// M4a.3: Celestes Bild auf der Leinwand. Init und Laden wie tick, dann celeste_set_canvas
-        /// mit der Leinwandtextur (vor dem ersten Tick im Render-Thread, Vertrag aus M4a.1),
-        /// Ticks im Render-Thread, Leinwand-Pass danach mit sRGB-Ansicht; die Leinwand erscheint
-        /// erst nach dem Verankern (0,3 s Einblendung). Completion-Rückruf des Kits misst die
-        /// GPU-Zeit von Celestes Command Buffern; nach rund 7 s ein Rücklesen der Leinwand als PNG
-        /// und RGBA-Rohdaten in Documents für den Farbvergleich mit dem Mac.
-        case play
-    }
-
-    /// Modi, in denen der Render-Thread Celeste tickt.
-    static var ticksGame: Bool { mode == .tick || mode == .play }
-    /// Modi, in denen der Renderer die Leinwand zeichnet.
-    static var canvasWanted: Bool { mode == .canvas || mode == .play }
+    /// Das Spiel läuft (Standard). In Debug-Builds schaltet ein Kit-Modus (C64_KIT) es aus: zwei
+    /// SDL_GPU-Devices auf demselben MTLDevice sind nicht sinnvoll.
+    #if DEBUG
+    static let gameEnabled: Bool = KitProbe.mode == nil
+    #else
+    static let gameEnabled = true
+    #endif
 
     /// GPU-Zeit von Command Buffern (gpuEndTime − gpuStartTime), gesammelt aus einem
     /// Completed-Rückruf (Metal-Thread), gelesen pro Sekunde vom Render-Thread.
@@ -125,10 +86,12 @@ nonisolated enum CelesteProbe {
         return true
     }
 
-    /// Farbvergleich mit dem Mac: die Leinwand einmal zurücklesen (Blit auf der gemeinsamen
-    /// Queue, nach Celestes Commits), mittlere Farbe loggen und als PNG und RGBA-Rohdaten in
-    /// Documents ablegen (c64-canvas-<Gerät>.png/.rgba; scripts/compare-canvas.py vergleicht
-    /// mit dem Bild aus mac-check). Blockiert den rufenden Thread bis zum Ende des Blits.
+    #if DEBUG
+    /// Farbvergleich mit dem Mac (C64_SNAPSHOT=1, nur Debug-Builds): die Leinwand einmal
+    /// zurücklesen (Blit auf der gemeinsamen Queue, nach Celestes Commits), mittlere Farbe loggen
+    /// und als PNG und RGBA-Rohdaten in Documents ablegen (c64-canvas-<Gerät>.png/.rgba;
+    /// scripts/compare-canvas.py vergleicht mit dem Bild aus mac-check). Blockiert den rufenden
+    /// Thread bis zum Ende des Blits.
     static func writeCanvasSnapshot(queue: MTLCommandQueue, texture: MTLTexture, label: String) {
         let width = texture.width, height = texture.height
         let bytesPerRow = width * 4
@@ -179,6 +142,7 @@ nonisolated enum CelesteProbe {
                          label, width, height, Double(sum[0]) / pixels, Double(sum[1]) / pixels, Double(sum[2]) / pixels,
                          Double(black) / pixels * 100, written, ms, base))
     }
+    #endif
 
     // MARK: Auflösung und Linienbreite (M4a.4)
 
@@ -205,7 +169,7 @@ nonisolated enum CelesteProbe {
     static let nativeResolutions: [String: (Int, Int)] = [:]
 
     static let settings: GameSettings = {
-        let environment = ProcessInfo.processInfo.environment
+        let environment = HostEnvironment.values
         let resText = environment["C64_RES"] ?? ""
         var resolution = defaultResolution
         var resNote = resText.isEmpty ? "unset" : resText
@@ -244,29 +208,10 @@ nonisolated enum CelesteProbe {
     static var canvasHeight: Int { settings.canvasHeight }
 
     /// Winkelbreite der Leinwand in Grad (C64_CANVAS_FOV, Standard 50).
-    static var canvasFovDegrees: Float {
-        Float(ProcessInfo.processInfo.environment["C64_CANVAS_FOV"] ?? "") ?? 50
-    }
+    static let canvasFovDegrees: Float = Float(HostEnvironment.string("C64_CANVAS_FOV") ?? "") ?? 50
 
     /// C64_CANVAS_FILTER=nearest für den Pixel-Look, sonst linear.
-    static var canvasNearest: Bool {
-        ProcessInfo.processInfo.environment["C64_CANVAS_FILTER"] == "nearest"
-    }
-
-    /// M4b.2: Tiefenkonvention des VR-Pfads (Reverse-Z, unendliche Far-Ebene, Shader ohne
-    /// SV_Depth) in Celeste; Standard an, C64_REVERSE_Z=0 schaltet auf Celestes eigene
-    /// Konvention (Referenzpfad). Die Near-Ebene liefert der Renderer aus der Layer-Konfiguration
-    /// (celeste_set_depth_near), bevor der erste Tick auf dem Render-Thread läuft.
-    static var reverseZ: Bool {
-        ProcessInfo.processInfo.environment["C64_REVERSE_Z"] != "0"
-    }
-
-    /// M4b.3a: Celestes Welt-Pässe direkt in die Drawable-Schichten (celeste_render_frame_vr);
-    /// Standard an, C64_VR_WORLD=0 schaltet zurück auf die Leinwand für alles. Braucht den
-    /// Reverse-Z-Pfad.
-    static var stereoWorld: Bool {
-        reverseZ && ProcessInfo.processInfo.environment["C64_VR_WORLD"] != "0"
-    }
+    static let canvasNearest: Bool = HostEnvironment.string("C64_CANVAS_FILTER") == "nearest"
 
     /// M4b.3a: GPU-Zeit je Pass. Celestes Command Buffer kommen in Commit-Reihenfolge beim
     /// Rückruf an; renderVR legt nach jedem Aufruf die Etiketten der erwarteten Buffer in eine
@@ -643,21 +588,37 @@ nonisolated enum CelesteProbe {
         // M4b.3a: Frames, in denen Celeste die Welt ins Drawable schrieb (rc 1)
         private var windowWorldFrames = 0
         private var updatePending = false
-        // M4a.3: Leinwand und Queue für das einmalige Rücklesen nach snapshotAtTicks Ticks.
+        #if DEBUG
+        // C64_SNAPSHOT=1: Leinwand und Queue für das einmalige Rücklesen nach snapshotAtTicks Ticks.
         private var snapshotQueue: MTLCommandQueue?
         private var snapshotTexture: MTLTexture?
         private var snapshotDone = false
         static let snapshotAtTicks = 600
 
+        func enableSnapshot(queue: MTLCommandQueue, texture: MTLTexture) {
+            lock.withLock {
+                snapshotQueue = queue
+                snapshotTexture = texture
+            }
+            c64Record("[c64-celeste] Leinwand-Rücklesen nach \(Self.snapshotAtTicks) Ticks (C64_SNAPSHOT=1)")
+        }
+
+        /// Nach einem Render: einmal die Leinwand zurücklesen, falls verlangt (unter dem Lock).
+        private func snapshotIfDue() {
+            if !snapshotDone, totalTicks >= Self.snapshotAtTicks, let queue = snapshotQueue, let texture = snapshotTexture {
+                snapshotDone = true
+                CelesteProbe.writeCanvasSnapshot(queue: queue, texture: texture, label: "tick\(totalTicks)")
+            }
+        }
+        #else
+        private func snapshotIfDue() {}
+        #endif
+
         var isActive: Bool { lock.withLock { ready && !stopped } }
 
-        func markReady(snapshotQueue: MTLCommandQueue? = nil, snapshotTexture: MTLTexture? = nil) {
-            lock.withLock {
-                ready = true
-                self.snapshotQueue = snapshotQueue
-                self.snapshotTexture = snapshotTexture
-            }
-            c64Record("[c64-celeste] tick ready: Ticks laufen im Render-Thread, sobald der ImmersiveSpace offen ist\(snapshotTexture != nil ? "; Leinwand-Rücklesen nach \(Self.snapshotAtTicks) Ticks" : "")")
+        func markReady() {
+            lock.withLock { ready = true }
+            c64Record("[c64-celeste] tick ready: Ticks laufen im Render-Thread, sobald der ImmersiveSpace offen ist")
         }
 
         /// Ein Tick pro Compositor-Frame. frameInterval: Wanduhr-Intervall zwischen den Rückkehren
@@ -707,7 +668,7 @@ nonisolated enum CelesteProbe {
             let updateMs = Double(DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000
             if rc == -1 {
                 let error = celeste_last_error().map { String(cString: $0) } ?? ""
-                c64Record("[c64-celeste] update rc=-1 after \(totalTicks) ticks, ticking stopped: \"\(error)\"")
+                c64Error("[c64-celeste] update rc=-1 after \(totalTicks) ticks, ticking stopped: \"\(error)\"")
                 stopped = true
                 return (false, nil)
             }
@@ -744,7 +705,7 @@ nonisolated enum CelesteProbe {
             let renderMs = Double(DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000
             if rc == -1 {
                 let error = celeste_last_error().map { String(cString: $0) } ?? ""
-                c64Record("[c64-celeste] render rc=-1 after \(totalTicks) ticks, ticking stopped: \"\(error)\"")
+                c64Error("[c64-celeste] render rc=-1 after \(totalTicks) ticks, ticking stopped: \"\(error)\"")
                 stopped = true
                 CelesteProbe.celesteGpuPasses.settle([])
                 return
@@ -753,10 +714,7 @@ nonisolated enum CelesteProbe {
             renderMsSum += renderMs
             renderMsMax = max(renderMsMax, renderMs)
             CelesteProbe.celesteGpuPasses.settle(GpuPassStats.canvasLabels)
-            if !snapshotDone, totalTicks >= Self.snapshotAtTicks, let queue = snapshotQueue, let texture = snapshotTexture {
-                snapshotDone = true
-                CelesteProbe.writeCanvasSnapshot(queue: queue, texture: texture, label: "tick\(totalTicks)")
-            }
+            snapshotIfDue()
         }
 
         /// M4b.3a: die Render-Hälfte mit dem Stereo-Weltpass (celeste_render_frame_vr). Rückgabe
@@ -775,7 +733,7 @@ nonisolated enum CelesteProbe {
             let renderMs = Double(DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000
             if rc == -1 {
                 let error = celeste_last_error().map { String(cString: $0) } ?? ""
-                c64Record("[c64-celeste] render_vr rc=-1 after \(totalTicks) ticks, ticking stopped: \"\(error)\"")
+                c64Error("[c64-celeste] render_vr rc=-1 after \(totalTicks) ticks, ticking stopped: \"\(error)\"")
                 stopped = true
                 CelesteProbe.celesteGpuPasses.settle([])
                 return rc
@@ -801,10 +759,7 @@ nonisolated enum CelesteProbe {
                 for _ in 0...flushes { labels += [.other, .other] }
             }
             CelesteProbe.celesteGpuPasses.settle(labels)
-            if !snapshotDone, totalTicks >= Self.snapshotAtTicks, let queue = snapshotQueue, let texture = snapshotTexture {
-                snapshotDone = true
-                CelesteProbe.writeCanvasSnapshot(queue: queue, texture: texture, label: "tick\(totalTicks)")
-            }
+            snapshotIfDue()
             return rc
         }
 
@@ -934,8 +889,9 @@ nonisolated enum CelesteProbe {
 
     /// Beendet die App sauber: Ticks endgültig stoppen, auf dem Hauptthread (SDLs Hauptthread,
     /// der Thread von celeste_init) celeste_end (Foster End → Celestes Shutdown → FMOD release;
-    /// Dispose → SDL_Quit), dann exit(0). Jede Logzeile ist mit fsync geschrieben, bevor der
-    /// nächste Schritt läuft (ProbeLog). Wächter: dauert das Ende länger als eine Sekunde,
+    /// Dispose → SDL_Quit), dann exit(0). Jede Logzeile geht vor dem nächsten Schritt mit einem
+    /// ungepufferten write() an den Kernel (ProbeLog, kein fsync) und überlebt so das exit(0).
+    /// Wächter: dauert das Ende länger als eine Sekunde,
     /// beendet ein zweiter Thread trotzdem, mit Logzeile; er startet als erster Schritt, vor
     /// allem, was blockieren kann (stop nimmt das Tick-Lock, celeste_end läuft auf dem
     /// Hauptthread). Aufrufbar von jedem Thread, aber nicht unter dem Tick-Lock; der erste
@@ -981,7 +937,7 @@ nonisolated enum CelesteProbe {
         }
     }
 
-    /// exit(0) genau einmal; die letzte Logzeile ist vor dem Aufruf mit fsync geschrieben.
+    /// exit(0) genau einmal; die letzte Logzeile liegt vor dem Aufruf beim Kernel (write(), kein fsync).
     private nonisolated static func exitOnce(line: String) {
         let first = exitLock.withLock { () -> Bool in
             if exitCalled { return false }
@@ -992,21 +948,6 @@ nonisolated enum CelesteProbe {
         c64Record(line)
         exit(0)
     }
-
-    /// Modus aus C64_CELESTE; ohne Schalter der Standard des Produkts, play (M4a.5b). Mit einem
-    /// Kit-Modus (C64_KIT) und ohne C64_CELESTE bleibt Celeste aus, zwei SDL_GPU-Devices auf
-    /// demselben MTLDevice sind nicht sinnvoll. Ein unbekannter Wert gibt eine Fehlerzeile und play.
-    static var mode: Mode {
-        let text = ProcessInfo.processInfo.environment[environmentKey] ?? ""
-        if text.isEmpty {
-            return KitProbe.mode == nil ? .play : .off
-        }
-        if let mode = Mode(rawValue: text) { return mode }
-        c64Record("[c64-celeste] error: C64_CELESTE=\"\(text)\" unbekannt (off, probe, init, window, tick, canvas, play), Standard play")
-        return .play
-    }
-
-    static var isRequested: Bool { mode != .off }
 
     /// Anzahl Ticks auf dem Hauptthread in M1a.4: Celeste lädt im fünften Update (loadDelay 5),
     /// drei weitere zeigen, dass der Übergang zum Titel ohne Fehler beginnt.
@@ -1067,7 +1008,7 @@ nonisolated enum CelesteProbe {
         let frameworkBundle = Bundle(identifier: celesteFrameworkIdentifier)
             ?? Bundle.main.privateFrameworksPath.flatMap { Bundle(path: ($0 as NSString).appendingPathComponent("Celeste64.VisionOS.framework")) }
         guard let contentRoot = frameworkBundle?.bundlePath else {
-            c64Record("[c64-celeste] step=init skipped: Celeste64.VisionOS.framework nicht gefunden (Bundle-ID \(celesteFrameworkIdentifier), privateFrameworksPath \(Bundle.main.privateFrameworksPath ?? "nil"))")
+            c64Error("[c64-celeste] step=init skipped: Celeste64.VisionOS.framework nicht gefunden (Bundle-ID \(celesteFrameworkIdentifier), privateFrameworksPath \(Bundle.main.privateFrameworksPath ?? "nil"))")
             result.ok = false
             result.capabilitiesLine = "Framework nicht gefunden"
             return result
@@ -1075,7 +1016,7 @@ nonisolated enum CelesteProbe {
         let contentDir = (contentRoot as NSString).appendingPathComponent("Content")
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: contentDir, isDirectory: &isDirectory), isDirectory.boolValue else {
-            c64Record("[c64-celeste] step=init skipped: kein Ordner Content in \(contentRoot); scripts/build-game.sh neu laufen lassen (es kopiert Source/Celeste64/Content ins Framework)")
+            c64Error("[c64-celeste] step=init skipped: kein Ordner Content in \(contentRoot); scripts/build-game.sh neu laufen lassen (es kopiert Source/Celeste64/Content ins Framework)")
             result.ok = false
             result.capabilitiesLine = "Content fehlt im Framework"
             return result
@@ -1112,8 +1053,9 @@ nonisolated enum CelesteProbe {
         options.internal_width = Int32(settings.internalWidth)
         options.internal_height = Int32(settings.internalHeight)
         options.edge_line_width = Int32(settings.edgeLineWidth)
-        // Tiefenkonvention des VR-Pfads (M4b.2, C64_REVERSE_Z); Near folgt im Renderer aus dem Layer.
-        options.reverse_z = reverseZ ? 1 : 0
+        // Tiefenkonvention des VR-Pfads (M4b.2): Reverse-Z mit unendlicher Far-Ebene; die Near-Ebene
+        // folgt im Renderer aus der Layer-Konfiguration (celeste_set_depth_near).
+        options.reverse_z = 1
 
         let initStart = DispatchTime.now()
         let initRc: Int32 = contentRoot.withCString { cRoot in
@@ -1125,7 +1067,7 @@ nonisolated enum CelesteProbe {
             c64Record("[c64-celeste] tMs=\(LaunchClock.tMs) step=init rc=0 thread=\(Thread.isMainThread ? "main" : "other") contentRoot=\"\(contentRoot)\" internal=\(settings.internalWidth)x\(settings.internalHeight) line=\(settings.edgeLineWidth) reverseZ=\(options.reverse_z) optionsSize=\(options.size) ms=\(format(initMs))")
         } else {
             let error = celeste_last_error().map { String(cString: $0) } ?? ""
-            c64Record("[c64-celeste] step=init rc=\(initRc) error=\"\(error)\" ms=\(format(initMs))")
+            c64Error("[c64-celeste] step=init rc=\(initRc) error=\"\(error)\" ms=\(format(initMs))")
             result.ok = false
             result.capabilitiesLine = "celeste_init rc=\(initRc)"
             return result

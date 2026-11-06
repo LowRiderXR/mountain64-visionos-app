@@ -8,11 +8,11 @@
 //  Tiefe auf 0 (Reverse-Z, 0 = fern). Render-Pose über ARKit an das Drawable melden,
 //  encodePresent zuletzt, commit, endSubmission. Jeder angefangene Frame wird abgeschlossen.
 //
-//  Sonden hinter Schaltern, Standard aus:
-//  - C64_STALL_SEQ (Umgebungsvariable, Millisekunden mit Komma): 10 s nach Start der
-//    Schleife blockiert der Render-Thread einmal für die erste Dauer, 10 s danach für die
-//    nächste, und so weiter. Der Block sitzt VOR queryNextFrame, also ohne angefangenen Frame.
-//  Immer an (billig): einmal pro Sekunde eine Zeile [c64-frame].
+//  Immer (billig): einmal pro Sekunde eine Zeile [c64-frame] in die Probe. Nur in Debug-Builds:
+//  C64_STALL_SEQ (Millisekunden mit Komma): 10 s nach Start der Schleife blockiert der
+//  Render-Thread einmal für die erste Dauer, 10 s danach für die nächste, und so weiter; der
+//  Block sitzt VOR queryNextFrame, also ohne angefangenen Frame. Dazu die Kit-Testszenen (C64_KIT)
+//  und die Testszene (C64_TESTSCENE).
 //
 
 import ARKit
@@ -135,8 +135,8 @@ nonisolated final class Renderer: @unchecked Sendable {
         }
         logPauseFrameNote()
 
-        let game = CelesteProbe.ticksGame && CelesteProbe.tickState.isActive
-        if CelesteProbe.ticksGame {
+        let game = CelesteProbe.gameEnabled && CelesteProbe.tickState.isActive
+        if CelesteProbe.gameEnabled {
             CelesteProbe.tickState.pause(reason: "pause \(pauseReasonText)")
         }
         if game, !audioSuspended, !audioResumePending {
@@ -202,10 +202,10 @@ nonisolated final class Renderer: @unchecked Sendable {
             c64Record("[c64-celeste] tMs=\(LaunchClock.tMs) Ticks setzen wieder ein nach \(ticksSkippedForAudio) Frames ohne Tick (reason=\(reason))")
             ticksSkippedForAudio = 0
         }
-        if CelesteProbe.ticksGame, CelesteProbe.tickState.isActive {
+        if CelesteProbe.gameEnabled, CelesteProbe.tickState.isActive {
             CelesteProbe.requestPause()
         }
-        if CelesteProbe.ticksGame {
+        if CelesteProbe.gameEnabled {
             CelesteProbe.tickState.resume(reason: reason)
         }
         lastQueryReturn = nil
@@ -258,7 +258,7 @@ nonisolated final class Renderer: @unchecked Sendable {
 
     /// Schleifenkopf bei laufendem Spiel: offene Ton-Versuche und Bitten des Hauptthreads.
     private func serviceAudioRetry() {
-        guard CelesteProbe.ticksGame else { return }
+        guard CelesteProbe.gameEnabled else { return }
         if let request = CelesteProbe.pauseState.takeAudioRetry() {
             if audioSuspended || request.mediaServicesReset {
                 c64Record("[c64-audio] tMs=\(LaunchClock.tMs) audio retry trigger=\(request.trigger)")
@@ -274,11 +274,13 @@ nonisolated final class Renderer: @unchecked Sendable {
         }
     }
 
-    // Stall-Probe
+    #if DEBUG
+    // Stall-Probe (C64_STALL_SEQ)
     private let stallPlan: [TimeInterval]
     private var stallIndex = 0
     private var nextStallAt: CFAbsoluteTime = 0
     private static let stallSpacing: TimeInterval = 10
+    #endif
 
     // Frame-Statistik (nur vom Render-Thread berührt)
     private var statWindowStart: CFAbsoluteTime = 0
@@ -307,7 +309,7 @@ nonisolated final class Renderer: @unchecked Sendable {
     // M4b L5: Vorlauf der Submission vor optimalInputTime (C64_EARLY_MS, Standard 5 ms), einmal
     // geloggt; letzte Pose für das Halten bei verweigertem Anker
     private static let earlySubmitSeconds: TimeInterval = {
-        let ms = ProcessInfo.processInfo.environment["C64_EARLY_MS"].flatMap { Double($0) } ?? 5
+        let ms = HostEnvironment.string("C64_EARLY_MS").flatMap { Double($0) } ?? 5
         return max(0, min(ms, 20)) / 1000
     }()
     private var earlyLogged = false
@@ -334,28 +336,37 @@ nonisolated final class Renderer: @unchecked Sendable {
     private var statLateMax = -Double.greatestFiniteMagnitude
     private var statLateFrames = 0
 
+    #if DEBUG
     // Die ersten drei Frames nach einem Stall-Block: frameIndex, presentationTime relativ zur
     // Compositor-Uhr beim Erhalt der Drawables, Verspätung vor encodePresent.
     private var postStallWanted = 0
     private var postStallBlock = 0
     private var postStallSamples: [(index: UInt64, relative: Double, late: Double)] = []
+    #endif
 
-    // Foveation-Sonde (P0b): Beschreibung der Drawables und Rate Maps, Fingerabdruck pro Sekunde.
-    private var lastFovSignature: String?
+    // Foveation-Sonde (P0b): Form der Drawables und Rate Maps als Zahlen; die Zeile [c64-fov]
+    // nur bei einer Änderung (der Text entsteht erst dann, nicht je Frame).
+    private struct FovSignature: Equatable {
+        var maps: Int
+        var screenWidth: Int, screenHeight: Int
+        var physicalWidth: Int, physicalHeight: Int
+        var views: Int
+        var textureWidth: Int, textureHeight: Int, arrayLength: Int
+    }
+    private var lastFovSignature: FovSignature?
     private var lastFovLog: CFAbsoluteTime = 0
-    private var lastFovPrint: String?
-    private var lastFovPrintTime: CFAbsoluteTime = 0
     private var renderQualityApplied = false
 
+    #if DEBUG
     // Testszene (P0b-2, Schalter C64_TESTSCENE=1): lazy erzeugt auf dem Render-Thread.
     private let testSceneRequested = TestScene.isRequested
     private var testScene: TestScene?
     private var testSceneFailed = false
+    #endif
 
-    // Leinwand (M4a.2, C64_CELESTE=canvas): Textur vom Host, Szene lazy auf dem Render-Thread.
-    // Mit Leinwand cleart der Grund-Pass die Tiefe auf 0,0001 (1000 m, hinter der Leinwand in
-    // 500 m) statt 0 («kein Inhalt»), damit der Rand eigenes Schwarz ist und nicht Durchsicht.
-    private let canvasRequested: Bool
+    // Leinwand (M4a.2): Textur vom Host, Szene lazy auf dem Render-Thread. Der Grund-Pass cleart
+    // die Tiefe auf 0,0001 (1000 m, hinter der Leinwand in 500 m) statt 0 («kein Inhalt»), damit
+    // der Rand eigenes Schwarz ist und nicht Durchsicht.
     private let canvasTexture: MTLTexture?
     private var canvasScene: CanvasScene?
     private var canvasFailed = false
@@ -374,6 +385,18 @@ nonisolated final class Renderer: @unchecked Sendable {
     private var cmdErrTotal = 0
     private var lastCmdErrLog: CFAbsoluteTime = 0
 
+    // Bildrate über den ganzen Lauf (Intervalle aus presentationTime), für die Zusammenfassung.
+    private var intervalTotalSum = 0.0
+    private var intervalTotalCount = 0
+    private var footprintStartMB = 0.0        // phys_footprint beim Start der Schleife
+    private var availableStartMB = 0.0        // os_proc_available_memory beim Start der Schleife
+    // Letzter Stand von Drawable und Map für die Zusammenfassung (Render Quality 1,0: Texturen für
+    // maxRenderQuality, Map wächst während des Übergangs).
+    private var lastDrawableSize: (width: Int, height: Int) = (0, 0)
+    private var lastMapSizes: (screenW: Int, screenH: Int, physW: Int, physH: Int) = (0, 0, 0, 0)
+    private var cancelledTotal = 0
+
+    #if DEBUG
     // Kit-Stufe K1b (C64_KIT=import): SDL_GPU-Device auf Device und Queue dieses Gerüsts, das in
     // jedem Frame die Drawable-Texturen importiert und löscht. Nur vom Render-Thread berührt.
     private var kitImportSession: OpaquePointer?
@@ -389,21 +412,11 @@ nonisolated final class Renderer: @unchecked Sendable {
     private var fovMaxDevPx: Float = 0
     private var fovMeanDevSum: Double = 0
     private var fovMeasureMsSum: Double = 0
-    // Bildrate über den ganzen Lauf (Intervalle aus presentationTime), für die Zusammenfassung.
-    private var intervalTotalSum = 0.0
-    private var intervalTotalCount = 0
     private var statSdlFail = 0               // Frames im Fenster, in denen SDL scheiterte
     private var sdlFailTotal = 0
-    private var footprintStartMB = 0.0        // phys_footprint beim Start der Schleife, in jedem Modus
-    private var availableStartMB = 0.0        // os_proc_available_memory beim Start der Schleife
-    // Letzter Stand von Drawable und Map für die Zusammenfassung (Render Quality 1,0: Texturen für
-    // maxRenderQuality, Map wächst während des Übergangs).
-    private var lastDrawableSize: (width: Int, height: Int) = (0, 0)
-    private var lastMapSizes: (screenW: Int, screenH: Int, physW: Int, physH: Int) = (0, 0, 0, 0)
     // K1b-Diagnose (C64_KIT_VERIFY): SDLs Rücklesewert dieses Frames und die Drawable-Textur,
     // aus der das Gerüst unmittelbar vor encodePresent dieselbe Stelle nochmals liest.
     private var pendingVerify: (afterSDL: [UInt8], color: MTLTexture)?
-    private var cancelledTotal = 0
     private static let importClearColor: (Float, Float, Float, Float) = (0.0, 0.1, 0.3, 1.0)
     // K1b: Tiefenwert des SDL-Clears. Der Compositor zeigt nur Pixel mit Alpha > 0 und Tiefe > 0
     // (WWDC24, Session 10092 «Render Metal with passthrough in visionOS»; Messung K1b am
@@ -411,27 +424,28 @@ nonisolated final class Renderer: @unchecked Sendable {
     // unendlicher Far-Ebene: Abstand = near / Tiefe; 0.001 bei near 0,1 m sind 100 m, also ein
     // «vorhandener» leerer Hintergrund. C64_KIT_DEPTH=0 bleibt als Gegenprobe möglich.
     private static let importClearDepthDefault: Float = 0.001
-    private let importClearDepth: Float = Float(ProcessInfo.processInfo.environment["C64_KIT_DEPTH"] ?? "") ?? Renderer.importClearDepthDefault
+    private let importClearDepth: Float = Float(HostEnvironment.string("C64_KIT_DEPTH") ?? "") ?? Renderer.importClearDepthDefault
     private var importDepthLogged = false
     // K4a (C64_KIT_MSAA=<Samples>, Standard aus): Kantenglättung im Kit-Pass; die Sitzung rendert in
     // MSAA-Texturen in Drawable-Grösse und löst Farbe und Tiefe in die Drawable-Schichten auf.
-    private let kitMsaaSamples: Int = Int(ProcessInfo.processInfo.environment["C64_KIT_MSAA"] ?? "") ?? 0
+    private let kitMsaaSamples: Int = Int(HostEnvironment.string("C64_KIT_MSAA") ?? "") ?? 0
     // K4b (C64_KIT_MEMORYLESS=1, Standard aus): MSAA-Ziele memoryless (nur Tile-Speicher).
-    private let kitMemoryless: Bool = ProcessInfo.processInfo.environment["C64_KIT_MEMORYLESS"] == "1"
+    private let kitMemoryless: Bool = HostEnvironment.string("C64_KIT_MEMORYLESS") == "1"
     // K4c (C64_KIT_DEPTH_STORE=store|dontcare, Standard nicht gesetzt): store_op der privaten
     // MSAA-Tiefe im Kit-Pass und Tiefenprobe (zweiter Pass in eigene 1x-Zweischichttexturen,
     // Rücklesen beider Schichten, step=depth-probe). Verlangt C64_KIT_MSAA und, bei store,
     // C64_KIT_MEMORYLESS aus; unbekannte Werte werden geloggt und ignoriert.
-    private let kitDepthStore: String? = ProcessInfo.processInfo.environment["C64_KIT_DEPTH_STORE"]
+    private let kitDepthStore: String? = HostEnvironment.string("C64_KIT_DEPTH_STORE")
+    #endif
 
     @MainActor
     private init(layerRenderer: LayerRenderer, appModel: AppModel) {
         self.layerRenderer = layerRenderer
         self.appModel = appModel
         self.device = layerRenderer.device
-        // M4a: hat der Host schon Device und Queue (Celeste-Modi init, tick, canvas), nimmt der
-        // Renderer dieselbe Queue; dann laufen SDLs Command Buffer (Celestes Bild) und die
-        // Gerüst-Buffer in Commit-Reihenfolge, und der Leinwand-Pass liest das fertige Bild.
+        // M4a: hat der Host schon Device und Queue (Spiel gestartet), nimmt der Renderer dieselbe
+        // Queue; dann laufen SDLs Command Buffer (Celestes Bild) und die Gerüst-Buffer in
+        // Commit-Reihenfolge, und der Leinwand-Pass liest das fertige Bild.
         if let shared = CelesteProbe.commandQueue {
             let hostDevice = CelesteProbe.device
             let same = hostDevice.map { $0 === layerRenderer.device } ?? false
@@ -447,9 +461,10 @@ nonisolated final class Renderer: @unchecked Sendable {
             queue.label = "c64-render-queue"
             self.commandQueue = queue
         }
-        self.canvasRequested = CelesteProbe.canvasWanted
         self.canvasTexture = CelesteProbe.canvasTexture
+        #if DEBUG
         self.stallPlan = StallPlan.fromEnvironment()
+        #endif
     }
 
     /// Render Quality des Produkts (M4a.5b): 1,0 mit Foveation; C64_RENDERQUALITY überschreibt.
@@ -503,7 +518,7 @@ nonisolated final class Renderer: @unchecked Sendable {
             return (arRunAttempts, worldTrackingStorage)
         }
         guard attempt <= Self.arMaxRunAttempts else {
-            c64Record("[c64-arkit] run attempt \(attempt) skipped (\(reason)): limit \(Self.arMaxRunAttempts) reached, no pose")
+            c64Error("[c64-arkit] run attempt \(attempt) skipped (\(reason)): limit \(Self.arMaxRunAttempts) reached, no pose")
             return
         }
         do {
@@ -514,7 +529,7 @@ nonisolated final class Renderer: @unchecked Sendable {
             CelesteProbe.AliveProbe.shared.setProviderState(Self.name(provider.state))
         } catch {
             // Ohne Pose wird trotzdem präsentiert (Schwarz ohne Anker); das Log zeigt es.
-            c64Record("[c64-arkit] run attempt \(attempt) failed (\(reason)): \(error)")
+            c64Error("[c64-arkit] run attempt \(attempt) failed (\(reason)): \(error)")
         }
     }
 
@@ -539,13 +554,16 @@ nonisolated final class Renderer: @unchecked Sendable {
 
     // MARK: Startzeile
 
-    /// [c64-ctx]: der gelesene Zustand des Prozesses, nicht der angenommene.
+    /// [c64-ctx]: der gelesene Zustand des Prozesses, nicht der angenommene; dazu die Schalter
+    /// des Hosts (Debug-Builds hängen ihre Testschalter an).
     private func logContext() {
         let config = layerRenderer.configuration
         let layout = ProbeLayerConfiguration.name(config.layout)
-        let line = "[c64-ctx] build=\(ProbeContext.buildConfiguration)"
+        var line = "[c64-ctx] build=\(ProbeContext.buildConfiguration)"
+            + " probe=\(ProgressFile.enabled ? "on" : "off")"
+            + " C64_PROBE=\(ProbeContext.environment("C64_PROBE"))"
             + " debugger=\(ProbeContext.debuggerAttached ? 1 : 0)"
-            + " truncated=\(ProgressFile.truncateOnStart ? 1 : 0)"
+            + " rotated=\(ProgressFile.enabled ? ProgressFile.shared.rotatedRuns : 0)"
             + " MTL_DEBUG_LAYER=\(ProbeContext.environment("MTL_DEBUG_LAYER"))"
             + " METAL_DEVICE_WRAPPER_TYPE=\(ProbeContext.environment("METAL_DEVICE_WRAPPER_TYPE"))"
             + " hw.machine=\(ProbeContext.hardwareMachine)"
@@ -557,19 +575,25 @@ nonisolated final class Renderer: @unchecked Sendable {
             + " foveation=\(config.isFoveationEnabled)"
             + " maxRenderQuality=\(config.maxRenderQuality.rawValue)"
             + " renderQuality=\(layerRenderer.renderQuality.rawValue)"
+            + " views=\(layerRenderer.properties.viewCount)"
             + " C64_RENDERQUALITY=\(ProbeContext.environment("C64_RENDERQUALITY"))"
+            + " C64_FOVEATION=\(ProbeContext.environment("C64_FOVEATION"))"
             + " C64_LAYOUT=\(ProbeContext.environment("C64_LAYOUT"))"
-            + " C64_TESTSCENE=\(ProbeContext.environment(TestScene.environmentKey))"
-            + " C64_KIT=\(ProbeContext.environment(KitProbe.environmentKey))"
+            + " C64_EARLY_MS=\(ProbeContext.environment("C64_EARLY_MS"))"
+            + " C64_RES=\(ProbeContext.environment("C64_RES"))"
+            + " C64_LINE=\(ProbeContext.environment("C64_LINE"))"
+            + " C64_CANVAS_FOV=\(ProbeContext.environment("C64_CANVAS_FOV"))"
+            + " C64_CANVAS_FILTER=\(ProbeContext.environment("C64_CANVAS_FILTER"))"
+        #if DEBUG
+        line += " C64_KIT=\(ProbeContext.environment(KitProbe.environmentKey))"
             + " C64_KIT_DEPTH=\(ProbeContext.environment("C64_KIT_DEPTH"))"
             + " C64_KIT_MSAA=\(ProbeContext.environment("C64_KIT_MSAA"))"
             + " C64_KIT_MEMORYLESS=\(ProbeContext.environment("C64_KIT_MEMORYLESS"))"
             + " C64_KIT_DEPTH_STORE=\(ProbeContext.environment("C64_KIT_DEPTH_STORE"))"
-            + " C64_CELESTE=\(ProbeContext.environment(CelesteProbe.environmentKey))"
-            + " C64_RES=\(ProbeContext.environment("C64_RES"))"
-            + " C64_LINE=\(ProbeContext.environment("C64_LINE"))"
-            + " views=\(layerRenderer.properties.viewCount)"
+            + " C64_TESTSCENE=\(ProbeContext.environment(TestScene.environmentKey))"
+            + " C64_SNAPSHOT=\(ProbeContext.environment("C64_SNAPSHOT"))"
             + " stallSeq=\(stallPlan.isEmpty ? "-" : stallPlan.map { String(Int($0 * 1000)) }.joined(separator: ","))"
+        #endif
         c64Record(line)
     }
 
@@ -578,23 +602,26 @@ nonisolated final class Renderer: @unchecked Sendable {
     private func renderLoop() {
         let start = CFAbsoluteTimeGetCurrent()
         statWindowStart = start
-        nextStallAt = start + Self.stallSpacing
         c64Record("[c64-loop] tMs=\(LaunchClock.tMs) Renderschleife gestartet, thread=\(Thread.current.name ?? "?")")
         // M4a.5c-6: Layer-Zustand für die Lebenszeichen-Sonde (cp_layer_renderer_get_state, ohne Lock).
         CelesteProbe.AliveProbe.shared.setLayerStateReader { [layerRenderer] in Self.name(layerRenderer.state) }
-        if CelesteProbe.ticksGame {
+        if CelesteProbe.gameEnabled {
             CelesteProbe.tickState.resume(reason: "render loop started")
         }
 
+        #if DEBUG
+        nextStallAt = start + Self.stallSpacing
         // Kit-Stufe K1a (C64_KIT=inject): einmal vor dem ersten Frame, mit dem Device des
         // Layer-Renderers und der Queue dieses Gerüsts. SDL_Init lief im Hauptthread (GameStartup).
         if KitProbe.mode == .inject {
             runKitInjectProbe()
         }
-        // Speicher am Anfang der Schleife, in jedem Modus (Vergleichswert für die Zusammenfassung).
+        #endif
+        // Speicher am Anfang der Schleife (Vergleichswert für die Zusammenfassung).
         footprintStartMB = ProbeContext.physFootprintMB
         availableStartMB = ProbeContext.availableMemoryMB
-        c64Record("[c64-loop] footprintStartMB=\(String(format: "%.1f", footprintStartMB)) availableMB=\(String(format: "%.1f", availableStartMB)) C64_KIT=\(ProbeContext.environment(KitProbe.environmentKey))")
+        c64Record("[c64-loop] footprintStartMB=\(String(format: "%.1f", footprintStartMB)) availableMB=\(String(format: "%.1f", availableStartMB))")
+        #if DEBUG
         // Kit-Stufe K1b (C64_KIT=import): Sitzung für die ganze Schleife.
         if KitProbe.mode == .import {
             kitImportSession = KitProbe.beginImport(device: device, queue: commandQueue)
@@ -608,13 +635,14 @@ nonisolated final class Renderer: @unchecked Sendable {
             kitImportFailed = (kitMultiviewSession == nil)
             c64Record("[c64-kit] multiview session=\(kitMultiviewSession == nil ? "FEHLT, Gerüst löscht selbst" : "ok")")
         }
+        #endif
 
         while true {
             switch layerRenderer.state {
             case .invalidated:
                 c64Record("[c64-loop] Layer invalidiert, Schleife endet nach \(totalFrames) Frames")
                 logLoopSummary()
-                if CelesteProbe.ticksGame {
+                if CelesteProbe.gameEnabled {
                     // M4a.5a: der geschlossene Raum (Digital Crown) beendet die App sauber:
                     // Ticks stoppen, celeste_end auf dem Hauptthread, exit(0). Ohne Fensterszene
                     // gäbe es sonst keinen sauberen Neustart, solange Celeste im Prozess lebt.
@@ -622,7 +650,6 @@ nonisolated final class Renderer: @unchecked Sendable {
                 }
                 Task { @MainActor [appModel] in
                     appModel.immersiveState = .closed
-                    appModel.statusLine = "ImmersiveSpace geschlossen."
                 }
                 return
             default:
@@ -638,8 +665,10 @@ nonisolated final class Renderer: @unchecked Sendable {
             pauseFrameNote = nil
             serviceAudioRetry()
 
+            #if DEBUG
             // Stall-Probe: VOR queryNextFrame, also ohne angefangenen Frame.
             stallIfDue()
+            #endif
             if arkitPeriodicRemaining > 0 {
                 let now = CFAbsoluteTimeGetCurrent()
                 if now >= arkitPeriodicNextAt {
@@ -655,16 +684,13 @@ nonisolated final class Renderer: @unchecked Sendable {
         }
     }
 
+    #if DEBUG
     /// K1a: SDL_GPU-Device auf dem geteilten Device und der geteilten Queue, dann Clear-Pass mit
     /// Rücklesen, SDL_DestroyGPUDevice und ein leerer Command Buffer auf der Host-Queue. Danach
     /// läuft die Schleife normal weiter; die ersten [c64-frame]-Zeilen zeigen, ob cmdErr=0 bleibt.
     private func runKitInjectProbe() {
         let result = KitProbe.runInject(device: device, queue: commandQueue)
-        Task { @MainActor [appModel] in
-            appModel.statusLine = result == 0
-                ? "Inject-Test (P1, geteiltes Device und Queue) bestanden. Renderschleife läuft, siehe [c64-kit] und [c64-frame]."
-                : "Inject-Test fehlgeschlagen in Schritt \(result). Siehe Log [c64-kit]."
-        }
+        c64Record("[c64-kit] inject \(result == 0 ? "bestanden (geteiltes Device und Queue)" : "fehlgeschlagen in Schritt \(result)")")
     }
 
     /// K1b: SDL importiert Farb- und Tiefentextur des Drawables und löscht alle Schichten
@@ -752,12 +778,16 @@ nonisolated final class Renderer: @unchecked Sendable {
                              m.physical_width, m.physical_height, m.layers, m.ms, fovMaxDevPx))
         }
     }
+    #endif
 
     /// Zusammenfassung am Ende der Schleife, in jedem Modus: Frames, cmdErr, Speicher am Anfang und
     /// Ende. Im Modus import zusätzlich sdlFail, Wrapper und Rotation; im Modus multiview Pässe und
     /// Draws pro Frame und die CPU-Zeit des SDL-Teils; die Sitzung wird geschlossen.
     private func logLoopSummary() {
         var kitPart = ""
+        var mode = "-"
+        #if DEBUG
+        mode = KitProbe.mode?.rawValue ?? "-"
         if let session = kitImportSession {
             let stats = KitProbe.takeImportStats(session: session)
             kitPart = String(format: " sdlFail=%d wrappers created=%lu released=%lu distinctColor=%u distinctDepth=%u",
@@ -796,35 +826,35 @@ nonisolated final class Renderer: @unchecked Sendable {
         } else if kitImportFailed {
             kitPart = " sdlFail=\(sdlFailTotal) session=none"
         }
+        if fovMeasureCount > 0 {
+            kitPart += String(format: " fov{measurements=%d maxDevPx=%.3f meanDevPx=%.3f measureMs=%.2f}",
+                              fovMeasureCount, fovMaxDevPx, fovMeanDevSum / Double(fovMeasureCount), fovMeasureMsSum / Double(fovMeasureCount))
+        }
+        #endif
         let footprintEnd = ProbeContext.physFootprintMB
         cmdErrLock.lock()
         let cmdErr = cmdErrTotal
         let cmdSkipped = cmdSkippedTotal
         let cmdErrExpected = cmdErrExpectedTotal
         cmdErrLock.unlock()
-        let mode = KitProbe.mode?.rawValue ?? "-"
         // Bildrate über den Lauf: mittleres Intervall aus presentationTime und daraus Hz.
         let meanInterval = intervalTotalCount > 0 ? intervalTotalSum / Double(intervalTotalCount) : 0
         let hz = meanInterval > 0 ? 1.0 / meanInterval : 0
-        var fovPart = ""
-        if fovMeasureCount > 0 {
-            fovPart = String(format: " fov{measurements=%d maxDevPx=%.3f meanDevPx=%.3f measureMs=%.2f}",
-                             fovMeasureCount, fovMaxDevPx, fovMeanDevSum / Double(fovMeasureCount), fovMeasureMsSum / Double(fovMeasureCount))
-        }
         // Render Quality: angefordert (Schalter), Obergrenze der Konfiguration, tatsächlich am Ende;
         // dazu Drawable- und Map-Grösse des letzten Frames und der verfügbare Speicher.
-        let requestedQuality = ProcessInfo.processInfo.environment["C64_RENDERQUALITY"] ?? "-"
+        let requestedQuality = HostEnvironment.text("C64_RENDERQUALITY")
         let qualityPart = String(format: " renderQuality{requested=%@ max=%.3f end=%.3f} drawable=%dx%d map{screen=%dx%d physical=%dx%d}",
                                  requestedQuality, layerRenderer.configuration.maxRenderQuality.rawValue, layerRenderer.renderQuality.rawValue,
                                  lastDrawableSize.width, lastDrawableSize.height,
                                  lastMapSizes.screenW, lastMapSizes.screenH, lastMapSizes.physW, lastMapSizes.physH)
         let availableEnd = ProbeContext.availableMemoryMB
-        c64Record(String(format: "[c64-loop] summary C64_KIT=%@ foveation=%d%@ frames=%llu interval(ms) mean=%.3f rate=%.1f Hz cancelled=%d cmdErr=%d cmdErrExpectedInBackground=%d cmdSkipped=%d footprintMB start=%.1f end=%.1f delta=%+.1f availableMB start=%.1f end=%.1f%@%@",
+        c64Record(String(format: "[c64-loop] summary C64_KIT=%@ foveation=%d%@ frames=%llu interval(ms) mean=%.3f rate=%.1f Hz cancelled=%d cmdErr=%d cmdErrExpectedInBackground=%d cmdSkipped=%d footprintMB start=%.1f end=%.1f delta=%+.1f availableMB start=%.1f end=%.1f%@",
                          mode, layerRenderer.configuration.isFoveationEnabled ? 1 : 0, qualityPart, totalFrames, meanInterval * 1000, hz,
                          cancelledTotal, cmdErr, cmdErrExpected, cmdSkipped, footprintStartMB, footprintEnd, footprintEnd - footprintStartMB,
-                         availableStartMB, availableEnd, kitPart, fovPart))
+                         availableStartMB, availableEnd, kitPart))
     }
 
+    #if DEBUG
     /// K1b-Diagnose: dieselbe Stelle, die SDL nach seinem Clear zurückgelesen hat, im Gerüst-Buffer
     /// unmittelbar vor encodePresent nochmals lesen (Blit des Mittelpixels von Schicht 0 und 1 in
     /// einen geteilten Puffer); geloggt im Completed-Handler mit beiden Werten.
@@ -884,6 +914,7 @@ nonisolated final class Renderer: @unchecked Sendable {
             c64Record("[c64-stall] Sequenz beendet, alle \(stallPlan.count) Blöcke überstanden")
         }
     }
+    #endif
 
     // MARK: Frame
 
@@ -978,14 +1009,9 @@ nonisolated final class Renderer: @unchecked Sendable {
     }
 
     /// M4b.2: Near-Ebene der Layer-Konfiguration (defaultDepthRange: x = far, y = near, Meter,
-    /// layer_renderer_configuration.h:386-414, nur Reverse-Z) an Celeste. Nur wenn der Reverse-Z-Pfad
-    /// an ist (C64_REVERSE_Z); sonst eine Logzeile mit dem gelesenen Wert.
+    /// layer_renderer_configuration.h:386-414, Reverse-Z) an Celeste.
     private func sendDepthNear() {
         let range = layerRenderer.configuration.defaultDepthRange
-        guard CelesteProbe.reverseZ else {
-            c64Record("[c64-depth] tMs=\(LaunchClock.tMs) reverseZ=0 (Referenzpfad), layer defaultDepthRange " + String(format: "far=%.3f near=%.3f", range.x, range.y))
-            return
-        }
         let rc = celeste_set_depth_near(Double(range.y))
         let error = rc == 0 ? "" : (celeste_last_error().map { " error=\"\(String(cString: $0))\"" } ?? "")
         c64Record("[c64-depth] tMs=\(LaunchClock.tMs) layer defaultDepthRange " + String(format: "far=%.3f near=%.3f m", range.x, range.y) + " -> celeste_set_depth_near rc=\(rc)\(error)")
@@ -1011,10 +1037,8 @@ nonisolated final class Renderer: @unchecked Sendable {
         }
         lastQueryReturn = queryReturn
 
-        // Update-Phase: Celestes Tick (M1a.5, C64_CELESTE=tick), ein Update und ein Render in
-        // Celestes eigene Ziele pro Frame, present 0; Delta ist der Frame-Takt. Noch kein Bild in
-        // die Drawables, die kommen erst nach startSubmission (M4a verschiebt den Render-Teil
-        // dorthin oder reicht die Drawable-Texturen vorher als Ausgabeziele).
+        // Update-Phase: Celestes Update (M1a.5), die Render-Hälfte folgt nach dem Device Anchor;
+        // Delta ist der Frame-Takt.
         // M4b.4-N2: Präsentationszeit dieses Frames vor dem Update (predictTiming darf jederzeit
         // vor queryDrawables gerufen werden, frame.h:57-69); Delta = Differenz zum Vorframe,
         // verlorene Frames geben 22,2 ms, die Obergrenze 1/30 s setzt der Tick. Nach Start und
@@ -1047,7 +1071,7 @@ nonisolated final class Renderer: @unchecked Sendable {
             if ticksSkippedForAudio == 1 {
                 c64Record("[c64-celeste] tMs=\(LaunchClock.tMs) Tick ausgelassen, Mixer angehalten; Schleife präsentiert weiter")
             }
-        } else if CelesteProbe.ticksGame {
+        } else if CelesteProbe.gameEnabled {
             // M4b.2: vor dem ersten Update auf diesem Thread die Near-Ebene des Layers an Celeste
             // (celeste_set_depth_near, Meter); Celeste rechnet sie an einer Stelle in Einheiten um.
             if !depthNearSent {
@@ -1116,7 +1140,6 @@ nonisolated final class Renderer: @unchecked Sendable {
         logTargetsIfChanged(drawables)
         applyRenderQualityIfRequested()
         logFoveationIfChanged(drawables)
-        logFoveationFingerprint(drawables)
         rememberSizes(drawables)
 
         // Pose und Timing aus dem Drawable für das eingebaute Display (target builtIn,
@@ -1200,8 +1223,7 @@ nonisolated final class Renderer: @unchecked Sendable {
             } else {
                 celesteRenderedThisFrame = true
                 var worldFrame = celeste_vr_frame()
-                if CelesteProbe.stereoWorld,
-                   Self.fillVRFrame(&worldFrame, drawable: primary, layerFrame: frame, deviceAnchor: deviceAnchor, configuration: layerRenderer.configuration) {
+                if Self.fillVRFrame(&worldFrame, drawable: primary, layerFrame: frame, deviceAnchor: deviceAnchor, configuration: layerRenderer.configuration) {
                     let renderCall = LayerRenderer.Clock().now.timeInterval
                     let rc = CelesteProbe.tickState.renderVR(&worldFrame)
                     worldDrawnThisFrame = rc == 1
@@ -1213,13 +1235,14 @@ nonisolated final class Renderer: @unchecked Sendable {
                     noteStereoFrame(rc: rc, frame: worldFrame, frameIndex: frame.frameIndex)
                     if rc == 1 { logHeadIfDue() }
                 } else {
+                    // Drawable ohne die erwartete Form (zwei Views, Array-Textur): Leinwand für alles
                     CelesteProbe.tickState.render()
                 }
             }
         }
-        // Frame ohne Celeste-Render auf dem Stereo-Pfad (Laden, Pause, Flag): Drawable opak
-        // schwarz nach der Frame-Regel, nie alter Inhalt und keine Leinwand mit altem Bild.
-        let blackOnly = CelesteProbe.stereoWorld && CelesteProbe.ticksGame && !celesteRenderedThisFrame
+        // Frame ohne Celeste-Render (Laden, Pause, Flag): Drawable opak schwarz nach der
+        // Frame-Regel, nie alter Inhalt und keine Leinwand mit altem Bild.
+        let blackOnly = CelesteProbe.gameEnabled && !celesteRenderedThisFrame
         let primaryColor = primary.colorTextures.first
 
         for drawable in drawables {
@@ -1230,6 +1253,7 @@ nonisolated final class Renderer: @unchecked Sendable {
                 // Celeste hat dieses Drawable geschrieben (beide Schichten, Tiefe kopiert)
                 continue
             }
+            #if DEBUG
             // K1b: zuerst SDL (importiert und löscht, committet auf der geteilten Queue), dann
             // der Gerüst-Buffer mit nur encodePresent. Scheitert SDL, zählt das Gerüst sdlFail und
             // löscht selbst: Schwarz mit Tiefe 0, also bewusst «leer» für den Compositor (Alpha > 0
@@ -1253,6 +1277,7 @@ nonisolated final class Renderer: @unchecked Sendable {
                 statSdlFail += 1
                 sdlFailTotal += 1
             }
+            #endif
             encodeClearPasses(drawable: drawable, commandBuffer: commandBuffer, deviceAnchor: deviceAnchor, blackOnly: blackOnly)
         }
 
@@ -1260,8 +1285,10 @@ nonisolated final class Renderer: @unchecked Sendable {
         // Zeitbasis. Negativ heisst, der Frame wird nach seiner Präsentationszeit abgeschickt.
         let lateness = presentationTime - LayerRenderer.Clock().now.timeInterval
 
+        #if DEBUG
         // K1b-Diagnose: Rücklesen im Gerüst-Buffer, als letzter Inhalt vor encodePresent.
         encodeVerifyBeforePresent(commandBuffer: commandBuffer, frameIndex: frame.frameIndex)
+        #endif
 
         // encodePresent zuletzt, nach allen Inhalts-Pässen.
         for drawable in drawables {
@@ -1292,6 +1319,7 @@ nonisolated final class Renderer: @unchecked Sendable {
             pauseFrameNote?.presented = true
         }
 
+        #if DEBUG
         if postStallWanted > 0 {
             postStallSamples.append((frame.frameIndex, relativeToNow, lateness))
             postStallWanted -= 1
@@ -1302,6 +1330,7 @@ nonisolated final class Renderer: @unchecked Sendable {
                 c64Record("[c64-stall] Block \(postStallBlock)/\(stallPlan.count) erste Frames: \(text)")
             }
         }
+        #endif
 
         recordStats(frameIndex: frame.frameIndex,
                     presentationTime: presentationTime,
@@ -1342,13 +1371,15 @@ nonisolated final class Renderer: @unchecked Sendable {
     private func encodeClearPasses(drawable: LayerRenderer.Drawable, commandBuffer: MTLCommandBuffer, deviceAnchor: DeviceAnchor?, blackOnly: Bool = false) {
         // M4b.3a, blackOnly: nur der opake schwarze Clear (Tiefe 1000 m, eigener Inhalt), keine
         // Leinwand und keine Testszene (Frame ohne Celeste-Render auf dem Stereo-Pfad)
+        #if DEBUG
         let scene = blackOnly ? nil : currentTestScene()
+        #endif
         let canvas = blackOnly ? nil : currentCanvasScene()
         let maps = layerRenderer.configuration.isFoveationEnabled ? drawable.rasterizationRateMaps : []
         let views = drawable.views
         guard let firstView = views.first else { return }
         let isArray = drawable.colorTextures[firstView.textureMap.textureIndex].textureType == .type2DArray
-        let clearDepth = canvasRequested || blackOnly ? Self.canvasClearDepth : 0.0
+        let clearDepth = Self.canvasClearDepth
         canvas?.logEyesOnce(drawable: drawable, views: views, maps: maps)
 
         if isArray, views.count > 1 {
@@ -1366,8 +1397,10 @@ nonisolated final class Renderer: @unchecked Sendable {
             }
             encoder.label = "c64-clear layered x\(views.count)"
             // Testszene und Leinwand: beide Schichten in einem Draw, Amplification 2, Map bleibt am Pass.
+            #if DEBUG
             scene?.encode(encoder: encoder, drawable: drawable, views: Array(views.prefix(2)),
                           viewIndices: Array(0..<min(views.count, 2)), deviceAnchor: deviceAnchor)
+            #endif
             canvas?.encode(encoder: encoder, drawable: drawable, views: Array(views.prefix(2)),
                            viewIndices: Array(0..<min(views.count, 2)), deviceAnchor: deviceAnchor)
             encoder.endEncoding()
@@ -1388,8 +1421,10 @@ nonisolated final class Renderer: @unchecked Sendable {
             }
             encoder.label = "c64-clear view\(viewIndex)"
             // Testszene und Leinwand bei .dedicated/.shared: pro View ein Draw ohne Amplification.
+            #if DEBUG
             scene?.encode(encoder: encoder, drawable: drawable, views: [view],
                           viewIndices: [viewIndex], deviceAnchor: deviceAnchor)
+            #endif
             canvas?.encode(encoder: encoder, drawable: drawable, views: [view],
                            viewIndices: [viewIndex], deviceAnchor: deviceAnchor)
             encoder.endEncoding()
@@ -1398,7 +1433,7 @@ nonisolated final class Renderer: @unchecked Sendable {
 
     /// Leinwand beim ersten Bedarf erzeugen (Render-Thread); scheitert sie, bleibt sie aus.
     private func currentCanvasScene() -> CanvasScene? {
-        guard canvasRequested, !canvasFailed else { return nil }
+        guard !canvasFailed else { return nil }
         if let canvasScene { return canvasScene }
         guard let texture = canvasTexture else {
             canvasFailed = true
@@ -1418,6 +1453,7 @@ nonisolated final class Renderer: @unchecked Sendable {
         return scene
     }
 
+    #if DEBUG
     /// Testszene beim ersten Bedarf erzeugen (Render-Thread); scheitert sie, bleibt sie aus.
     private func currentTestScene() -> TestScene? {
         guard testSceneRequested, !testSceneFailed else { return nil }
@@ -1433,6 +1469,7 @@ nonisolated final class Renderer: @unchecked Sendable {
         testScene = scene
         return scene
     }
+    #endif
 
     private static func clearDescriptor(color colorTexture: MTLTexture, depth depthTexture: MTLTexture, slice: Int, clearDepth: Double = 0.0) -> MTLRenderPassDescriptor {
         let descriptor = MTLRenderPassDescriptor()
@@ -1461,7 +1498,7 @@ nonisolated final class Renderer: @unchecked Sendable {
         guard !renderQualityApplied else { return }
         renderQualityApplied = true
         // Standard 1,0 (M4a.5b), Schalter C64_RENDERQUALITY überschreibt.
-        let wanted = ProcessInfo.processInfo.environment["C64_RENDERQUALITY"].flatMap({ Float($0) }) ?? Self.defaultRenderQuality
+        let wanted = HostEnvironment.string("C64_RENDERQUALITY").flatMap({ Float($0) }) ?? Self.defaultRenderQuality
         let config = layerRenderer.configuration
         guard config.isFoveationEnabled else {
             c64Record("[c64-rq] C64_RENDERQUALITY=\(wanted) ignoriert: Foveation aus")
@@ -1492,10 +1529,28 @@ nonisolated final class Renderer: @unchecked Sendable {
     /// Granularität) und pro View die Farb- und Tiefentextur (Typ, Grösse, arrayLength,
     /// Format), Viewport, Slice- und Texturindex. Beim ersten Frame und bei jeder Änderung,
     /// höchstens einmal pro Sekunde (während eines Render-Quality-Übergangs ändert sich die
-    /// physicalSize über mehrere Frames).
+    /// physicalSize über mehrere Frames). Je Frame nur der Zahlenvergleich; der Text entsteht
+    /// bei einer Änderung.
     private func logFoveationIfChanged(_ drawables: [LayerRenderer.Drawable]) {
-        guard let drawable = drawables.first(where: { $0.target == .builtIn }) ?? drawables.first else { return }
+        guard let drawable = drawables.first(where: { $0.target == .builtIn }) ?? drawables.first,
+              let firstView = drawable.views.first else { return }
         let maps = drawable.rasterizationRateMaps
+        let texture = drawable.colorTextures[firstView.textureMap.textureIndex]
+        var signature = FovSignature(maps: maps.count, screenWidth: 0, screenHeight: 0, physicalWidth: 0, physicalHeight: 0,
+                                     views: drawable.views.count, textureWidth: texture.width, textureHeight: texture.height, arrayLength: texture.arrayLength)
+        if let map = maps.first {
+            let physical = map.physicalSize(layer: 0)
+            signature.screenWidth = map.screenSize.width
+            signature.screenHeight = map.screenSize.height
+            signature.physicalWidth = physical.width
+            signature.physicalHeight = physical.height
+        }
+        guard signature != lastFovSignature else { return }
+        let now = CFAbsoluteTimeGetCurrent()
+        guard lastFovSignature == nil || now - lastFovLog >= 1.0 else { return }
+        lastFovSignature = signature
+        lastFovLog = now
+
         var parts: [String] = []
         for (index, map) in maps.enumerated() {
             let layers = (0..<map.layerCount).map { layer -> String in
@@ -1512,50 +1567,8 @@ nonisolated final class Renderer: @unchecked Sendable {
             let vp = tm.viewport
             parts.append("view\(index){tex=\(tm.textureIndex) slice=\(tm.sliceIndex) viewport=\(Int(vp.originX)),\(Int(vp.originY)) \(Int(vp.width))x\(Int(vp.height)) color=\(Self.name(c.textureType)) \(c.width)x\(c.height) arr=\(c.arrayLength) \(ProbeContext.name(c.pixelFormat)) depth=\(Self.name(d.textureType)) \(d.width)x\(d.height) arr=\(d.arrayLength) \(ProbeContext.name(d.pixelFormat))}")
         }
-        let signature = parts.joined(separator: " ")
-        guard signature != lastFovSignature else { return }
-        let now = CFAbsoluteTimeGetCurrent()
-        guard lastFovSignature == nil || now - lastFovLog >= 1.0 else { return }
-        lastFovSignature = signature
-        lastFovLog = now
         c64Record(String(format: "[c64-fov] maps=%d renderQuality=%.3f frames=%llu %@",
-                         maps.count, layerRenderer.renderQuality.rawValue, totalFrames, signature))
-    }
-
-    /// [c64-fovprint] einmal pro Sekunde: physische Koordinaten zu fünf festen Bildschirmpunkten
-    /// (Mitte, 25 % links, rechts, oben, unten) pro Map und Layer, gerundet. Ändert sich der
-    /// Abdruck gegenüber der Vorsekunde, zusätzlich [c64-fovchange]. Konstanter Abdruck bei
-    /// bewegtem Blick = feste Foveation; wandernder Abdruck = blickabhängig.
-    private func logFoveationFingerprint(_ drawables: [LayerRenderer.Drawable]) {
-        let now = CFAbsoluteTimeGetCurrent()
-        guard now - lastFovPrintTime >= 1.0 else { return }
-        lastFovPrintTime = now
-        guard layerRenderer.configuration.isFoveationEnabled,
-              let drawable = drawables.first(where: { $0.target == .builtIn }) ?? drawables.first else { return }
-        let maps = drawable.rasterizationRateMaps
-        guard !maps.isEmpty else { return }
-
-        var parts: [String] = []
-        for (index, map) in maps.enumerated() {
-            let w = Float(map.screenSize.width), h = Float(map.screenSize.height)
-            let points: [(String, Float, Float)] = [
-                ("c", w * 0.5, h * 0.5), ("l", w * 0.25, h * 0.5), ("r", w * 0.75, h * 0.5),
-                ("u", w * 0.5, h * 0.25), ("d", w * 0.5, h * 0.75),
-            ]
-            for layer in 0..<map.layerCount {
-                let coords = points.map { name, x, y -> String in
-                    let p = map.physicalCoordinates(screenCoordinates: MTLCoordinate2D(x: x, y: y), layer: layer)
-                    return "\(name)=\(Int(p.x.rounded())),\(Int(p.y.rounded()))"
-                }.joined(separator: " ")
-                parts.append("map\(index)L\(layer)[\(coords)]")
-            }
-        }
-        let print = parts.joined(separator: " ")
-        c64Log.notice("[c64-fovprint] \(print, privacy: .public)")
-        if let last = lastFovPrint, last != print {
-            c64Record("[c64-fovchange] frames=\(totalFrames) neu: \(print)")
-        }
-        lastFovPrint = print
+                         maps.count, layerRenderer.renderQuality.rawValue, totalFrames, parts.joined(separator: " ")))
     }
 
     // MARK: Command-Buffer-Fehler
@@ -1734,6 +1747,7 @@ nonisolated final class Renderer: @unchecked Sendable {
             // GPU-Zeit der Gerüst-Buffer (Clear, Testszene, Leinwand; nicht SDLs eigene Buffer).
             let gpu = takeGpuTime()
             line += String(format: " hostGpu(ms) mean=%.3f max=%.3f n=%d", gpu.mean * 1000, gpu.max * 1000, gpu.count)
+            #if DEBUG
             // K1b: CPU-Zeit des SDL-Teils (Wrapper, Pässe, Submit, Release) im Fenster.
             if let session = kitImportSession {
                 let stats = KitProbe.takeImportStats(session: session)
@@ -1750,10 +1764,8 @@ nonisolated final class Renderer: @unchecked Sendable {
                 line += " sdl=none sdlFail=\(statSdlFail)"
             }
             statSdlFail = 0
-            c64Log.notice("\(line, privacy: .public)")
-            Task { @MainActor [appModel] in
-                appModel.frameLine = line
-            }
+            #endif
+            c64Record(line)
             // M4b Leistung N3: Raster für presentGaps aus dem Fenster; Sprünge drücken das
             // Mittel nur wenig (ein 22-ms-Sprung unter 90 Frames: +0,12 ms).
             if mean > 0 { presentRasterInterval = mean }
