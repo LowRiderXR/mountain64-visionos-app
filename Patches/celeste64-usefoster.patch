@@ -2564,7 +2564,7 @@ index 33da870..7590a36 100644
  			CutoutMode = false,
  		};
 diff --git a/Source/Scenes/World.cs b/Source/Scenes/World.cs
-index bdfb740..5f0702a 100644
+index bdfb740..46c1f4a 100644
 --- a/Source/Scenes/World.cs
 +++ b/Source/Scenes/World.cs
 @@ -70,9 +70,20 @@ public class World : Scene
@@ -2588,7 +2588,18 @@ index bdfb740..5f0702a 100644
  		Camera.FOVMultiplier = 1;
  
  		strawbCounterWas = Save.CurrentRecord.Strawberries.Count;
-@@ -394,6 +405,23 @@ public class World : Scene
+@@ -93,7 +104,10 @@ public class World : Scene
+ 				languages.Select(language => language.Label).ToList(),
+ 				CurrentLanguageIndex,
+ 				index => Save.Instance.SetLanguage(GraphicsDevice, languages[index].ID)));
++			// visionOS port: no fullscreen entry, the window stays hidden and the toggle has no effect
++#if !VISIONOS_KIT
+ 			optionsMenu.Add(new Menu.Toggle(() => Loc.Str("OptionsFullscreen"), () => Save.Instance.ToggleFullscreen(Game), () => Save.Instance.Fullscreen));
++#endif
+ 			optionsMenu.Add(new Menu.Toggle(() => Loc.Str("OptionsZGuide"), Save.Instance.ToggleZGuide, () => Save.Instance.ZGuide));
+ 			optionsMenu.Add(new Menu.Toggle(() => Loc.Str("OptionsTimer"), Save.Instance.ToggleTimer, () => Save.Instance.SpeedrunTimer));
+ 			string CameraInvertOption(int index) => Loc.Str(index switch
+@@ -394,6 +408,23 @@ public class World : Scene
  			foreach (var actor in Actors)
  				if (actor.UpdateOffScreen || actor.WorldBounds.Intersects(view))
  					actor.LateUpdate();
@@ -2612,7 +2623,7 @@ index bdfb740..5f0702a 100644
  		}
  		// unpause
  		else
-@@ -432,6 +460,13 @@ public class World : Scene
+@@ -432,6 +463,13 @@ public class World : Scene
  
  			Controls.Consume();
  			Paused = paused;
@@ -2626,7 +2637,7 @@ index bdfb740..5f0702a 100644
  		}
  	}
  
-@@ -658,8 +693,26 @@ public class World : Scene
+@@ -658,8 +696,26 @@ public class World : Scene
  	public override void Render(Target target)
  	{
  		debugRndTimer.Restart();
@@ -2653,7 +2664,7 @@ index bdfb740..5f0702a 100644
  
  		// create render state
  		RenderState state = new(GraphicsDevice, Time);
-@@ -668,7 +721,11 @@ public class World : Scene
+@@ -668,7 +724,11 @@ public class World : Scene
  			state.ModelMatrix = Matrix.Identity;
  			state.SunDirection = new Vec3(0, -.7f, -1).Normalized();
  			state.Silhouette = false;
@@ -2665,7 +2676,7 @@ index bdfb740..5f0702a 100644
  			state.DepthMask = true;
  			state.VerticalFogColor = 0xdceaf0;
  		}
-@@ -698,9 +755,17 @@ public class World : Scene
+@@ -698,9 +758,17 @@ public class World : Scene
  			}
  
  			// sort models by distance (for transparency)
@@ -2683,7 +2694,7 @@ index bdfb740..5f0702a 100644
  
  			// perp all models
  			foreach (var it in models)
-@@ -709,13 +774,23 @@ public class World : Scene
+@@ -709,13 +777,23 @@ public class World : Scene
  
  		// draw the skybox first
  		{
@@ -2708,7 +2719,7 @@ index bdfb740..5f0702a 100644
  			}
  		}
  
-@@ -725,7 +800,11 @@ public class World : Scene
+@@ -725,7 +803,11 @@ public class World : Scene
  		// render silhouettes
  		{
  			var it = state;
@@ -2720,7 +2731,7 @@ index bdfb740..5f0702a 100644
  			it.DepthMask = false;
  			it.Silhouette = true;
  			RenderModels(ref it, models, ModelFlags.Silhouette);
-@@ -735,8 +814,45 @@ public class World : Scene
+@@ -735,8 +817,45 @@ public class World : Scene
  
  		// render main models
  		RenderModels(ref state, models, ModelFlags.Default);
@@ -2767,7 +2778,7 @@ index bdfb740..5f0702a 100644
  		ApplyPostEffects();
  
  		// render alpha threshold transparent stuff
-@@ -760,23 +876,94 @@ public class World : Scene
+@@ -760,23 +879,94 @@ public class World : Scene
  		}
  
  		// strawberry collect effect
@@ -2876,7 +2887,7 @@ index bdfb740..5f0702a 100644
  
  		// ui
  		{
-@@ -872,9 +1059,30 @@ public class World : Scene
+@@ -872,9 +1062,30 @@ public class World : Scene
  			// apply post fx
  			postMaterial.CopyFrom(Assets.Materials["Edge"]);
  			postMaterial.Fragment.Samplers[1] = new(target.Attachments[1], new(TextureFilter.Nearest, TextureWrap.Clamp, TextureWrap.Clamp));
@@ -2908,7 +2919,7 @@ index bdfb740..5f0702a 100644
  				Edge = new Color(0x110d33).ToVector4()
  			});
  			batch.PushMaterial(postMaterial);
-@@ -889,6 +1097,517 @@ public class World : Scene
+@@ -889,6 +1100,517 @@ public class World : Scene
  		}
  	}
  
