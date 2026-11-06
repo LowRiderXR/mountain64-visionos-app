@@ -1,6 +1,6 @@
 #!/bin/zsh
 # compile-vr-shaders.sh: compile the visionOS VR variants of Celeste's shaders (DefaultVR, SpriteVR,
-# EdgeVR, EdgeVRArray, UpscaleVRArray, UIVRArray in Source/Celeste64/Content/Shaders; the first ones are a #define VISIONOS_VR plus #include
+# EdgeVR, EdgeVRArray, UIVRArray in Source/Celeste64/Content/Shaders; the first ones are a #define VISIONOS_VR plus #include
 # of the original) with the kit's tool chain: HLSL (SV_ViewID, Shader Model 6.1) -> SPIR-V with DXC,
 # SPIR-V -> MSL and JSON with SDL_shadercross, vertex MSL -> [[amplification_id]] with
 # Kit/sdl-gpu-kit/tools/msl-amplification.sh (SDL_shadercross compiles HLSL only as 6.0 and rejects
@@ -55,21 +55,20 @@ compile() {
 }
 
 echo "== VR shader variants -> $OUT"
-for name in DefaultVR DefaultVRNoDiscard SpriteVR EdgeVR EdgeVRArray UpscaleVRArray UIVRArray; do
+for name in DefaultVR DefaultVRNoDiscard SpriteVR EdgeVR EdgeVRArray UIVRArray; do
     compile "$name" vertex vs_6_1
     compile "$name" fragment ps_6_1
 done
 
-# Checks: the variants write no depth of their own (EdgeVRArray copies the depth it reads and
-# UpscaleVRArray hands it on to the drawable, the two allowed exceptions), and the resource counts
-# stay those of the originals (UpscaleVRArray binds like Edge: two samplers, one uniform buffer),
-# otherwise Foster binds them differently.
+# Checks: the variants write no depth of their own (EdgeVRArray copies the depth it reads, the one
+# allowed exception), and the resource counts stay those of the originals, otherwise Foster binds
+# them differently.
 echo "== checks"
-for name in DefaultVR DefaultVRNoDiscard SpriteVR EdgeVR EdgeVRArray UpscaleVRArray UIVRArray; do
-    if [[ "$name" != "EdgeVRArray" && "$name" != "UpscaleVRArray" ]] && grep -q "depth(any)" "$OUT/$name.fragment.msl"; then
+for name in DefaultVR DefaultVRNoDiscard SpriteVR EdgeVR EdgeVRArray UIVRArray; do
+    if [[ "$name" != "EdgeVRArray" ]] && grep -q "depth(any)" "$OUT/$name.fragment.msl"; then
         echo "error: $name.fragment.msl still writes depth" >&2; exit 1
     fi
-    base="Default"; [[ "$name" == Sprite* ]] && base="Sprite"; [[ "$name" == Edge* || "$name" == Upscale* ]] && base="Edge"; [[ "$name" == UI* ]] && base="Sprite"
+    base="Default"; [[ "$name" == Sprite* ]] && base="Sprite"; [[ "$name" == Edge* ]] && base="Edge"; [[ "$name" == UI* ]] && base="Sprite"
     for stage in vertex fragment; do
         # only the four counts Assets.cs reads (newer shadercross builds add input and output lists)
         python3 - "$OUT/$base.$stage.json" "$OUT/$name.$stage.json" <<'PY' || exit 1
@@ -87,12 +86,9 @@ done
 grep -q "texture2d_array" "$OUT/EdgeVRArray.fragment.msl" || { echo "error: EdgeVRArray.fragment.msl samples no texture2d_array" >&2; exit 1; }
 grep -q "depth(any)" "$OUT/EdgeVRArray.fragment.msl" || { echo "error: EdgeVRArray.fragment.msl copies no depth" >&2; exit 1; }
 echo "   EdgeVRArray: texture2d_array and depth copy present"
-grep -q "texture2d_array" "$OUT/UpscaleVRArray.fragment.msl" || { echo "error: UpscaleVRArray.fragment.msl samples no texture2d_array" >&2; exit 1; }
-grep -q "depth(any)" "$OUT/UpscaleVRArray.fragment.msl" || { echo "error: UpscaleVRArray.fragment.msl writes no depth" >&2; exit 1; }
-echo "   UpscaleVRArray: texture2d_array and depth output present"
 
 echo "== Metal compiler check (xros and macOS)"
-for name in DefaultVR DefaultVRNoDiscard SpriteVR EdgeVR EdgeVRArray UpscaleVRArray UIVRArray; do
+for name in DefaultVR DefaultVRNoDiscard SpriteVR EdgeVR EdgeVRArray UIVRArray; do
     for stage in vertex fragment; do
         xcrun -sdk xros metal -x metal -c "$OUT/$name.$stage.msl" -o "$TMP/$name.$stage.xros.air"
         xcrun -sdk macosx metal -x metal -c "$OUT/$name.$stage.msl" -o "$TMP/$name.$stage.macos.air"

@@ -333,10 +333,10 @@ index 0000000..f77834d
 +{ "samplers": 2, "storage_textures": 0, "storage_buffers": 0, "uniform_buffers": 1, "inputs": [{ "name": "in.var.TEXCOORD0", "type": "float2", "location": 0 }], "outputs": [{ "name": "out.var.SV_Target0", "type": "float4", "location": 0 }] }
 diff --git a/Content/Shaders/Compiled/EdgeVR.fragment.msl b/Content/Shaders/Compiled/EdgeVR.fragment.msl
 new file mode 100644
-index 0000000..bf3f298
+index 0000000..d6d3f22
 --- /dev/null
 +++ b/Content/Shaders/Compiled/EdgeVR.fragment.msl
-@@ -0,0 +1,49 @@
+@@ -0,0 +1,46 @@
 +#include <metal_stdlib>
 +#include <simd/simd.h>
 +
@@ -358,7 +358,7 @@ index 0000000..bf3f298
 +    float4 Tangents0;
 +    float4 Tangents1;
 +    float2 LogicalSize;
-+    float LinearCriterion;
++    float Pad;
 +    float RawThreshold;
 +};
 +
@@ -375,14 +375,11 @@ index 0000000..bf3f298
 +fragment fragment_main_out fragment_main(fragment_main_in in [[stage_in]], constant type_FragmentUniforms& FragmentUniforms [[buffer(0)]], texture2d<float> Texture [[texture(0)]], texture2d<float> Depth [[texture(1)]], sampler TextureSampler [[sampler(0)]], sampler DepthSampler [[sampler(1)]])
 +{
 +    fragment_main_out out = {};
-+    float2 _66 = float2(FragmentUniforms.Pixel.x, 0.0);
-+    float2 _67 = in.in_var_TEXCOORD0 + _66;
-+    float2 _90 = float2(0.0, FragmentUniforms.Pixel.y);
-+    float2 _91 = in.in_var_TEXCOORD0 + _90;
-+    float4 _159 = Texture.sample(TextureSampler, in.in_var_TEXCOORD0);
-+    float _164 = mix(step(FragmentUniforms.RawThreshold, Depth.sample(DepthSampler, in.in_var_TEXCOORD0).x - ((((Depth.sample(DepthSampler, _67).x + Depth.sample(DepthSampler, (in.in_var_TEXCOORD0 - _66)).x) + Depth.sample(DepthSampler, _91).x) + Depth.sample(DepthSampler, (in.in_var_TEXCOORD0 - _90)).x) * 0.25)), step(FragmentUniforms.Threshold, (0.25 * (((precise::min(FragmentUniforms.Near / precise::max(Depth.sample(DepthSampler, _67).x, 1.0000000116860974230803549289703e-07), FragmentUniforms.Far) + precise::min(FragmentUniforms.Near / precise::max(Depth.sample(DepthSampler, (in.in_var_TEXCOORD0 + float2(-FragmentUniforms.Pixel.x, 0.0))).x, 1.0000000116860974230803549289703e-07), FragmentUniforms.Far)) + precise::min(FragmentUniforms.Near / precise::max(Depth.sample(DepthSampler, _91).x, 1.0000000116860974230803549289703e-07), FragmentUniforms.Far)) + precise::min(FragmentUniforms.Near / precise::max(Depth.sample(DepthSampler, (in.in_var_TEXCOORD0 + float2(0.0, -FragmentUniforms.Pixel.y))).x, 1.0000000116860974230803549289703e-07), FragmentUniforms.Far))) - precise::min(FragmentUniforms.Near / precise::max(Depth.sample(DepthSampler, in.in_var_TEXCOORD0).x, 1.0000000116860974230803549289703e-07), FragmentUniforms.Far)), FragmentUniforms.LinearCriterion) * 0.699999988079071044921875;
-+    float3 _166 = mix(_159.xyz, FragmentUniforms.EdgeColor.xyz, float3(_164));
-+    out.out_var_SV_Target0 = float4(mix(_166, mix(_166 * float3(0.077399380505084991455078125), powr((_166 + float3(0.054999999701976776123046875)) * float3(0.947867333889007568359375), float3(2.400000095367431640625)), step(float3(0.040449999272823333740234375), _166)), float3(FragmentUniforms.SrgbOut)), _159.w);
++    float2 _49 = float2(FragmentUniforms.Pixel.x, 0.0);
++    float2 _52 = float2(0.0, FragmentUniforms.Pixel.y);
++    float4 _93 = Texture.sample(TextureSampler, in.in_var_TEXCOORD0);
++    float3 _100 = mix(_93.xyz, FragmentUniforms.EdgeColor.xyz, float3(step(FragmentUniforms.RawThreshold, Depth.sample(DepthSampler, in.in_var_TEXCOORD0).x - ((((Depth.sample(DepthSampler, (in.in_var_TEXCOORD0 + _49)).x + Depth.sample(DepthSampler, (in.in_var_TEXCOORD0 - _49)).x) + Depth.sample(DepthSampler, (in.in_var_TEXCOORD0 + _52)).x) + Depth.sample(DepthSampler, (in.in_var_TEXCOORD0 - _52)).x) * 0.25)) * 0.699999988079071044921875));
++    out.out_var_SV_Target0 = float4(mix(_100, mix(_100 * float3(0.077399380505084991455078125), powr((_100 + float3(0.054999999701976776123046875)) * float3(0.947867333889007568359375), float3(2.400000095367431640625)), step(float3(0.040449999272823333740234375), _100)), float3(FragmentUniforms.SrgbOut)), _93.w);
 +    return out;
 +}
 +
@@ -446,10 +443,10 @@ index 0000000..cd2d83e
 +{ "samplers": 2, "storage_textures": 0, "storage_buffers": 0, "uniform_buffers": 1, "inputs": [{ "name": "in.var.TEXCOORD0", "type": "float2", "location": 0 }, { "name": "in.var.TEXCOORD5", "type": "uint", "location": 3 }], "outputs": [{ "name": "out.var.SV_Target0", "type": "float4", "location": 0 }] }
 diff --git a/Content/Shaders/Compiled/EdgeVRArray.fragment.msl b/Content/Shaders/Compiled/EdgeVRArray.fragment.msl
 new file mode 100644
-index 0000000..9db8340
+index 0000000..ea676ff
 --- /dev/null
 +++ b/Content/Shaders/Compiled/EdgeVRArray.fragment.msl
-@@ -0,0 +1,73 @@
+@@ -0,0 +1,71 @@
 +#include <metal_stdlib>
 +#include <simd/simd.h>
 +
@@ -471,7 +468,7 @@ index 0000000..9db8340
 +    float4 Tangents0;
 +    float4 Tangents1;
 +    float2 LogicalSize;
-+    float LinearCriterion;
++    float Pad;
 +    float RawThreshold;
 +};
 +
@@ -490,36 +487,34 @@ index 0000000..9db8340
 +fragment fragment_main_out fragment_main(fragment_main_in in [[stage_in]], constant type_FragmentUniforms& FragmentUniforms [[buffer(0)]], texture2d_array<float> Texture [[texture(0)]], texture2d_array<float> Depth [[texture(1)]], sampler TextureSampler [[sampler(0)]], sampler DepthSampler [[sampler(1)]], float4 gl_FragCoord [[position]])
 +{
 +    fragment_main_out out = {};
-+    float3 _85 = float3(gl_FragCoord.xy / FragmentUniforms.PhysicalSize, float(in.in_var_TEXCOORD5));
-+    bool _86 = in.in_var_TEXCOORD5 == 0u;
-+    float4 _94;
-+    if (_86)
++    float3 _80 = float3(gl_FragCoord.xy / FragmentUniforms.PhysicalSize, float(in.in_var_TEXCOORD5));
++    bool _81 = in.in_var_TEXCOORD5 == 0u;
++    float4 _89;
++    if (_81)
 +    {
-+        _94 = FragmentUniforms.Tangents0;
++        _89 = FragmentUniforms.Tangents0;
 +    }
 +    else
 +    {
-+        _94 = FragmentUniforms.Tangents1;
++        _89 = FragmentUniforms.Tangents1;
 +    }
-+    float2 _106 = precise::max(abs(float2(dfdx(in.in_var_TEXCOORD0.x), dfdy(in.in_var_TEXCOORD0.y))) * FragmentUniforms.LogicalSize, float2(9.9999997473787516355514526367188e-05));
-+    float _109 = _94.x + _94.y;
-+    float _114 = _94.z + _94.w;
-+    float2 _117 = float2((in.in_var_TEXCOORD0.x * _109) - _94.x, _94.z - (in.in_var_TEXCOORD0.y * _114));
-+    float2 _133 = mix(FragmentUniforms.Pixel, (((FragmentUniforms.LogicalSize / float2(_109, _114)) * (FragmentUniforms.EdgeAngle * (1.0 + dot(_117, _117)))) / _106) / FragmentUniforms.PhysicalSize, float2(FragmentUniforms.AngularMode));
-+    float4 _137 = Depth.sample(DepthSampler, _85.xy, uint(rint(_85.z)));
-+    float _138 = _137.x;
-+    float3 _140 = float3(_133.x, 0.0, 0.0);
-+    float3 _142 = float3(0.0, _133.y, 0.0);
-+    float3 _143 = _85 + _140;
-+    float3 _149 = _85 - _140;
-+    float3 _156 = _85 + _142;
-+    float3 _163 = _85 - _142;
-+    float4 _228 = Texture.sample(TextureSampler, _85.xy, uint(rint(_85.z)));
-+    float3 _241 = mix(mix(_228.xyz, FragmentUniforms.EdgeColor.xyz, float3(mix(step(FragmentUniforms.RawThreshold, _138 - ((((Depth.sample(DepthSampler, _143.xy, uint(rint(_143.z))).x + Depth.sample(DepthSampler, _149.xy, uint(rint(_149.z))).x) + Depth.sample(DepthSampler, _156.xy, uint(rint(_156.z))).x) + Depth.sample(DepthSampler, _163.xy, uint(rint(_163.z))).x) * 0.25)), step(FragmentUniforms.Threshold, ((((precise::min(FragmentUniforms.Near / precise::max(Depth.sample(DepthSampler, _143.xy, uint(rint(_143.z))).x, 1.0000000116860974230803549289703e-07), FragmentUniforms.Far) + precise::min(FragmentUniforms.Near / precise::max(Depth.sample(DepthSampler, _149.xy, uint(rint(_149.z))).x, 1.0000000116860974230803549289703e-07), FragmentUniforms.Far)) + precise::min(FragmentUniforms.Near / precise::max(Depth.sample(DepthSampler, _156.xy, uint(rint(_156.z))).x, 1.0000000116860974230803549289703e-07), FragmentUniforms.Far)) + precise::min(FragmentUniforms.Near / precise::max(Depth.sample(DepthSampler, _163.xy, uint(rint(_163.z))).x, 1.0000000116860974230803549289703e-07), FragmentUniforms.Far)) * 0.25) - precise::min(FragmentUniforms.Near / precise::max(_138, 1.0000000116860974230803549289703e-07), FragmentUniforms.Far)), FragmentUniforms.LinearCriterion) * 0.699999988079071044921875)), select(float3(0.0, 1.0, 0.0), float3(1.0, 0.0, 0.0), bool3(_86)), float3(FragmentUniforms.TestFill));
-+    float3 _250 = mix(_241, float3(_106.x * 0.25, _106.y * 0.25, 0.0), float3(FragmentUniforms.TestRate));
-+    float3 _260 = mix(_250, mix(_250 * float3(0.077399380505084991455078125), powr((_250 + float3(0.054999999701976776123046875)) * float3(0.947867333889007568359375), float3(2.400000095367431640625)), step(float3(0.040449999272823333740234375), _250)), float3(FragmentUniforms.SrgbOut));
-+    out.out_var_SV_Target0 = float4(_260, mix(_228.w, 1.0, FragmentUniforms.TestFill));
-+    out.gl_FragDepth = _138;
++    float2 _101 = precise::max(abs(float2(dfdx(in.in_var_TEXCOORD0.x), dfdy(in.in_var_TEXCOORD0.y))) * FragmentUniforms.LogicalSize, float2(9.9999997473787516355514526367188e-05));
++    float _104 = _89.x + _89.y;
++    float _109 = _89.z + _89.w;
++    float2 _112 = float2((in.in_var_TEXCOORD0.x * _104) - _89.x, _89.z - (in.in_var_TEXCOORD0.y * _109));
++    float2 _128 = mix(FragmentUniforms.Pixel, (((FragmentUniforms.LogicalSize / float2(_104, _109)) * (FragmentUniforms.EdgeAngle * (1.0 + dot(_112, _112)))) / _101) / FragmentUniforms.PhysicalSize, float2(FragmentUniforms.AngularMode));
++    float4 _132 = Depth.sample(DepthSampler, _80.xy, uint(rint(_80.z)));
++    float _133 = _132.x;
++    float3 _135 = float3(_128.x, 0.0, 0.0);
++    float3 _137 = float3(0.0, _128.y, 0.0);
++    float3 _138 = _80 + _135;
++    float3 _144 = _80 - _135;
++    float3 _151 = _80 + _137;
++    float3 _158 = _80 - _137;
++    float4 _173 = Texture.sample(TextureSampler, _80.xy, uint(rint(_80.z)));
++    float3 _195 = mix(mix(mix(_173.xyz, FragmentUniforms.EdgeColor.xyz, float3(step(FragmentUniforms.RawThreshold, _133 - ((((Depth.sample(DepthSampler, _138.xy, uint(rint(_138.z))).x + Depth.sample(DepthSampler, _144.xy, uint(rint(_144.z))).x) + Depth.sample(DepthSampler, _151.xy, uint(rint(_151.z))).x) + Depth.sample(DepthSampler, _158.xy, uint(rint(_158.z))).x) * 0.25)) * 0.699999988079071044921875)), select(float3(0.0, 1.0, 0.0), float3(1.0, 0.0, 0.0), bool3(_81)), float3(FragmentUniforms.TestFill)), float3(_101.x * 0.25, _101.y * 0.25, 0.0), float3(FragmentUniforms.TestRate));
++    out.out_var_SV_Target0 = float4(mix(_195, mix(_195 * float3(0.077399380505084991455078125), powr((_195 + float3(0.054999999701976776123046875)) * float3(0.947867333889007568359375), float3(2.400000095367431640625)), step(float3(0.040449999272823333740234375), _195)), float3(FragmentUniforms.SrgbOut)), mix(_173.w, 1.0, FragmentUniforms.TestFill));
++    out.gl_FragDepth = _133;
 +    return out;
 +}
 +
@@ -583,10 +578,10 @@ index 0000000..34f0f2e
 +{ "samplers": 1, "storage_textures": 0, "storage_buffers": 0, "uniform_buffers": 1, "inputs": [{ "name": "in.var.TEXCOORD0", "type": "float2", "location": 0 }, { "name": "in.var.TEXCOORD1", "type": "float4", "location": 1 }], "outputs": [{ "name": "out.var.SV_Target0", "type": "float4", "location": 0 }] }
 diff --git a/Content/Shaders/Compiled/SpriteVR.fragment.msl b/Content/Shaders/Compiled/SpriteVR.fragment.msl
 new file mode 100644
-index 0000000..5e672c2
+index 0000000..5e28416
 --- /dev/null
 +++ b/Content/Shaders/Compiled/SpriteVR.fragment.msl
-@@ -0,0 +1,44 @@
+@@ -0,0 +1,33 @@
 +#include <metal_stdlib>
 +#include <simd/simd.h>
 +
@@ -597,7 +592,6 @@ index 0000000..5e672c2
 +    float u_near;
 +    float u_far;
 +    float u_srgb_out;
-+    float u_soft_edge;
 +};
 +
 +struct fragment_main_out
@@ -614,20 +608,10 @@ index 0000000..5e672c2
 +fragment fragment_main_out fragment_main(fragment_main_in in [[stage_in]], constant type_FragmentUniforms& FragmentUniforms [[buffer(0)]], texture2d<float> Texture [[texture(0)]], sampler Sampler [[sampler(0)]])
 +{
 +    fragment_main_out out = {};
-+    float4 _49 = Texture.sample(Sampler, in.in_var_TEXCOORD0);
-+    float4 _90;
-+    if (FragmentUniforms.u_soft_edge > 0.0)
-+    {
-+        float2 _57 = dfdx(in.in_var_TEXCOORD0) * FragmentUniforms.u_soft_edge;
-+        float2 _59 = dfdy(in.in_var_TEXCOORD0) * FragmentUniforms.u_soft_edge;
-+        _90 = (((((Texture.sample(Sampler, in.in_var_TEXCOORD0) + Texture.sample(Sampler, (in.in_var_TEXCOORD0 + _57))) + Texture.sample(Sampler, (in.in_var_TEXCOORD0 - _57))) + Texture.sample(Sampler, (in.in_var_TEXCOORD0 + _59))) + Texture.sample(Sampler, (in.in_var_TEXCOORD0 - _59))) * float4(0.20000000298023223876953125)) * in.in_var_TEXCOORD1;
-+    }
-+    else
-+    {
-+        _90 = _49 * in.in_var_TEXCOORD1;
-+    }
-+    float3 _101 = mix(_90.xyz, mix(_90.xyz * float3(0.077399380505084991455078125), powr((_90.xyz + float3(0.054999999701976776123046875)) * float3(0.947867333889007568359375), float3(2.400000095367431640625)), step(float3(0.040449999272823333740234375), _90.xyz)), float3(FragmentUniforms.u_srgb_out));
-+    out.out_var_SV_Target0 = float4(_101.x, _101.y, _101.z, _90.w);
++    float4 _45 = Texture.sample(Sampler, in.in_var_TEXCOORD0) * in.in_var_TEXCOORD1;
++    float3 _46 = _45.xyz;
++    float3 _56 = mix(_46, mix(_46 * float3(0.077399380505084991455078125), powr((_46 + float3(0.054999999701976776123046875)) * float3(0.947867333889007568359375), float3(2.400000095367431640625)), step(float3(0.040449999272823333740234375), _46)), float3(FragmentUniforms.u_srgb_out));
++    out.out_var_SV_Target0 = float4(_56.x, _56.y, _56.z, _45.w);
 +    return out;
 +}
 +
@@ -828,110 +812,6 @@ index 0000000..3401f52
 +    return out;
 +}
 +
-diff --git a/Content/Shaders/Compiled/UpscaleVRArray.fragment.json b/Content/Shaders/Compiled/UpscaleVRArray.fragment.json
-new file mode 100644
-index 0000000..d3f6fee
---- /dev/null
-+++ b/Content/Shaders/Compiled/UpscaleVRArray.fragment.json
-@@ -0,0 +1 @@
-+{ "samplers": 2, "storage_textures": 0, "storage_buffers": 0, "uniform_buffers": 1, "inputs": [{ "name": "in.var.TEXCOORD0", "type": "float2", "location": 0 }, { "name": "in.var.TEXCOORD5", "type": "uint", "location": 1 }], "outputs": [{ "name": "out.var.SV_Target0", "type": "float4", "location": 0 }] }
-diff --git a/Content/Shaders/Compiled/UpscaleVRArray.fragment.msl b/Content/Shaders/Compiled/UpscaleVRArray.fragment.msl
-new file mode 100644
-index 0000000..6d56f66
---- /dev/null
-+++ b/Content/Shaders/Compiled/UpscaleVRArray.fragment.msl
-@@ -0,0 +1,46 @@
-+#include <metal_stdlib>
-+#include <simd/simd.h>
-+
-+using namespace metal;
-+
-+struct type_FragmentUniforms
-+{
-+    float2 Used0;
-+    float2 Used1;
-+    float2 PhysicalSize;
-+    float SrgbOut;
-+    float TestPhysicalUV;
-+};
-+
-+struct fragment_main_out
-+{
-+    float4 out_var_SV_Target0 [[color(0)]];
-+    float gl_FragDepth [[depth(any)]];
-+};
-+
-+struct fragment_main_in
-+{
-+    float2 in_var_TEXCOORD0 [[user(locn0)]];
-+    uint in_var_TEXCOORD5 [[user(locn1)]];
-+};
-+
-+fragment fragment_main_out fragment_main(fragment_main_in in [[stage_in]], constant type_FragmentUniforms& FragmentUniforms [[buffer(0)]], texture2d_array<float> Texture [[texture(0)]], texture2d_array<float> Depth [[texture(1)]], sampler TextureSampler [[sampler(0)]], sampler DepthSampler [[sampler(1)]], float4 gl_FragCoord [[position]])
-+{
-+    fragment_main_out out = {};
-+    float2 _72;
-+    if (in.in_var_TEXCOORD5 == 0u)
-+    {
-+        _72 = FragmentUniforms.Used0;
-+    }
-+    else
-+    {
-+        _72 = FragmentUniforms.Used1;
-+    }
-+    float3 _77 = float3(mix(in.in_var_TEXCOORD0, gl_FragCoord.xy / FragmentUniforms.PhysicalSize, float2(FragmentUniforms.TestPhysicalUV)) * _72, float(in.in_var_TEXCOORD5));
-+    float4 _81 = Texture.sample(TextureSampler, _77.xy, uint(rint(_77.z)));
-+    float3 _82 = _81.xyz;
-+    out.out_var_SV_Target0 = float4(mix(_82, mix(_82 * float3(0.077399380505084991455078125), powr((_82 + float3(0.054999999701976776123046875)) * float3(0.947867333889007568359375), float3(2.400000095367431640625)), step(float3(0.040449999272823333740234375), _82)), float3(FragmentUniforms.SrgbOut)), _81.w);
-+    out.gl_FragDepth = Depth.sample(DepthSampler, _77.xy, uint(rint(_77.z))).x;
-+    return out;
-+}
-+
-diff --git a/Content/Shaders/Compiled/UpscaleVRArray.vertex.json b/Content/Shaders/Compiled/UpscaleVRArray.vertex.json
-new file mode 100644
-index 0000000..cf4c94a
---- /dev/null
-+++ b/Content/Shaders/Compiled/UpscaleVRArray.vertex.json
-@@ -0,0 +1 @@
-+{ "samplers": 0, "storage_textures": 0, "storage_buffers": 0, "uniform_buffers": 1, "inputs": [{ "name": "in.var.TEXCOORD0", "type": "float2", "location": 0 }, { "name": "in.var.TEXCOORD1", "type": "float2", "location": 1 }], "outputs": [{ "name": "out.var.TEXCOORD0", "type": "float2", "location": 0 }, { "name": "out.var.TEXCOORD5", "type": "uint", "location": 1 }] }
-diff --git a/Content/Shaders/Compiled/UpscaleVRArray.vertex.msl b/Content/Shaders/Compiled/UpscaleVRArray.vertex.msl
-new file mode 100644
-index 0000000..8cdae7e
---- /dev/null
-+++ b/Content/Shaders/Compiled/UpscaleVRArray.vertex.msl
-@@ -0,0 +1,32 @@
-+#include <metal_stdlib>
-+#include <simd/simd.h>
-+
-+using namespace metal;
-+
-+struct type_VertexUniforms
-+{
-+    float4x4 Matrix;
-+};
-+
-+struct vertex_main_out
-+{
-+    float2 out_var_TEXCOORD0 [[user(locn0)]];
-+    uint out_var_TEXCOORD5 [[user(locn1)]];
-+    float4 gl_Position [[position]];
-+};
-+
-+struct vertex_main_in
-+{
-+    float2 in_var_TEXCOORD0 [[attribute(0)]];
-+    float2 in_var_TEXCOORD1 [[attribute(1)]];
-+};
-+
-+vertex vertex_main_out vertex_main(vertex_main_in in [[stage_in]], constant type_VertexUniforms& VertexUniforms [[buffer(0)]], uint gl_InstanceIndex [[instance_id]], uint gl_BaseInstance [[base_instance]], uint gl_ViewIndex [[amplification_id]])
-+{
-+    vertex_main_out out = {};
-+    out.out_var_TEXCOORD0 = in.in_var_TEXCOORD1;
-+    out.out_var_TEXCOORD5 = gl_ViewIndex;
-+    out.gl_Position = VertexUniforms.Matrix * float4(in.in_var_TEXCOORD0, 0.0, 1.0);
-+    return out;
-+}
-+
 diff --git a/Content/Shaders/Default.hlsl b/Content/Shaders/Default.hlsl
 index a06d347..5ce0f02 100644
 --- a/Content/Shaders/Default.hlsl
@@ -1066,7 +946,7 @@ index 0000000..be70c83
 +#define VISIONOS_VR_NODISCARD 1
 +#include "Default.hlsl"
 diff --git a/Content/Shaders/Edge.hlsl b/Content/Shaders/Edge.hlsl
-index 428d06b..de90de2 100644
+index 428d06b..96727af 100644
 --- a/Content/Shaders/Edge.hlsl
 +++ b/Content/Shaders/Edge.hlsl
 @@ -1,3 +1,7 @@
@@ -1112,7 +992,7 @@ index 428d06b..de90de2 100644
  
  // Fragment Shader
  
-@@ -37,8 +59,112 @@ cbuffer FragmentUniforms : register(b0, space3)
+@@ -37,8 +59,101 @@ cbuffer FragmentUniforms : register(b0, space3)
  {
      float4 EdgeColor;
  	float2 Pixel;
@@ -1133,7 +1013,7 @@ index 428d06b..de90de2 100644
 +	// world pixel look: outline width as an angle (radians), converted per fragment into
 +	// physical pixels through the local rate of the rasterization rate map (derivatives of the
 +	// logical texture coordinate) and the tangent Jacobian 1 + x² + y²; AngularMode 0 keeps the
-+	// fixed Pixel offset (raster look: one coarse pixel)
++	// fixed Pixel offset (negative test: one physical pixel)
 +	float EdgeAngle;
 +	float AngularMode;
 +	// diagnostics: 1 paints the local rate (logical pixels per physical pixel) as colour, x in
@@ -1142,17 +1022,16 @@ index 428d06b..de90de2 100644
 +	float4 Tangents0;
 +	float4 Tangents1;
 +	float2 LogicalSize;
-+	// LinearCriterion 1: the old criterion on the linearised distance (Threshold); 0: the
-+	// criterion of the reference on the raw reverse-Z depth n/z (RawThreshold). The reference
++	// RawThreshold: the criterion of the reference on the raw reverse-Z depth n/z. The reference
 +	// compares its hardware depth, affine in 1/z, so the four-neighbour difference is a discrete
-+	// Laplacian and exactly zero on planes at any angle and distance; the linearised distance is
-+	// not affine in the image, its Laplacian grows with z³ on oblique surfaces and marked whole far
-+	// surfaces as outline
-+	float LinearCriterion;
++	// Laplacian and exactly zero on planes at any angle and distance (a criterion on the
++	// linearised distance is not affine in the image and marked whole far surfaces as outline);
++	// Pad keeps the layout
++	float Pad;
 +	float RawThreshold;
 +#endif
-+};
-+
+ };
+ 
 +#ifdef VISIONOS_VR_ARRAY
 +Texture2DArray Texture : register(t0, space2);
 +SamplerState TextureSampler : register(s0, space2);
@@ -1165,11 +1044,6 @@ index 428d06b..de90de2 100644
 +	return Depth.Sample(DepthSampler, uvw).r;
 +}
 +
-+float depth(float3 uvw)
-+{
-+	return min(ViewDistanceReverseZ(rawDepth(uvw), Near), Far);
-+}
-+
 +struct EdgeOutput
 +{
 +	float4 color : SV_Target0;
@@ -1177,8 +1051,8 @@ index 428d06b..de90de2 100644
 +	// intermediate, so that the sprites and transparent passes test against the world and the
 +	// compositor gets the world depth
 +	float depthOut : SV_Depth;
- };
- 
++};
++
 +EdgeOutput fragment_main(VsOutput input)
 +{
 +	// the physical pixel of this fragment; the intermediate has the same physical layout
@@ -1202,12 +1076,7 @@ index 428d06b..de90de2 100644
 +	// reference criterion on the raw depth: the centre nearer than the mean of its neighbours
 +	// (reverse-Z: larger) by more than the threshold darkens the near side, like the reference
 +	float rawOther = (rawDepth(at + dx) + rawDepth(at - dx) + rawDepth(at + dy) + rawDepth(at - dy)) * 0.25;
-+	float edgeRaw = step(RawThreshold, raw - rawOther);
-+	// old criterion on the linearised distance
-+	float it = min(ViewDistanceReverseZ(raw, Near), Far);
-+	float other = (depth(at + dx) + depth(at - dx) + depth(at + dy) + depth(at - dy)) * 0.25;
-+	float edgeLinear = step(Threshold, other - it);
-+	float edge = lerp(edgeRaw, edgeLinear, LinearCriterion);
++	float edge = step(RawThreshold, raw - rawOther);
 +
 +	float4 col = Texture.Sample(TextureSampler, at);
 +	float3 res = lerp(col.rgb, EdgeColor.rgb, edge * 0.70);
@@ -1225,7 +1094,7 @@ index 428d06b..de90de2 100644
  Texture2D Texture : register(t0, space2);
  SamplerState TextureSampler : register(s0, space2);
  
-@@ -47,25 +173,45 @@ SamplerState DepthSampler : register(s1, space2);
+@@ -47,25 +162,45 @@ SamplerState DepthSampler : register(s1, space2);
  
  float depth(float2 uv)
  {
@@ -1254,12 +1123,12 @@ index 428d06b..de90de2 100644
 +
  	// more edge the closer to the screen
 +#ifdef VISIONOS_VR
-+	// reference criterion on the raw reverse-Z depth (see the cbuffer), or the old linearised one
++	// reference criterion on the raw reverse-Z depth (see the cbuffer)
 +	float2 dx = float2(Pixel.x, 0), dy = float2(0, Pixel.y);
 +	float raw = Depth.Sample(DepthSampler, input.TexCoord).r;
 +	float rawOther = (Depth.Sample(DepthSampler, input.TexCoord + dx).r + Depth.Sample(DepthSampler, input.TexCoord - dx).r
 +		+ Depth.Sample(DepthSampler, input.TexCoord + dy).r + Depth.Sample(DepthSampler, input.TexCoord - dy).r) * 0.25;
-+	float edge = lerp(step(RawThreshold, raw - rawOther), step(Threshold, other - it), LinearCriterion);
++	float edge = step(RawThreshold, raw - rawOther);
 +#else
  	float edge = step(0.001, other - it);
 +#endif
@@ -1325,7 +1194,7 @@ index 18bf955..3b3bd23 100644
 +	return lerp(low, high, step(0.04045, c));
 +}
 diff --git a/Content/Shaders/Sprite.hlsl b/Content/Shaders/Sprite.hlsl
-index ae89d7f..68c5b3e 100644
+index ae89d7f..864f32b 100644
 --- a/Content/Shaders/Sprite.hlsl
 +++ b/Content/Shaders/Sprite.hlsl
 @@ -5,6 +5,10 @@
@@ -1364,21 +1233,18 @@ index ae89d7f..68c5b3e 100644
  
  // Fragment Shader:
  
-@@ -36,6 +51,13 @@ cbuffer FragmentUniforms : register(b0, space3)
+@@ -36,6 +51,10 @@ cbuffer FragmentUniforms : register(b0, space3)
  {
  	float   u_near;
  	float   u_far;
 +#ifdef VISIONOS_VR
 +	// 1 when writing an sRGB-encoded target (see Default.hlsl)
 +	float   u_srgb_out;
-+	// > 0 softens a binary alpha edge: five taps this many screen pixels apart (the magnified
-+	// strawberry splash, whose source texels are 2.7 pixels wide); 0 for every other sprite
-+	float   u_soft_edge;
 +#endif
  };
  
  Texture2D<float4> Texture : register(t0, space2);
-@@ -44,13 +66,32 @@ SamplerState Sampler : register(s0, space2);
+@@ -44,13 +63,21 @@ SamplerState Sampler : register(s0, space2);
  struct FragmentOutput
  {
      float4 color : SV_Target0;
@@ -1393,17 +1259,6 @@ index ae89d7f..68c5b3e 100644
 -	output.depth = LinearizeDepth(input.position.z, u_near, u_far);
  	output.color = Texture.Sample(Sampler, input.tex) * input.color;
 +#ifdef VISIONOS_VR
-+	// visionOS VR variant: optional soft edge, a small blur in screen space (premultiplied colour,
-+	// so the average is valid as it is)
-+	if (u_soft_edge > 0.0)
-+	{
-+		float2 dx = ddx(input.tex) * u_soft_edge;
-+		float2 dy = ddy(input.tex) * u_soft_edge;
-+		float4 sum = Texture.Sample(Sampler, input.tex)
-+			+ Texture.Sample(Sampler, input.tex + dx) + Texture.Sample(Sampler, input.tex - dx)
-+			+ Texture.Sample(Sampler, input.tex + dy) + Texture.Sample(Sampler, input.tex - dy);
-+		output.color = sum / 5.0 * input.color;
-+	}
 +	// hardware depth from the reverse-Z projection, no depth output;
 +	// linear output for an sRGB target (the uniform buffer stays declared through u_srgb_out)
 +	output.color.rgb = lerp(output.color.rgb, SrgbToLinear(output.color.rgb), u_srgb_out);
@@ -1529,94 +1384,6 @@ index 0000000..461989d
 +    float linearAlpha = 1.0 - SrgbToLinear(float3(1.0 - col.a, 0.0, 0.0)).x;
 +    float4 decoded = float4(SrgbToLinear(straight) * linearAlpha, linearAlpha);
 +    return lerp(col, decoded, SrgbOut) * Opacity;
-+}
-diff --git a/Content/Shaders/UpscaleVRArray.hlsl b/Content/Shaders/UpscaleVRArray.hlsl
-new file mode 100644
-index 0000000..3033fb7
---- /dev/null
-+++ b/Content/Shaders/UpscaleVRArray.hlsl
-@@ -0,0 +1,82 @@
-+// visionOS port, pixel look: enlarges the coarse composite B (colour and depth, one layer per
-+// eye) into the host's drawable without filtering. One full-screen quad in the logical space of
-+// the drawable, vertex amplification for the two views. The texture coordinates are interpolated
-+// in that logical space even under a rasterization rate map, so every logical pixel of the
-+// drawable takes the coarse texel it falls into and the blocks are equally sized across the view
-+// (uniform in tangent space, like the game's own raster). The depth of the texel goes out as
-+// SV_Depth for the compositor. Compiled by scripts/compile-vr-shaders.sh.
-+#include "Partials/Methods.hlsl"
-+
-+// Vertex Shader
-+
-+cbuffer VertexUniforms : register(b0, space1)
-+{
-+    float4x4 Matrix;
-+};
-+
-+struct VsInput
-+{
-+    float2 Position : TEXCOORD0;
-+    float2 TexCoord : TEXCOORD1;
-+    float4 Color : TEXCOORD2;
-+    float4 Type : TEXCOORD4;
-+};
-+
-+struct VsOutput
-+{
-+    float2 TexCoord : TEXCOORD0;
-+    // view index (SV_ViewID, vertex amplification) for the fragment stage: the layer of B
-+    nointerpolation uint View : TEXCOORD5;
-+    float4 Position : SV_Position;
-+};
-+
-+VsOutput vertex_main(VsInput input, uint viewID : SV_ViewID)
-+{
-+    VsOutput output;
-+    output.TexCoord = input.TexCoord;
-+    output.View = viewID;
-+    output.Position = mul(Matrix, float4(input.Position, 0.0, 1.0));
-+    return output;
-+}
-+
-+// Fragment Shader
-+
-+cbuffer FragmentUniforms : register(b0, space3)
-+{
-+	// fraction of the coarse texture the frame uses per eye (the texture has a fixed size, the
-+	// frustum of the frame fills only part of it); size of the drawable texture (only the
-+	// negative test divides the physical position by it); SrgbOut converts the output to linear
-+	// for the sRGB drawable; TestPhysicalUV 1 samples with the physical instead of the logical
-+	// position, which is wrong under a rate map (Mac check)
-+	float2 Used0;
-+	float2 Used1;
-+	float2 PhysicalSize;
-+	float SrgbOut;
-+	float TestPhysicalUV;
-+};
-+
-+Texture2DArray Texture : register(t0, space2);
-+SamplerState TextureSampler : register(s0, space2);
-+
-+Texture2DArray Depth : register(t1, space2);
-+SamplerState DepthSampler : register(s1, space2);
-+
-+struct UpscaleOutput
-+{
-+	float4 color : SV_Target0;
-+	float depthOut : SV_Depth;
-+};
-+
-+UpscaleOutput fragment_main(VsOutput input)
-+{
-+	float2 uv = lerp(input.TexCoord, input.Position.xy / PhysicalSize, TestPhysicalUV);
-+	uv *= input.View == 0 ? Used0 : Used1;
-+	float3 at = float3(uv, input.View);
-+	float4 col = Texture.Sample(TextureSampler, at);
-+	float3 res = lerp(col.rgb, SrgbToLinear(col.rgb), SrgbOut);
-+
-+	UpscaleOutput output;
-+	output.color = float4(res, col.a);
-+	output.depthOut = Depth.Sample(DepthSampler, at).r;
-+	return output;
 +}
 diff --git a/Source/Actors/Cutscene.cs b/Source/Actors/Cutscene.cs
 index 3b98afe..b065dcf 100644
@@ -2475,19 +2242,10 @@ index 583434c..89678b0 100644
  			CullMode = CullMode.Back
  		});
 diff --git a/Source/Graphics/SpriteRenderer.cs b/Source/Graphics/SpriteRenderer.cs
-index aae3c23..27c441b 100644
+index aae3c23..1a2a566 100644
 --- a/Source/Graphics/SpriteRenderer.cs
 +++ b/Source/Graphics/SpriteRenderer.cs
-@@ -11,7 +11,7 @@ public class SpriteRenderer
- 	private readonly Mesh<SpriteVertex> spriteMesh = new(Game.Instance.GraphicsDevice);
- 	private readonly Material spriteMaterial = new(Assets.Materials["Sprite"]);
- 
--	public void Render(ref RenderState state, List<Sprite> sprites, bool postEffects)
-+	public void Render(ref RenderState state, List<Sprite> sprites, bool postEffects, float softEdge = 0)
- 	{
- 		spriteVertices.Clear();
- 		spriteIndices.Clear();
-@@ -59,8 +59,17 @@ public class SpriteRenderer
+@@ -59,7 +59,12 @@ public class SpriteRenderer
  		spriteMesh.SetVertices(CollectionsMarshal.AsSpan(spriteVertices));
  		spriteMesh.SetIndices(CollectionsMarshal.AsSpan(spriteIndices));
  
@@ -2497,15 +2255,10 @@ index aae3c23..27c441b 100644
 +#else
  		spriteMaterial.Vertex.SetUniformBuffer(new UniformBuffers.SpriteVertex(state.Camera.ViewProjection));
 +#endif
-+#if VISIONOS_KIT
-+		spriteMaterial.Fragment.SetUniformBuffer(new UniformBuffers.SpriteFragment(state.Camera) { SoftEdge = softEdge });
-+#else
  		spriteMaterial.Fragment.SetUniformBuffer(new UniformBuffers.SpriteFragment(state.Camera));
-+#endif
  
  		foreach (var batch in spriteBatches)
- 		{
-@@ -71,7 +80,11 @@ public class SpriteRenderer
+@@ -71,7 +76,11 @@ public class SpriteRenderer
  				BlendMode = BlendMode.Premultiply,
  				DepthTestEnabled = true,
  				DepthWriteEnabled = false,
@@ -2518,7 +2271,7 @@ index aae3c23..27c441b 100644
  				IndexOffset = batch.Index,
  				IndexCount = batch.Count
 diff --git a/Source/Graphics/UniformBuffers.cs b/Source/Graphics/UniformBuffers.cs
-index ff1be6e..ffc8923 100644
+index ff1be6e..1711992 100644
 --- a/Source/Graphics/UniformBuffers.cs
 +++ b/Source/Graphics/UniformBuffers.cs
 @@ -9,6 +9,13 @@ public unsafe struct DefaultVertex
@@ -2546,7 +2299,7 @@ index ff1be6e..ffc8923 100644
  }
  
  [StructLayout(LayoutKind.Sequential, Pack = 1)]
-@@ -42,16 +53,125 @@ public struct EdgeFragment
+@@ -42,16 +53,106 @@ public struct EdgeFragment
  	public Vec2 Pixel;
  }
  
@@ -2579,26 +2332,9 @@ index ff1be6e..ffc8923 100644
 +	public Vec4 Tangents0;
 +	public Vec4 Tangents1;
 +	public Vec2 LogicalSize;
-+	// LinearCriterion 1 selects the old linearised criterion (Threshold), 0 the criterion of the
-+	// reference on the raw reverse-Z depth with RawThreshold
-+	public float LinearCriterion;
++	// edge threshold of the reference criterion on the raw reverse-Z depth (Pad keeps the layout)
++	public float Pad;
 +	public float RawThreshold;
-+}
-+
-+/// <summary>
-+/// visionOS port, pixel look: uniforms of the UpscaleVRArray shader, which enlarges the coarse
-+/// composite into the drawable: the used fraction of the coarse texture per eye, the drawable
-+/// texture size (negative test only), the sRGB output flag and the negative test switch (sample
-+/// with the physical instead of the logical position).
-+/// </summary>
-+[StructLayout(LayoutKind.Sequential, Pack = 1)]
-+public struct UpscaleFragmentVR
-+{
-+	public Vec2 Used0;
-+	public Vec2 Used1;
-+	public Vec2 PhysicalSize;
-+	public float SrgbOut;
-+	public float TestPhysicalUV;
 +}
 +
 +/// <summary>
@@ -2671,8 +2407,6 @@ index ff1be6e..ffc8923 100644
 +#if VISIONOS_KIT
 +	// visionOS port: 1 when the pass writes the host's sRGB-encoded drawable (VR shader variants)
 +	public float SrgbOut = VisionOSKit.IsSrgbTarget(camera.Target) ? 1 : 0;
-+	// visionOS port: 1 smooths a binary alpha edge in the VR sprite shader (strawberry splash)
-+	public float SoftEdge = 0;
 +#endif
  }
 -
@@ -2830,7 +2564,7 @@ index 33da870..7590a36 100644
  			CutoutMode = false,
  		};
 diff --git a/Source/Scenes/World.cs b/Source/Scenes/World.cs
-index bdfb740..d484c0d 100644
+index bdfb740..5f0702a 100644
 --- a/Source/Scenes/World.cs
 +++ b/Source/Scenes/World.cs
 @@ -70,9 +70,20 @@ public class World : Scene
@@ -2986,25 +2720,28 @@ index bdfb740..d484c0d 100644
  			it.DepthMask = false;
  			it.Silhouette = true;
  			RenderModels(ref it, models, ModelFlags.Silhouette);
-@@ -735,8 +814,43 @@ public class World : Scene
+@@ -735,8 +814,45 @@ public class World : Scene
  
  		// render main models
  		RenderModels(ref state, models, ModelFlags.Default);
 -		
 +
++		// the strawberry collect effect, evaluated once for the UI layer and the effect block below
++		var strawberryEffect = models.Any((it) => it.Model.Flags.Has(ModelFlags.StrawberryGetEffect));
++
  		// perform post processing effects
 +#if VISIONOS_KIT
 +		if (vr != null)
 +		{
-+			// stereo frame: world pass submitted, edge pass from the coarse A into the coarse B,
-+			// the rest of the frame draws into B (state.Camera is a copy, take the new target)
++			// stereo frame: world pass submitted, edge pass from A into the drawable, the rest of
++			// the frame draws into the drawable (state.Camera is a copy, take the new target)
 +			VisionOSKit.FlushPass(GraphicsDevice, "world");
 +			// pause panel: the menu into the transparent UI layer before the edge pass opens the
 +			// drawable; the panel quad follows the sprites in that same pass (no extra load)
 +			// the UI layer only in frames with something to show: the pause menu, or the timer and
 +			// the strawberry counter during play (head-locked); otherwise no pass at all
 +			uiDialogActive = Get<Cutscene>() != null;
-+			uiSplashActive = models.Any((it) => it.Model.Flags.Has(ModelFlags.StrawberryGetEffect));
++			uiSplashActive = strawberryEffect;
 +			var hudVisible = IsInEndingArea || Save.Instance.SpeedrunTimer || strawbCounterEase > 0 || uiDialogActive || uiSplashActive;
 +			uiLayerActive = VisionOSKit.Ui.Enabled && (Paused || hudVisible);
 +			if (uiLayerActive)
@@ -3022,8 +2759,7 @@ index bdfb740..d484c0d 100644
 +				VisionOSKit.FlushPass(GraphicsDevice, "ui");
 +			ApplyPostEffectsStereo(vr);
 +			VisionOSKit.FlushPass(GraphicsDevice, "edge");
-+			// world pixel look: the rest of the frame draws into the drawable; raster: into B
-+			Camera.Target = VisionOSKit.Composite ?? vr.Drawable;
++			Camera.Target = vr.Drawable;
 +			state.Camera = Camera;
 +		}
 +		else
@@ -3031,9 +2767,12 @@ index bdfb740..d484c0d 100644
  		ApplyPostEffects();
  
  		// render alpha threshold transparent stuff
-@@ -762,21 +876,96 @@ public class World : Scene
+@@ -760,23 +876,94 @@ public class World : Scene
+ 		}
+ 
  		// strawberry collect effect
- 		if (models.Any((it) => it.Model.Flags.Has(ModelFlags.StrawberryGetEffect)))
+-		if (models.Any((it) => it.Model.Flags.Has(ModelFlags.StrawberryGetEffect)))
++		if (strawberryEffect)
  		{
 -			var img = Assets.Subtextures["splash"];
 -			var orig = new Vec2(img.Width, img.Height) / 2;
@@ -3086,8 +2825,8 @@ index bdfb740..d484c0d 100644
 +#if VISIONOS_KIT
 +		if (vr != null)
 +		{
-+			// stereo frame: sprites and transparent models submitted, then the coarse composite is
-+			// enlarged into the drawable (submitted with the frame's final flush); no 2D UI (M4b.3b)
++			// stereo frame: sprites and transparent models submitted with the frame's final flush;
++			// no 2D UI (M4b.3b)
 +			// pause panel: the UI layer as a quad in the world, after the sprites, always on top
 +			if (uiLayerActive)
 +				DrawUiDim(vr);
@@ -3115,7 +2854,7 @@ index bdfb740..d484c0d 100644
 +					Color = Color.White,
 +					Post = true,
 +				});
-+				spriteRenderer.Render(ref state, splashSprites, true, VisionOSKit.Ui.SplashSoftEdge);
++				spriteRenderer.Render(ref state, splashSprites, true);
 +			}
 +			// the effect model with the normal depth test against the 50 m written by the dim quad:
 +			// in front of the dimmed world and the splash, occluding itself as in the original
@@ -3128,10 +2867,6 @@ index bdfb740..d484c0d 100644
 +			if (activeWipe != null)
 +				DrawWipeQuad(vr);
 +			VisionOSKit.FlushPass(GraphicsDevice, "sprites");
-+			// diagnosis of the unrest: changed pixels of B between two frames, once per second
-+			VisionOSKit.SampleStillness();
-+			if (VisionOSKit.Composite != null)
-+				UpscaleStereo(vr);
 +			VisionOSKit.FrameRendered = true;
 +			lastDebugRndTime = debugRndTimer.Elapsed;
 +			debugRndTimer.Stop();
@@ -3141,7 +2876,7 @@ index bdfb740..d484c0d 100644
  
  		// ui
  		{
-@@ -872,9 +1061,31 @@ public class World : Scene
+@@ -872,9 +1059,30 @@ public class World : Scene
  			// apply post fx
  			postMaterial.CopyFrom(Assets.Materials["Edge"]);
  			postMaterial.Fragment.Samplers[1] = new(target.Attachments[1], new(TextureFilter.Nearest, TextureWrap.Clamp, TextureWrap.Clamp));
@@ -3159,7 +2894,6 @@ index bdfb740..d484c0d 100644
 +					Far = VisionOSKit.EdgeClampFar(Camera.FarPlane),
 +					Threshold = VisionOSKit.EdgeThreshold,
 +					PhysicalSize = new Vec2(target.Width, target.Height),
-+					LinearCriterion = VisionOSKit.EdgeCriterionLinear ? 1 : 0,
 +					RawThreshold = VisionOSKit.RawEdgeThreshold,
 +				});
 +			}
@@ -3174,7 +2908,7 @@ index bdfb740..d484c0d 100644
  				Edge = new Color(0x110d33).ToVector4()
  			});
  			batch.PushMaterial(postMaterial);
-@@ -889,6 +1100,577 @@ public class World : Scene
+@@ -889,6 +1097,517 @@ public class World : Scene
  		}
  	}
  
@@ -3202,23 +2936,22 @@ index bdfb740..d484c0d 100644
 +	}
 +
 +	/// <summary>
-+	/// visionOS port, stereo frame (pixel look): the edge pass from the coarse A into the coarse B,
-+	/// the counterpart of the reference's post target. One full-screen quad over B (both views,
-+	/// vertex amplification); the EdgeVRArray fragment reads A at its pixel, draws the outline
-+	/// one coarse pixel wide and copies A's depth into B's own depth, so the sprite and
-+	/// transparent passes test against the world and the upscale pass can hand the depth on.
-+	/// B is cleared first (load actions CLEAR instead of LOAD); the quad covers every pixel,
-+	/// writes depth with Always and carries A's alpha, which the world pass fills opaque.
++	/// visionOS port, stereo frame: the edge pass from the world target A into the drawable, the
++	/// counterpart of the reference's post target. One full-screen quad over the drawable (both
++	/// views, vertex amplification); the EdgeVRArray fragment reads A at its pixel, draws the
++	/// outline of fixed angular width and copies A's depth into the drawable's depth, so the sprite
++	/// and transparent passes test against the world and the compositor gets the world depth.
++	/// The drawable is cleared first (load actions CLEAR instead of LOAD); the quad covers every
++	/// pixel, writes depth with Always and carries A's alpha, which the world pass fills opaque.
 +	/// </summary>
 +	private void ApplyPostEffectsStereo(VisionOSKit.VRFrame vr)
 +	{
 +		var a = VisionOSKit.Intermediate!;
-+		// raster look: into the coarse B over its own pixel grid; world look: into the drawable
-+		// over the logical size under the compositor's map (the quad covers every physical pixel)
-+		var world = VisionOSKit.Composite == null;
-+		var target = VisionOSKit.Composite ?? vr.Drawable;
++		// into the drawable over the logical size under the compositor's map (the quad covers
++		// every physical pixel)
++		var target = vr.Drawable;
 +		target.Clear(Color.Black, VisionOSKit.DepthClearValue, 0, ClearMask.All);
-+		var size = world ? new Point2(vr.LogicalWidth, vr.LogicalHeight) : new Point2(a.Width, a.Height);
++		var size = new Point2(vr.LogicalWidth, vr.LogicalHeight);
 +		var quad = StereoQuad(ref stereoQuad, ref stereoQuadSize, size, "stereo-edge-quad");
 +
 +		postMaterial.CopyFrom(Assets.Materials["EdgeVRArray"]);
@@ -3231,9 +2964,9 @@ index bdfb740..d484c0d 100644
 +		postMaterial.Fragment.Samplers[1] = new(a.Attachments[1], nearest);
 +		var (l0, r0, t0, b0) = VisionOSKit.Tangents(vr.Projection0);
 +		var (l1, r1, t1, b1) = VisionOSKit.Tangents(vr.Projection1);
-+		// world look: the outline has a fixed angular width (negative test: one physical pixel
-+		// everywhere, too narrow wherever the angle asks for more); raster look: one coarse pixel
-+		var angular = world && !VisionOSKit.StereoNegativeNoAngle;
++		// the outline has a fixed angular width (negative test: one physical pixel everywhere, too
++		// narrow wherever the angle asks for more)
++		var angular = !VisionOSKit.StereoNegativeNoAngle;
 +		var edgeRadians = VisionOSKit.EdgeAngleDegrees * MathF.PI / 180f;
 +		var lineWidth = (float)VisionOSKit.StereoLineWidth;
 +		postMaterial.Fragment.SetUniformBuffer(new UniformBuffers.EdgeFragmentVR()
@@ -3252,58 +2985,9 @@ index bdfb740..d484c0d 100644
 +			Tangents0 = new Vec4(l0, r0, t0, b0),
 +			Tangents1 = new Vec4(l1, r1, t1, b1),
 +			LogicalSize = new Vec2(size.X, size.Y),
-+			LinearCriterion = VisionOSKit.EdgeCriterionLinear ? 1 : 0,
 +			RawThreshold = VisionOSKit.RawEdgeThreshold,
 +		});
 +		GraphicsDevice.Draw(new DrawCommand(target, quad, postMaterial)
-+		{
-+			BlendMode = BlendMode.Premultiply,
-+			DepthTestEnabled = true,
-+			DepthWriteEnabled = true,
-+			DepthCompare = DepthCompare.Always,
-+			CullMode = CullMode.None,
-+		});
-+	}
-+
-+	private Mesh<BatcherVertex>? upscaleQuad;
-+	private Point2 upscaleQuadSize;
-+	private readonly Material upscaleMaterial = new();
-+
-+	/// <summary>
-+	/// visionOS port, stereo frame (pixel look): enlarges the coarse composite B into the host's
-+	/// drawable without filtering. One full-screen quad in the logical space of the drawable under
-+	/// the host's rate map; the UpscaleVRArray fragment takes the texel of B its interpolated
-+	/// texture coordinate falls into (nearest; the coordinate is interpolated in the logical
-+	/// space, so the blocks are equally sized across the view) and writes the texel's depth with
-+	/// Always for the compositor. The drawable is cleared first (load actions CLEAR, free on a
-+	/// tile-based GPU); the quad covers every pixel and B's alpha is opaque where the world is.
-+	/// </summary>
-+	private void UpscaleStereo(VisionOSKit.VRFrame vr)
-+	{
-+		var b = VisionOSKit.Composite!;
-+		var drawable = vr.Drawable;
-+		drawable.Clear(Color.Black, VisionOSKit.DepthClearValue, 0, ClearMask.All);
-+		var size = new Point2(vr.LogicalWidth, vr.LogicalHeight);
-+		var quad = StereoQuad(ref upscaleQuad, ref upscaleQuadSize, size, "stereo-upscale-quad");
-+
-+		upscaleMaterial.CopyFrom(Assets.Materials["UpscaleVRArray"]);
-+		upscaleMaterial.Vertex.SetUniformBuffer(new UniformBuffers.EdgeVertex()
-+		{
-+			Matrix = Matrix.CreateOrthographicOffCenter(0, size.X, size.Y, 0, 0, float.MaxValue)
-+		});
-+		var nearest = new TextureSampler(TextureFilter.Nearest, TextureWrap.Clamp, TextureWrap.Clamp);
-+		upscaleMaterial.Fragment.Samplers[0] = new(b.Attachments[0], nearest);
-+		upscaleMaterial.Fragment.Samplers[1] = new(b.Attachments[1], nearest);
-+		upscaleMaterial.Fragment.SetUniformBuffer(new UniformBuffers.UpscaleFragmentVR()
-+		{
-+			Used0 = vr.Used0,
-+			Used1 = vr.Used1,
-+			PhysicalSize = new Vec2(drawable.Width, drawable.Height),
-+			SrgbOut = vr.ColorSrgb ? 1 : 0,
-+			// negative test of the Mac check: the physical position is wrong under a map
-+			TestPhysicalUV = VisionOSKit.StereoNegativePhysicalUV ? 1 : 0,
-+		});
-+		GraphicsDevice.Draw(new DrawCommand(drawable, quad, upscaleMaterial)
 +		{
 +			BlendMode = BlendMode.Premultiply,
 +			DepthTestEnabled = true,
@@ -3518,17 +3202,7 @@ index bdfb740..d484c0d 100644
 +		layer.Clear(Color.Transparent, 0, 0, ClearMask.Color);
 +		var bounds = new Rect(0, 0, layer.Width, layer.Height);
 +		batch.PushSampler(new TextureSampler(TextureFilter.Linear, TextureWrap.Clamp, TextureWrap.Clamp));
-+		if (VisionOSKit.Ui.Style == VisionOSKit.UiStyle.Panel)
-+		{
-+			var pad = 16 * Game.RelativeScale;
-+			var menuSize = pauseMenu.CurrentSize;
-+			batch.RectRounded(new Rect(bounds.Center.X - menuSize.X / 2 - pad, bounds.Center.Y - menuSize.Y / 2 - pad, menuSize.X + 2 * pad, menuSize.Y + 2 * pad), 8 * Game.RelativeScale, Color.Black * 0.70f);
-+			pauseMenu.Render(batch, bounds.Center);
-+		}
-+		else
-+		{
-+			RenderUiBlockForLayer(bounds);
-+		}
++		RenderUiBlockForLayer(bounds);
 +		batch.PopSampler();
 +		batch.Render(layer);
 +		batch.Clear();
@@ -3646,7 +3320,7 @@ index bdfb740..d484c0d 100644
 +		var quad = StereoQuad(ref uiQuad, ref uiQuadSize, new Point2(1, 1), "ui-panel-quad");
 +		var srgbOut = vr.ColorSrgb || VisionOSKit.Ui.ForceSrgbDecode ? 1 : 0;
 +		var linearSampler = new TextureSampler(TextureFilter.Linear, TextureWrap.Clamp, TextureWrap.Clamp);
-+		var dimAlpha = Paused && VisionOSKit.Ui.Style == VisionOSKit.UiStyle.Original ? 0.70f : uiSplashActive ? 0.90f : 0f;
++		var dimAlpha = Paused ? 0.70f : uiSplashActive ? 0.90f : 0f;
 +		if (dimAlpha <= 0)
 +			return;
 +		var dimDepth = uiSplashActive ? (float)((VisionOSKit.NearMeters > 0 ? VisionOSKit.NearMeters : 0.1) / 50.0) : 0.5f;
@@ -3744,7 +3418,7 @@ index bdfb740..d484c0d 100644
 +				minY = MathF.Min(minY, y); maxY = MathF.Max(maxY, y);
 +			}
 +			var menuSize = pauseMenu.CurrentSize;
-+			Log.Info($"[c64-ui] panel eye0 bbox px=[{minX:F0}..{maxX:F0}]x[{minY:F0}..{maxY:F0}] of {vr.LogicalWidth}x{vr.LogicalHeight} layer={layer.Width}x{layer.Height} menu={menuSize.X:F0}x{menuSize.Y:F0} srgbOut={srgbOut} style={(VisionOSKit.Ui.Style == VisionOSKit.UiStyle.Panel ? "panel" : "original")}");
++			Log.Info($"[c64-ui] panel eye0 bbox px=[{minX:F0}..{maxX:F0}]x[{minY:F0}..{maxY:F0}] of {vr.LogicalWidth}x{vr.LogicalHeight} layer={layer.Width}x{layer.Height} menu={menuSize.X:F0}x{menuSize.Y:F0} srgbOut={srgbOut}");
 +		}
 +	}
 +#endif
@@ -3767,10 +3441,10 @@ index 650a35e..68b1c05 100644
  	private const float EaseClosePercent = 0.3f; // how long (in percent) it eases the entire screen
 diff --git a/Source/VisionOSKit.cs b/Source/VisionOSKit.cs
 new file mode 100644
-index 0000000..54f3e06
+index 0000000..fdc4cbb
 --- /dev/null
 +++ b/Source/VisionOSKit.cs
-@@ -0,0 +1,1714 @@
+@@ -0,0 +1,1427 @@
 +#if VISIONOS_KIT
 +// VisionOSKit.cs — Schalter des visionOS-Ports für Mac-Läufe (K6b, nur mit UseLocalFoster gebaut).
 +//
@@ -4073,20 +3747,13 @@ index 0000000..54f3e06
 +	}
 +
 +	/// <summary>
-+	/// C64_NODISCARD=1: the world pass uses the DefaultVR variant without the far discard. A shader
-+	/// with discard switches off the hidden surface removal of the tile-based GPU for its draws,
-+	/// so every covered fragment (sky behind terrain, terrain behind terrain) is shaded; without a
-+	/// far limit the discard never fires anyway. Default 0 for the comparison on the device.
++	/// C64_NODISCARD (default 1): the world pass uses the DefaultVR variant without the far
++	/// discard. A shader with discard switches off the hidden surface removal of the tile-based GPU
++	/// for its draws, so every covered fragment (sky behind terrain, terrain behind terrain) is
++	/// shaded; without a far limit the discard never fires anyway. C64_NODISCARD=0 keeps the
++	/// discard variant for comparison.
 +	/// </summary>
 +	public static bool NoDiscard { get; } = Environment.GetEnvironmentVariable("C64_NODISCARD") != "0";
-+
-+	/// <summary>
-+	/// C64_STILL=1 enables the [c64-still] measurement (two GPU readbacks per second, each a stall of
-+	/// the render thread of several milliseconds, which cost a frame each: presentGaps=2 and
-+	/// render(ms) max 13–15 in every probe since L1). Off by default; the MacHost enables it for
-+	/// --head-jitter.
-+	/// </summary>
-+	public static bool StillEnabled { get; set; } = Environment.GetEnvironmentVariable("C64_STILL") == "1";
 +
 +	/// <summary>Stopwatch ticks at the entry of the current celeste_render_frame_vr call (set by the wrapper) and at the commit of the world pass (FlushPass "world"); 0 when none.</summary>
 +	public static long RenderEntryTicks { get; set; }
@@ -4104,17 +3771,6 @@ index 0000000..54f3e06
 +
 +	/// <summary>Edge threshold in world units of the linearised criterion: 0.001 of the reference far plane (800), independent of C64_FAR.</summary>
 +	public const float EdgeThreshold = 0.8f;
-+
-+	/// <summary>
-+	/// C64_EDGE_CRITERION=linear: the old criterion of the VR edge pass (mean of the four
-+	/// linearised neighbour distances minus the centre, threshold EdgeThreshold). Default is the
-+	/// criterion of the reference on the raw depth: the reference compares its hardware depth,
-+	/// which is affine in 1/z, so its four-neighbour difference is the discrete Laplacian and is
-+	/// exactly zero on a plane at any angle and distance; the linearised distance is not affine in
-+	/// the image and its Laplacian grows with the cube of the distance on oblique surfaces, which
-+	/// drew outlines over whole far surfaces and widened them while the head turned.
-+	/// </summary>
-+	public static bool EdgeCriterionLinear { get; set; } = Environment.GetEnvironmentVariable("C64_EDGE_CRITERION") == "linear";
 +
 +	/// <summary>
 +	/// Edge threshold of the raw criterion in units of the reverse-Z depth n'/z. The reference
@@ -4140,51 +3796,15 @@ index 0000000..54f3e06
 +	public static bool StereoTestRate { get; } = Environment.GetEnvironmentVariable("C64_STEREO_TESTFILL") == "rate";
 +
 +	/// <summary>
-+	/// C64_STEREO_NEGATIVE=physical-uv: negative test of the Mac check. The upscale pass samples the
-+	/// coarse composite with the physical instead of the logical position, which is wrong under a
-+	/// rasterization rate map (physical differs from logical): the Mac check, which maps every
-+	/// drawable pixel to its coarse texel through the map, must then report mismatches.
-+	/// </summary>
-+	public static bool StereoNegativePhysicalUV { get; } = Environment.GetEnvironmentVariable("C64_STEREO_NEGATIVE") == "physical-uv";
-+
-+	/// <summary>
-+	/// C64_PIXEL_DENSITY: pixel density of the coarse stereo targets in pixels per degree at the
-+	/// view centre. Default 12 (judged on the device: 8 too coarse, 16 too expensive); the
-+	/// original 640x360 image at its 45° vertical field of view has 7.6 (360 px over 2·tan(22.5°)
-+	/// are 435 px per unit tangent).
-+	/// </summary>
-+	public static float PixelDensity { get; set; } =
-+		float.TryParse(Environment.GetEnvironmentVariable("C64_PIXEL_DENSITY"), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var density) && density > 0 ? density : 12f;
-+
-+	/// <summary>Pixels per unit tangent of the coarse raster: density × 180/π (one degree at the centre spans a tangent of π/180).</summary>
-+	public static float PixelsPerTangent => PixelDensity * 180f / MathF.PI;
-+
-+	/// <summary>
-+	/// C64_PIXEL_MSAA: samples of the world pass into the coarse A, 0 or 4 (default 4). The
++	/// C64_PIXEL_MSAA: samples of the world pass into A, 0 or 4 (default 4). The
 +	/// multisampled colour and depth stay in tile memory (memoryless) and are only resolved into
 +	/// A, the depth with the filter max (reverse-Z: the nearest sample); with two views a stored
 +	/// multisampled depth would resolve only the first view (Foster Target.cs).
 +	/// </summary>
 +	public static int PixelMsaa { get; set; } = Environment.GetEnvironmentVariable("C64_PIXEL_MSAA") == "0" ? 0 : 4;
 +
-+	/// <summary>How often the coarse targets were (re)created; one per run is the expectation.</summary>
++	/// <summary>How often the world target A was (re)created; one per run is the expectation.</summary>
 +	public static int CoarseAllocations { get; private set; }
-+
-+	/// <summary>Fraction of the coarse texture the current frame uses per eye (the tangents fluctuate, the texture stays).</summary>
-+	public static Vec2 CoarseUsed0 { get; private set; } = Vec2.One;
-+	public static Vec2 CoarseUsed1 { get; private set; } = Vec2.One;
-+
-+	/// <summary>The two renderings of the stereo world: pixel look in the world (full resolution) or in the image (coarse raster).</summary>
-+	public enum PixelLookMode { World, Raster }
-+
-+	/// <summary>
-+	/// C64_PIXEL_LOOK=world|raster (default world). World: A has the physical size of the drawable
-+	/// under the compositor's rate map, the edge pass writes the drawable with the depth copy and
-+	/// the sprites follow into the drawable; the pixel look lives in the nearest-sampled textures
-+	/// and the outline of fixed angular width. Raster: the coarse targets A and B and the nearest
-+	/// upscale (pixel look in the image).
-+	/// </summary>
-+	public static PixelLookMode PixelLook { get; } = Environment.GetEnvironmentVariable("C64_PIXEL_LOOK") == "raster" ? PixelLookMode.Raster : PixelLookMode.World;
 +
 +	/// <summary>
 +	/// C64_EDGE_DEG: outline width in degrees for the world pixel look (default 0.06, chosen on the
@@ -4204,35 +3824,9 @@ index 0000000..54f3e06
 +	/// </summary>
 +	public static bool StereoNegativeNoAngle { get; } = Environment.GetEnvironmentVariable("C64_STEREO_NEGATIVE") == "no-angle";
 +
-+	/// <summary>
-+	/// C64_HEAD_FREEZE=1: diagnosis of the pixel-look unrest. From the first world frame on, the
-+	/// rotation parts of head and eyes relative to O stay frozen; the translations stay live and
-+	/// the upscale pass is unchanged, so the image sticks to the head. If the shimmer stops while
-+	/// standing still, the per-frame re-quantisation of the world by the head rotation causes it.
-+	/// </summary>
-+	public static bool HeadFreeze { get; } = Environment.GetEnvironmentVariable("C64_HEAD_FREEZE") == "1";
-+	private static bool freezeCaptured;
-+	private static Matrix frozenHead, frozenEye0, frozenEye1;
-+	private static bool lastFrameRenderedWorld;
-+
-+	// [c64-still] measurement: head rotation between consecutive frames and the fraction of
-+	// changed pixels in a centred region of B between two consecutive frames, once per second
-+	private static bool hasPreviousHead;
-+	private static Matrix previousHead;
-+	private static double headRotSum, headRotMax;
-+	private static int headRotCount;
-+	private static Color[]? stillPrevious;
-+	private static Color[]? stillCurrent;
-+	private static long stillPreviousFrame = -2;
-+	private static long stillNextTicks;
-+	private const double StillIntervalSeconds = 1.0;
-+
-+	/// <summary>Reserve of the coarse texture over the tangents of the first frame.</summary>
-+	private const float CoarseReserve = 1.03f;
-+	private static float coarseDensity;
-+	private static int coarseMsaa = -1;
-+	private static Texture[] coarseTextures = [];
-+	private static bool coarseTooSmallLogged;
++	private static int worldMsaa = -1;
++	private static Texture[] worldTextures = [];
++	private static readonly List<(nint Color, nint Depth)> expiredImports = [];
 +
 +	// ---- Stereo world pass into the host's drawable (M4b.3a) ----
 +	//
@@ -4255,8 +3849,6 @@ index 0000000..54f3e06
 +		public Matrix Projection0, Projection1;
 +		public int LogicalWidth, LogicalHeight, PhysicalWidth, PhysicalHeight;
 +		public nint RateMap;
-+		/// <summary>Fraction of the coarse targets this frame uses per eye (width, height); the upscale pass samples only this part.</summary>
-+		public Vec2 Used0, Used1;
 +	}
 +
 +	// ---- Head pose (M4b.4) ----
@@ -4298,7 +3890,7 @@ index 0000000..54f3e06
 +	{
 +		if (target == null)
 +			return false;
-+		if (ReferenceEquals(target, Intermediate) || ReferenceEquals(target, Composite))
++		if (ReferenceEquals(target, Intermediate))
 +			return true;
 +		foreach (var imported in imports.Values)
 +			if (ReferenceEquals(target, imported.Target))
@@ -4524,14 +4116,13 @@ index 0000000..54f3e06
 +		public static readonly float FovDegrees;
 +		/// <summary>Diagnostics (Mac host): C64_UI_SRGB=1 forces the sRGB decoding of the panel on a non-sRGB drawable, so the decoded values can be read back.</summary>
 +		public static readonly bool ForceSrgbDecode;
-+		/// <summary>C64_UI_STYLE: original (default; the game's UI block on the layer, the world darkened by 70 % over the whole view) or panel (menu on a rounded panel, no darkening).</summary>
-+		public static readonly UiStyle Style;
 +		/// <summary>
 +		/// C64_UI_HUD_X / C64_UI_HUD_Y: where timer and strawberry counter sit during play, in degrees
-+		/// left of and above the gaze (defaults 12 and 9). The foveation is fixed to the head, so a
-+		/// head-locked element at the layer's corner (24.7 degrees left) sits for good in the zone with a
-+		/// third of the pixel density (M4a.4b: 0.33 at 25 degrees, 1.0 in the centre); 12 and 9 degrees
-+		/// lie on the plateau. `off` keeps the original corner. The pause keeps the original positions.
++		/// left of and above the gaze (defaults 16 and 11, chosen on the device: the layer's corner at
++		/// 24.7 degrees was blurred, 12 and 9 lay too far into the picture). The foveation is fixed to
++		/// the head, so a head-locked element at the corner sits for good in the zone with a third of
++		/// the pixel density (M4a.4b: 0.33 at 25 degrees, 1.0 in the centre). `off` keeps the original
++		/// corner. The pause keeps the original positions.
 +		/// </summary>
 +		public static readonly bool HudInset;
 +		public static readonly float HudXDegrees, HudYDegrees;
@@ -4546,8 +4137,6 @@ index 0000000..54f3e06
 +		public static readonly bool TestMeasure;
 +		/// <summary>C64_UI_SPLASH_SCALE: factor on the strawberry splash quad in the world (default 1 = 71 % of the picture height of the game's camera at Madeline's distance, as in the original).</summary>
 +		public static readonly float SplashScale;
-+		/// <summary>C64_UI_SPLASH_EDGE: blur radius of the splash's edge in screen pixels (five taps this far apart in the sprite shader; default 1.5, 0 = raw bilinear sampling).</summary>
-+		public static readonly float SplashSoftEdge;
 +		/// <summary>True while a stereo frame is being rendered and the bars are switched off: Cutscene.RenderUI skips them.</summary>
 +		public static bool SkipLetterbox => Frame != null && !Letterbox;
 +		/// <summary>Diagnostics (Mac check): C64_UI_TEST_TALK=frame starts the first NPC's dialog at that game frame, C64_UI_TEST_STRAWB=frame the collect effect of the first strawberry; -1 = off.</summary>
@@ -4561,11 +4150,6 @@ index 0000000..54f3e06
 +			ForceSrgbDecode = Environment.GetEnvironmentVariable("C64_UI_SRGB") == "1";
 +			if (ForceSrgbDecode)
 +				Log.Info("[c64-ui] C64_UI_SRGB=1 (diagnostics: sRGB decoding of the panel forced)");
-+			var style = Environment.GetEnvironmentVariable("C64_UI_STYLE");
-+			Style = style == "panel" ? UiStyle.Panel : UiStyle.Original;
-+			if (style != null && style != "panel" && style != "original")
-+				Log.Warning($"[c64-ui] C64_UI_STYLE={style} unknown, using original");
-+			Log.Info($"[c64-ui] C64_UI_STYLE={(Style == UiStyle.Panel ? "panel" : "original")} ({(Style == UiStyle.Panel ? "menu on a rounded panel, world not darkened" : "the game's UI block on the layer, world darkened by 70 % while paused")})");
 +			var hudX = Environment.GetEnvironmentVariable("C64_UI_HUD_X");
 +			var hudY = Environment.GetEnvironmentVariable("C64_UI_HUD_Y");
 +			HudInset = hudX != "off" && hudY != "off";
@@ -4581,8 +4165,6 @@ index 0000000..54f3e06
 +			DialogYDegrees = ReadFloat("C64_UI_DIALOG_Y", 1.5f, -14f, 14f);
 +			TestMeasure = Environment.GetEnvironmentVariable("C64_UI_TEST_MEASURE") == "1";
 +			SplashScale = ReadFloat("C64_UI_SPLASH_SCALE", 1f, 0.2f, 4f);
-+			SplashSoftEdge = Environment.GetEnvironmentVariable("C64_UI_SPLASH_EDGE") == "raw" ? 0 : ReadFloat("C64_UI_SPLASH_EDGE", 1.5f, 0f, 6f);
-+			Log.Info($"[c64-ui] C64_UI_SPLASH_EDGE={SplashSoftEdge.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)} px (blur radius of the splash edge, 0 = raw)");
 +			if (SplashScale != 1)
 +				Log.Info($"[c64-ui] C64_UI_SPLASH_SCALE={SplashScale.ToString("F2", System.Globalization.CultureInfo.InvariantCulture)} (factor on the strawberry splash quad)");
 +			Log.Info($"[c64-ui] C64_UI_DIALOG_Y={(DialogYSet ? DialogYDegrees.ToString("F1", System.Globalization.CultureInfo.InvariantCulture) : "off")} deg above the gaze (centre of the dialog box; off = 100 layer pixels below the top edge)");
@@ -4653,7 +4235,6 @@ index 0000000..54f3e06
 +	/// <summary>How often the host set its reference O anew (origin_reset in the frame), counted in BeginVRFrame.</summary>
 +	public static int OriginResets { get; private set; }
 +
-+	public enum UiStyle { Original, Panel }
 +	public enum UiAnchorMode { Following, Frozen }
 +	public enum UiTrigger { Start, Resume }
 +
@@ -5016,17 +4597,11 @@ index 0000000..54f3e06
 +	public static bool FrameRendered { get; set; }
 +
 +	/// <summary>
-+	/// The coarse world target A of the stereo pass (colour and Depth32, two layers): its size per
-+	/// eye follows the eye tangents and the pixel density, no rate map (pixel look).
++	/// The world target A of the stereo pass (colour and Depth32, two layers, the physical size of
++	/// the drawable under the compositor's rate map): the 3D passes draw into it, the edge pass
++	/// reads it and writes the drawable.
 +	/// </summary>
 +	public static Target? Intermediate { get; private set; }
-+
-+	/// <summary>
-+	/// The coarse composite B (colour and its own Depth32, two layers, same size as A): the edge
-+	/// pass copies A into it with the outline and A's depth, sprites and transparent models follow;
-+	/// the upscale pass enlarges it into the drawable.
-+	/// </summary>
-+	public static Target? Composite { get; private set; }
 +
 +	/// <summary>Command buffer submissions requested through FlushPass in the current frame.</summary>
 +	public static int FlushesThisFrame { get; private set; }
@@ -5054,7 +4629,7 @@ index 0000000..54f3e06
 +
 +	/// <summary>
 +	/// The current stereo frame for a camera that renders the stereo world, that is whose target
-+	/// is the coarse A or B or the drawable; null for every other target (title, overworld and
++	/// is A or the drawable; null for every other target (title, overworld and
 +	/// other cameras keep Celeste's own projection even while a stereo frame is open).
 +	/// </summary>
 +	public static VRFrame? StereoFrameFor(IDrawableTarget? target)
@@ -5062,13 +4637,13 @@ index 0000000..54f3e06
 +		var frame = Frame;
 +		if (frame == null || target == null)
 +			return null;
-+		return ReferenceEquals(target, frame.Drawable) || ReferenceEquals(target, Intermediate) || ReferenceEquals(target, Composite) ? frame : null;
++		return ReferenceEquals(target, frame.Drawable) || ReferenceEquals(target, Intermediate) ? frame : null;
 +	}
 +
 +	/// <summary>
-+	/// Begins a stereo frame: imports (or finds) the drawable textures, keeps the coarse targets A
-+	/// and B at the size the eye tangents and the pixel density give, sets the rate map on the
-+	/// drawable and stores the eye projections with the near plane in world units. Call before
++	/// Begins a stereo frame: imports (or finds) the drawable textures, keeps the world target A at
++	/// the physical size of the drawable, sets the rate map on the drawable and on A and stores the
++	/// eye projections with the near plane in world units. Call before
 +	/// Game.RenderFrame; EndVRFrame afterwards.
 +	/// </summary>
 +	public static void BeginVRFrame(GraphicsDevice device, nint colorTexture, nint depthTexture, int width, int height, int layers,
@@ -5113,16 +4688,19 @@ index 0000000..54f3e06
 +		// release drawables the host has not shown for a while (the compositor rotates about three)
 +		if (imports.Count > 1)
 +		{
-+			foreach (var (k, v) in imports.ToArray())
++			foreach (var (k, v) in imports)
++				if (frameCounter - v.LastSeen > ImportKeepFrames)
++					expiredImports.Add(k);
++			foreach (var k in expiredImports)
 +			{
-+				if (frameCounter - v.LastSeen <= ImportKeepFrames)
-+					continue;
++				var v = imports[k];
 +				v.Target.Dispose();
 +				v.Color.Dispose();
 +				v.Depth.Dispose();
 +				imports.Remove(k);
 +				Log.Info($"[c64-import] drawable released color=0x{k.Color:x} depth=0x{k.Depth:x} after {ImportKeepFrames} frames unseen, cached={imports.Count}");
 +			}
++			expiredImports.Clear();
 +		}
 +
 +		var physW = physicalWidth > 0 ? physicalWidth : width;
@@ -5130,99 +4708,37 @@ index 0000000..54f3e06
 +		var logicalW = logicalWidth > 0 ? logicalWidth : width;
 +		var logicalH = logicalHeight > 0 ? logicalHeight : height;
 +
-+		// Pixel look: the coarse targets A (world) and B (edge, sprites) with a size fixed once,
-+		// from the eye tangents of the first frame and the pixel density, width k·(tanL + tanR),
-+		// height k·(tanT + tanB), k = density · 180/π, plus a reserve, rounded up to a multiple of
-+		// 16; recreated only when density or MSAA change. The tangents fluctuate slightly from
-+		// frame to frame, and a texture per size would pile up (SDL releases the old ones late).
-+		// So the fluctuation only changes the projection and the used region: the projection is
-+		// widened to the right and bottom until the whole texture spans exactly k pixels per unit
-+		// tangent, and the upscale pass samples only the used fraction. No rate map on A and B:
-+		// the raster is uniform in tangent space, the upscale pass maps it onto the drawable under
-+		// the host's map. With MSAA the world pass draws into memoryless samples that are only
-+		// resolved into A (colour, and depth with max = nearest on the reverse-Z path).
-+		var (tl0, tr0, tt0, tb0) = Tangents(projection0);
-+		var (tl1, tr1, tt1, tb1) = Tangents(projection1);
-+		var pixelsPerTan = PixelsPerTangent;
-+		if (PixelLook == PixelLookMode.World)
++		// The world target A at the physical size of the drawable under the compositor's map (one
++		// pass for both views through vertex amplification); recreated only when the physical size
++		// (render quality) or MSAA changes. With MSAA the world pass draws into memoryless samples
++		// that are only resolved into A (colour, and depth with max = nearest on the reverse-Z path).
++		// The rate map is set on the drawable and on A every frame (the compositor hands out a new one).
++		if (Intermediate == null || Intermediate.Width != physW || Intermediate.Height != physH || worldMsaa != PixelMsaa)
 +		{
-+			// Pixel look in the world (M4b.3a path): A at the physical size of the drawable under the
-+			// compositor's map, no B; recreated only when the physical size (render quality) or MSAA
-+			// changes. The rate map is set every frame (the compositor hands out a new one).
-+			if (Intermediate == null || Intermediate.Width != physW || Intermediate.Height != physH || coarseMsaa != PixelMsaa)
-+			{
-+				Intermediate?.Dispose();
-+				Composite?.Dispose();
-+				Composite = null;
-+				foreach (var texture in coarseTextures)
-+					texture.Dispose();
-+				var aColor = new Texture(device, physW, physH, TextureFormat.Color, layers, TextureFlags.RenderTarget | TextureFlags.Sampled, 0, "stereo-world-a-color") { AllowArraySampling = true };
-+				var aDepth = new Texture(device, physW, physH, TextureFormat.Depth32, layers, TextureFlags.RenderTarget | TextureFlags.Sampled, 0, "stereo-world-a-depth") { AllowArraySampling = true };
-+				Intermediate = PixelMsaa > 0
-+					? new Target(device, [aColor, aDepth], 0, SampleCount.Four, multiSampleStore: false, DepthResolveFilter.Max, colorMemoryless: true, depthMemoryless: true, viewCount: layers, name: "stereo-world-a")
-+					: new Target(device, [aColor, aDepth], 0, SampleCount.One, true, DepthResolveFilter.Sample0, false, false, viewCount: layers, name: "stereo-world-a");
-+				coarseTextures = [aColor, aDepth];
-+				coarseMsaa = PixelMsaa;
-+				CoarseAllocations++;
-+				StereoLineWidth = 1;
-+				Log.Info($"[c64-stereo] world A {physW}x{physH}x{layers} (colour and Depth32) msaa={PixelMsaa} edge={EdgeAngleDegrees:F3} deg allocations={CoarseAllocations}, drawable {width}x{height}, logical {logicalW}x{logicalH}, map={(rateMap != 0 ? 1 : 0)}");
-+			}
-+			if (rateMap != 0)
-+			{
-+				imported.Target.SetRasterizationRateMap(rateMap, logicalW, logicalH);
-+				Intermediate.SetRasterizationRateMap(rateMap, logicalW, logicalH);
-+			}
-+			else
-+			{
-+				imported.Target.ClearRasterizationRateMap();
-+				Intermediate.ClearRasterizationRateMap();
-+			}
-+			CoarseUsed0 = Vec2.One;
-+			CoarseUsed1 = Vec2.One;
-+		}
-+		else if (Intermediate == null || coarseDensity != PixelDensity || coarseMsaa != PixelMsaa)
-+		{
-+			var coarseW = Multiple16(pixelsPerTan * MathF.Max(tl0 + tr0, tl1 + tr1) * CoarseReserve);
-+			var coarseH = Multiple16(pixelsPerTan * MathF.Max(tt0 + tb0, tt1 + tb1) * CoarseReserve);
 +			Intermediate?.Dispose();
-+			Composite?.Dispose();
-+			foreach (var texture in coarseTextures)
++			foreach (var texture in worldTextures)
 +				texture.Dispose();
-+			var aColor = new Texture(device, coarseW, coarseH, TextureFormat.Color, layers, TextureFlags.RenderTarget | TextureFlags.Sampled, 0, "stereo-coarse-a-color") { AllowArraySampling = true };
-+			var aDepth = new Texture(device, coarseW, coarseH, TextureFormat.Depth32, layers, TextureFlags.RenderTarget | TextureFlags.Sampled, 0, "stereo-coarse-a-depth") { AllowArraySampling = true };
++			var aColor = new Texture(device, physW, physH, TextureFormat.Color, layers, TextureFlags.RenderTarget | TextureFlags.Sampled, 0, "stereo-world-a-color") { AllowArraySampling = true };
++			var aDepth = new Texture(device, physW, physH, TextureFormat.Depth32, layers, TextureFlags.RenderTarget | TextureFlags.Sampled, 0, "stereo-world-a-depth") { AllowArraySampling = true };
 +			Intermediate = PixelMsaa > 0
-+				? new Target(device, [aColor, aDepth], 0, SampleCount.Four, multiSampleStore: false, DepthResolveFilter.Max, colorMemoryless: true, depthMemoryless: true, viewCount: layers, name: "stereo-coarse-a")
-+				: new Target(device, [aColor, aDepth], 0, SampleCount.One, true, DepthResolveFilter.Sample0, false, false, viewCount: layers, name: "stereo-coarse-a");
-+			var bColor = new Texture(device, coarseW, coarseH, TextureFormat.Color, layers, TextureFlags.RenderTarget | TextureFlags.Sampled, 0, "stereo-coarse-b-color") { AllowArraySampling = true };
-+			var bDepth = new Texture(device, coarseW, coarseH, TextureFormat.Depth32, layers, TextureFlags.RenderTarget | TextureFlags.Sampled, 0, "stereo-coarse-b-depth") { AllowArraySampling = true };
-+			Composite = new Target(device, [bColor, bDepth], 0, SampleCount.One, true, DepthResolveFilter.Sample0, false, false, viewCount: layers, name: "stereo-coarse-b");
-+			coarseTextures = [aColor, aDepth, bColor, bDepth];
-+			coarseDensity = PixelDensity;
-+			coarseMsaa = PixelMsaa;
++				? new Target(device, [aColor, aDepth], 0, SampleCount.Four, multiSampleStore: false, DepthResolveFilter.Max, colorMemoryless: true, depthMemoryless: true, viewCount: layers, name: "stereo-world-a")
++				: new Target(device, [aColor, aDepth], 0, SampleCount.One, true, DepthResolveFilter.Sample0, false, false, viewCount: layers, name: "stereo-world-a");
++			worldTextures = [aColor, aDepth];
++			worldMsaa = PixelMsaa;
 +			CoarseAllocations++;
 +			StereoLineWidth = 1;
-+			Log.Info($"[c64-stereo] coarse A and B {coarseW}x{coarseH}x{layers} (colour and Depth32) density={PixelDensity:F1} px/deg k={pixelsPerTan:F1} px/tan msaa={PixelMsaa} tangents eye0 {tl0 + tr0:F3}x{tt0 + tb0:F3} reserve={CoarseReserve:F2} allocations={CoarseAllocations}, drawable {width}x{height}, logical {logicalW}x{logicalH}, outline {StereoLineWidth} px, map={(rateMap != 0 ? 1 : 0)}");
++			Log.Info($"[c64-stereo] world A {physW}x{physH}x{layers} (colour and Depth32) msaa={PixelMsaa} edge={EdgeAngleDegrees:F3} deg allocations={CoarseAllocations}, drawable {width}x{height}, logical {logicalW}x{logicalH}, map={(rateMap != 0 ? 1 : 0)}");
 +		}
-+
-+		if (PixelLook == PixelLookMode.Raster)
-+		{
-+			// used region per eye and the widened projections (extra tangent on the right and bottom)
-+			var texTanW = Intermediate.Width / pixelsPerTan;
-+			var texTanH = Intermediate.Height / pixelsPerTan;
-+			if ((tl0 + tr0 > texTanW || tl1 + tr1 > texTanW || tt0 + tb0 > texTanH || tt1 + tb1 > texTanH) && !coarseTooSmallLogged)
-+			{
-+				coarseTooSmallLogged = true;
-+				Log.Warning($"[c64-stereo] coarse texture too small for the tangents of this frame (eye0 {tl0 + tr0:F3}x{tt0 + tb0:F3}, eye1 {tl1 + tr1:F3}x{tt1 + tb1:F3}, texture {texTanW:F3}x{texTanH:F3}); the whole texture spans the frustum, the density drops below {PixelDensity:F1} px/deg");
-+			}
-+			CoarseUsed0 = Widen(ref projection0, tl0, tr0, tt0, tb0, texTanW, texTanH);
-+			CoarseUsed1 = Widen(ref projection1, tl1, tr1, tt1, tb1, texTanW, texTanH);
-+		}
-+
-+		// rate map only on the drawable (the compositor hands out a new one each frame)
 +		if (rateMap != 0)
++		{
 +			imported.Target.SetRasterizationRateMap(rateMap, logicalW, logicalH);
++			Intermediate.SetRasterizationRateMap(rateMap, logicalW, logicalH);
++		}
 +		else
++		{
 +			imported.Target.ClearRasterizationRateMap();
++			Intermediate.ClearRasterizationRateMap();
++		}
 +
 +		// the host's projections carry the near plane in metres; in world units it is NearUnits
 +		// (the x and y rows are scale free), the one place where the unit conversion happens
@@ -5245,36 +4761,6 @@ index 0000000..54f3e06
 +			headRelative = shift;
 +		}
 +
-+		// head rotation per frame (diagnosis of the unrest): angle between this and the previous frame
-+		if (hasPreviousHead)
-+		{
-+			var angle = RotationAngleDegrees(previousHead, headRelative);
-+			headRotSum += angle;
-+			headRotMax = Math.Max(headRotMax, angle);
-+			headRotCount++;
-+		}
-+		previousHead = headRelative;
-+		hasPreviousHead = true;
-+
-+		// frozen head rotation (C64_HEAD_FREEZE=1): captured at the first frame after a world frame,
-+		// then the rotation rows of head and eyes are replaced, the position rows stay live
-+		if (HeadFreeze)
-+		{
-+			if (!freezeCaptured && lastFrameRenderedWorld)
-+			{
-+				freezeCaptured = true;
-+				frozenHead = headRelative;
-+				frozenEye0 = eye0Relative;
-+				frozenEye1 = eye1Relative;
-+				Log.Info($"[c64-still] head rotation frozen at stereo frame {frameCounter} (C64_HEAD_FREEZE=1): the image now sticks to the head, translations stay live");
-+			}
-+			if (freezeCaptured)
-+			{
-+				headRelative = WithRotationOf(frozenHead, headRelative);
-+				eye0Relative = WithRotationOf(frozenEye0, eye0Relative);
-+				eye1Relative = WithRotationOf(frozenEye1, eye1Relative);
-+			}
-+		}
 +		StereoSession = new StereoPose
 +		{
 +			Eye0 = eye0Relative,
@@ -5303,8 +4789,6 @@ index 0000000..54f3e06
 +			PhysicalWidth = physW,
 +			PhysicalHeight = physH,
 +			RateMap = rateMap,
-+			Used0 = CoarseUsed0,
-+			Used1 = CoarseUsed1,
 +		};
 +		FrameRendered = false;
 +		FlushesThisFrame = 0;
@@ -5315,80 +4799,9 @@ index 0000000..54f3e06
 +	public static (bool Rendered, int Flushes) EndVRFrame()
 +	{
 +		var result = (FrameRendered, FlushesThisFrame);
-+		lastFrameRenderedWorld = FrameRendered;
 +		Frame = null;
 +		FrameRendered = false;
 +		return result;
-+	}
-+
-+	/// <summary>
-+	/// [c64-still] measurement (diagnosis of the pixel-look unrest), called by World after the
-+	/// sprites pass of a stereo frame: once per second the centred quarter of B (layer 0) is read
-+	/// back in two consecutive frames and the changed pixels are counted; the line also carries
-+	/// the head rotation per frame (mean and max since the last line), the freeze switch and the
-+	/// number of coarse allocations. Each readback waits for the GPU to finish the frame so far
-+	/// (a few milliseconds), hence only two per second.
-+	/// </summary>
-+	public static void SampleStillness()
-+	{
-+		// off by default (C64_STILL=1): each readback stalls the render thread until the GPU has
-+		// finished the frame so far and costs a frame
-+		if (!StillEnabled)
-+			return;
-+		// raster: the composite B; world: A itself (the drawable cannot be read back)
-+		if ((Composite ?? Intermediate) is not { } b)
-+			return;
-+		var w = Math.Max(1, b.Width / 4);
-+		var h = Math.Max(1, b.Height / 4);
-+		var region = new RectInt((b.Width - w) / 2, (b.Height - h) / 2, w, h);
-+		if (stillPrevious != null && frameCounter == stillPreviousFrame + 1)
-+		{
-+			if (stillCurrent == null || stillCurrent.Length != w * h)
-+				stillCurrent = new Color[w * h];
-+			b.Attachments[0].GetData<Color>(stillCurrent, region, 0);
-+			var changed = 0;
-+			for (int i = 0; i < stillCurrent.Length; i++)
-+				if (stillCurrent[i] != stillPrevious[i])
-+					changed++;
-+			var fraction = changed / (double)stillCurrent.Length * 100;
-+			var rotMean = headRotCount > 0 ? headRotSum / headRotCount : 0;
-+			Log.Info($"[c64-still] changedB={fraction:F2}% region={w}x{h} frames={stillPreviousFrame},{frameCounter} headRot(deg/frame) mean={rotMean:F4} max={headRotMax:F4} n={headRotCount} freeze={(HeadFreeze && freezeCaptured ? 1 : 0)} allocations={CoarseAllocations}");
-+			headRotSum = 0;
-+			headRotMax = 0;
-+			headRotCount = 0;
-+			stillPrevious = null;
-+			return;
-+		}
-+		var now = System.Diagnostics.Stopwatch.GetTimestamp();
-+		if (now < stillNextTicks)
-+			return;
-+		stillNextTicks = now + (long)(StillIntervalSeconds * System.Diagnostics.Stopwatch.Frequency);
-+		if (stillPrevious == null || stillPrevious.Length != w * h)
-+			stillPrevious = new Color[w * h];
-+		b.Attachments[0].GetData<Color>(stillPrevious, region, 0);
-+		stillPreviousFrame = frameCounter;
-+	}
-+
-+	/// <summary>Angle in degrees between the rotation parts of two transforms (rows = axes).</summary>
-+	private static double RotationAngleDegrees(in Matrix a, in Matrix b)
-+	{
-+		// trace of Raᵀ·Rb = sum of the dot products of the matching axis rows
-+		var trace = a.M11 * b.M11 + a.M12 * b.M12 + a.M13 * b.M13
-+			+ a.M21 * b.M21 + a.M22 * b.M22 + a.M23 * b.M23
-+			+ a.M31 * b.M31 + a.M32 * b.M32 + a.M33 * b.M33;
-+		var cos = Math.Clamp((trace - 1) / 2, -1.0, 1.0);
-+		return Math.Acos(cos) * 180 / Math.PI;
-+	}
-+
-+	/// <summary>The rotation rows of one transform with the position row of another.</summary>
-+	private static Matrix WithRotationOf(in Matrix rotation, in Matrix position)
-+	{
-+		var m = rotation;
-+		m.M41 = position.M41;
-+		m.M42 = position.M42;
-+		m.M43 = position.M43;
-+		m.M44 = position.M44;
-+		return m;
 +	}
 +
 +	/// <summary>
@@ -5402,32 +4815,6 @@ index 0000000..54f3e06
 +		// time of the world commit for the host's toFirstCommit measurement
 +		if (name == "world")
 +			WorldCommitTicks = System.Diagnostics.Stopwatch.GetTimestamp();
-+	}
-+
-+	/// <summary>Smallest multiple of 16 not below the value (texture sizes of the coarse targets).</summary>
-+	private static int Multiple16(float value)
-+	{
-+		var n = Math.Max(16, (int)MathF.Ceiling(value));
-+		return (n + 15) / 16 * 16;
-+	}
-+
-+	/// <summary>
-+	/// Widens an eye projection on the right and bottom so that its frustum spans the given tangent
-+	/// extents (the whole coarse texture at exactly k pixels per unit tangent); the x and y rows
-+	/// change, the depth rows stay. Returns the fraction of the texture the original frustum uses.
-+	/// A frustum larger than the texture is left as it is (used fraction 1, lower density).
-+	/// </summary>
-+	private static Vec2 Widen(ref Matrix p, float left, float right, float top, float bottom, float tanWidth, float tanHeight)
-+	{
-+		var w = MathF.Max(left + right, tanWidth);
-+		var h = MathF.Max(top + bottom, tanHeight);
-+		var wideRight = w - left;
-+		var wideBottom = h - top;
-+		p.M11 = 2f / (left + wideRight);
-+		p.M31 = (wideRight - left) / (left + wideRight);
-+		p.M22 = 2f / (top + wideBottom);
-+		p.M32 = (top - wideBottom) / (top + wideBottom);
-+		return new Vec2((left + right) / w, (top + bottom) / h);
 +	}
 +
 +	/// <summary>View tangents (left, right, top, bottom, all positive) of a projection in the row-vector convention.</summary>
