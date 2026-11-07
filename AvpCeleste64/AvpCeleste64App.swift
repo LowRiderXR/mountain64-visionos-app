@@ -88,6 +88,11 @@ struct LauncherView: View {
                 c64Record("[c64-launch] tMs=\(LaunchClock.tMs) launcher task; \(CelesteProbe.lifecycleLine)")
                 guard appModel.immersiveState == .closed else { return }
                 GameStartup.prepareHost()
+                // Audio-Session vor celeste_init (FMOD startet darin), ohne den Hauptthread zu
+                // blockieren: der Task wartet, der Hauptthread bleibt frei.
+                if CelesteProbe.gameEnabled {
+                    await CelesteProbe.configureAudioSession()
+                }
                 GameStartup.run(appModel: appModel)
                 appModel.immersiveState = .opening
                 c64Record("[c64-launch] tMs=\(LaunchClock.tMs) openImmersiveSpace")
@@ -193,9 +198,8 @@ enum GameStartup {
         let start = DispatchTime.now()
         c64Record("[c64-start] tMs=\(LaunchClock.tMs) game=\(CelesteProbe.gameEnabled ? 1 : 0) thread=\(Thread.isMainThread ? "main" : "other")")
         if CelesteProbe.gameEnabled {
-            // Vor celeste_init: Audio-Session unabhängig von Fensterszenen (Vice City: ohne
-            // .playback starb der Ton mit dem 2D-Fenster; FMOD überlässt die Kategorie der App).
-            CelesteProbe.configureAudioSession()
+            // Die Audio-Session ist konfiguriert und aktiv (LauncherView wartet darauf, bevor run
+            // läuft); FMOD startet in celeste_init.
             // Lebenszyklus- und Audio-Signale ins Log (M4a.5c).
             CelesteProbe.LifecycleMonitor.shared.start()
             // M4a.3: Celeste laden, Endbild in die Leinwand (ohne laufenden Tick), Freigabe; die

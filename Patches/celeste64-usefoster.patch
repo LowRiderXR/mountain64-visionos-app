@@ -2165,6 +2165,30 @@ index e184bbf..41a8d39 100644
  		rotation = null;
  		upwards = null;
  		leftwards = null;
+diff --git a/Source/Graphics/Hair.cs b/Source/Graphics/Hair.cs
+index 8a0a397..038d2c5 100644
+--- a/Source/Graphics/Hair.cs
++++ b/Source/Graphics/Hair.cs
+@@ -80,10 +80,15 @@ public class Hair : Model
+ 			// wave target
+ 			target += side * MathF.Sin(wave + i * 0.50f) * 0.50f * p;
+ 
+-			// approach target
+-			// TODO: use delta time
+-			nodes[i] += (target - nodes[i]) * 0.25f;
+-			//nodes[i] += (target - nodes[i]) * (1 - MathF.Pow(.0000001f, Time.Delta));
++			// approach target: a quarter of the way per frame at 60 Hz, the same speed over time at
++			// any frame rate (the per-frame 0.25 pulled 1.5 times as fast at 90 Hz);
++			// C64_HAIR=frame keeps the per-frame factor for comparison
++#if VISIONOS_KIT
++			var follow = VisionOSKit.HairPerFrame ? 0.25f : 1 - MathF.Pow(0.75f, time.Delta * 60f);
++#else
++			var follow = 1 - MathF.Pow(0.75f, time.Delta * 60f);
++#endif
++			nodes[i] += (target - nodes[i]) * follow;
+ 
+ 			// don't let the hair cross the forward boundary (intersects face)
+ 			var dist = Utils.DistanceToPlane(nodes[i], plane);
 diff --git a/Source/Graphics/ParticleSystem.cs b/Source/Graphics/ParticleSystem.cs
 index f67add2..2ae99a8 100644
 --- a/Source/Graphics/ParticleSystem.cs
@@ -3452,10 +3476,10 @@ index 650a35e..68b1c05 100644
  	private const float EaseClosePercent = 0.3f; // how long (in percent) it eases the entire screen
 diff --git a/Source/VisionOSKit.cs b/Source/VisionOSKit.cs
 new file mode 100644
-index 0000000..fdc4cbb
+index 0000000..2512387
 --- /dev/null
 +++ b/Source/VisionOSKit.cs
-@@ -0,0 +1,1427 @@
+@@ -0,0 +1,1433 @@
 +#if VISIONOS_KIT
 +// VisionOSKit.cs — Schalter des visionOS-Ports für Mac-Läufe (K6b, nur mit UseLocalFoster gebaut).
 +//
@@ -3776,6 +3800,12 @@ index 0000000..fdc4cbb
 +	/// objects popped in when the head turned). C64_FAR=800 restores the reference limit.
 +	/// </summary>
 +	public static bool FarOff { get; } = Environment.GetEnvironmentVariable("C64_FAR") != "800";
++
++	/// <summary>
++	/// Hair follow: time-based by default (the same speed at every frame rate, equal to the original
++	/// at 60 Hz). C64_HAIR=frame restores the original's quarter of the way per frame for comparison.
++	/// </summary>
++	public static bool HairPerFrame { get; } = Environment.GetEnvironmentVariable("C64_HAIR") == "frame";
 +
 +	/// <summary>Far plane of the world camera: 800, or practically infinite with C64_FAR=off on the reverse-Z path.</summary>
 +	public static float WorldFarPlane => ReverseZ && FarOff ? 1_000_000f : 800f;

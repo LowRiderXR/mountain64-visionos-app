@@ -1136,16 +1136,23 @@ nonisolated enum CelesteProbe {
     /// Audio-Session der App vor celeste_init (M4a.5b-5): Kategorie .playback, aktiv. FMOD
     /// überlässt die Session der App (FMOD-Doku iOS); .playback hängt an keiner Fensterszene,
     /// Vice City brauchte genau das, damit der Ton das Schliessen des 2D-Fensters überlebt.
-    @MainActor static func configureAudioSession() {
-        let session = AVAudioSession.sharedInstance()
-        do {
-            try session.setCategory(.playback)
-            try session.setActive(true)
-            let route = session.currentRoute.outputs.map { $0.portType.rawValue }.joined(separator: ",")
-            c64Record("[c64-audio] session category=\(session.category.rawValue) active route=[\(route)] sampleRate=\(session.sampleRate)")
-        } catch {
-            c64Record("[c64-audio] session setCategory/setActive failed: \(error)")
-        }
+    /// setActive blockiert (Audio-Server), deshalb läuft der Aufruf auf einem eigenen Task; der
+    /// Start wartet darauf (await), bevor celeste_init FMOD initialisiert (System::init öffnet die
+    /// Ausgabe und braucht die fertige Session). Nur die Reihenfolge ist fest, nicht der Thread.
+    static func configureAudioSession() async {
+        let start = DispatchTime.now()
+        await Task.detached(priority: .userInitiated) {
+            let session = AVAudioSession.sharedInstance()
+            do {
+                try session.setCategory(.playback)
+                try session.setActive(true)
+                let route = session.currentRoute.outputs.map { $0.portType.rawValue }.joined(separator: ",")
+                c64Record("[c64-audio] session category=\(session.category.rawValue) active route=[\(route)] sampleRate=\(session.sampleRate) thread=\(Thread.current.name ?? "detached") isMainThread=\(Thread.isMainThread)")
+            } catch {
+                c64Error("[c64-audio] session setCategory/setActive failed: \(error)")
+            }
+        }.value
+        c64Record("[c64-audio] tMs=\(LaunchClock.tMs) session ready after \(format(elapsedMs(since: start))) ms, main thread free meanwhile")
     }
 
     // MARK: Pause beim Abnehmen (M4a.5c)

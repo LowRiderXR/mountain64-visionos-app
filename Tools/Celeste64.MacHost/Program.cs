@@ -59,7 +59,8 @@
 //   --tap-pause T,T     M4c.1: an diesen Ticks die Pausentaste (Escape) kurz drücken (SDL_PushEvent)
 //   --tap-down T,T      M4c.1c: an diesen Ticks die Menütaste Abwärts kurz drücken
 //   --layer-dump-ticks T,T  M4c.1c: zusätzlich an diesen Ticks Schichtvergleich und -dump
-//   --hold-key K:T0:T1  M4c.3: Taste K (w a s d c) von Tick T0 bis T1 halten (Bewegung)
+//   --hold-key K:T0:T1  M4c.3: Taste K von Tick T0 bis T1 halten: left right up down (Bewegung), w a s d
+//                       (Kamera), c (Sprung), x (Dash), z (Klettern)
 //   --key-probe N       K6f.4: vor Tick N ein F7-Tastenereignis einspeisen (SDL_PushEvent), zwei
 //                       Ticks später loslassen; meldet, nach welchem Tick Foster die Taste als
 //                       gedrückt bzw. losgelassen sieht (vor da3b23a N+1, nachher N)
@@ -226,9 +227,15 @@ for (int i = 0; i < args.Length; i++)
 		case "--layer-dump-ticks": foreach (var t in args[++i].Split(',')) layerDumpTicks.Add(long.Parse(t)); break;
 		case "--hold-key":
 		{
-			// NAME:FROM:TO, NAME one of w a s d c
+			// NAME:FROM:TO, NAME one of w a s d (camera with the keyboard-camera filter), left right up
+			// down (movement), c (jump), x (dash), z (climb)
 			var parts = args[++i].Split(':');
-			var key = parts[0] switch { "w" => SDL_Scancode.SDL_SCANCODE_W, "a" => SDL_Scancode.SDL_SCANCODE_A, "s" => SDL_Scancode.SDL_SCANCODE_S, "d" => SDL_Scancode.SDL_SCANCODE_D, _ => SDL_Scancode.SDL_SCANCODE_C };
+			var key = parts[0] switch
+			{
+				"w" => SDL_Scancode.SDL_SCANCODE_W, "a" => SDL_Scancode.SDL_SCANCODE_A, "s" => SDL_Scancode.SDL_SCANCODE_S, "d" => SDL_Scancode.SDL_SCANCODE_D,
+				"left" => SDL_Scancode.SDL_SCANCODE_LEFT, "right" => SDL_Scancode.SDL_SCANCODE_RIGHT, "up" => SDL_Scancode.SDL_SCANCODE_UP, "down" => SDL_Scancode.SDL_SCANCODE_DOWN,
+				"x" => SDL_Scancode.SDL_SCANCODE_X, "z" => SDL_Scancode.SDL_SCANCODE_Z, _ => SDL_Scancode.SDL_SCANCODE_C,
+			};
 			holdKeys.Add((key, long.Parse(parts[1]), long.Parse(parts[2])));
 			break;
 		}
