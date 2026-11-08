@@ -61,6 +61,9 @@
 //   --layer-dump-ticks T,T  M4c.1c: zusätzlich an diesen Ticks Schichtvergleich und -dump
 //   --hold-key K:T0:T1  M4c.3: Taste K von Tick T0 bis T1 halten: left right up down (Bewegung), w a s d
 //                       (Kamera), c (Sprung), x (Dash), z (Klettern)
+//   --gamepad-sim T0:T1 simuliertes Gamepad (VisionOSKit.GamepadPrompt.SimulatedConnected): ab Start
+//                       verbunden, von Tick T0 bis T1 getrennt; ohne die Option zählt der echte Zustand
+//                       (der Mac ohne Gamepad zeigt die Zeile «Connect a game controller to play»)
 //   --key-probe N       K6f.4: vor Tick N ein F7-Tastenereignis einspeisen (SDL_PushEvent), zwei
 //                       Ticks später loslassen; meldet, nach welchem Tick Foster die Taste als
 //                       gedrückt bzw. losgelassen sieht (vor da3b23a N+1, nachher N)
@@ -164,6 +167,7 @@ var minimizeAt = new List<long>();
 long keyProbeAt = -1;
 var tapPause = new List<long>();     // M4c.1: Escape (pause) at these ticks, released two ticks later
 var tapDown = new List<long>();      // M4c.1c: menu Down key at these ticks
+(long from, long to)? gamepadSim = null; // simulated gamepad: connected from the start, lost between these ticks
 var layerDumpTicks = new List<long>(); // M4c.1c: additional layer dumps at these ticks
 var holdKeys = new List<(SDL_Scancode key, long from, long to)>(); // M4c.3: hold a movement key between two ticks
 long keyProbeSeenDown = -1, keyProbeSeenUp = -1;
@@ -237,6 +241,12 @@ for (int i = 0; i < args.Length; i++)
 				"x" => SDL_Scancode.SDL_SCANCODE_X, "z" => SDL_Scancode.SDL_SCANCODE_Z, _ => SDL_Scancode.SDL_SCANCODE_C,
 			};
 			holdKeys.Add((key, long.Parse(parts[1]), long.Parse(parts[2])));
+			break;
+		}
+		case "--gamepad-sim":
+		{
+			var parts = args[++i].Split(':');
+			gamepadSim = (long.Parse(parts[0]), long.Parse(parts[1]));
 			break;
 		}
 		case "--vr-depth": vrDepth = true; break;
@@ -784,6 +794,9 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 	foreach (var h in holdKeys) { if (totalTicks == h.from) PushKey(true, h.key); if (totalTicks == h.to) PushKey(false, h.key); }
 	// M4c.1c: menu Down at fixed ticks (released two ticks later), e.g. to reach Retry in the pause menu
 	foreach (var t in tapDown) { if (totalTicks == t) PushKey(true, SDL_Scancode.SDL_SCANCODE_DOWN); if (totalTicks == t + 2) PushKey(false, SDL_Scancode.SDL_SCANCODE_DOWN); }
+	// simulated gamepad: connected from the first tick, lost between the two ticks of --gamepad-sim
+	if (gamepadSim is { } sim)
+		VisionOSKit.GamepadPrompt.SimulatedConnected = totalTicks < sim.from || totalTicks >= sim.to;
 
 	// M4b.4-N2: unruhige Wanduhr simulieren; der Tick bekommt trotzdem das Raster-Delta
 	if (jitterMs > 0)

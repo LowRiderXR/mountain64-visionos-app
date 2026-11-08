@@ -1748,7 +1748,7 @@ index f2ba5d0..9814c98 100644
  		Audio.SetVCAVolume("vca:/sfx", Calc.Clamp(SfxVolume / 10.0f, 0, 1));
  	}
 diff --git a/Source/Game.cs b/Source/Game.cs
-index 312df59..41d0de9 100644
+index 312df59..6e8ca59 100644
 --- a/Source/Game.cs
 +++ b/Source/Game.cs
 @@ -37,15 +37,29 @@ public class Game : App
@@ -1805,12 +1805,14 @@ index 312df59..41d0de9 100644
  
  	public void Goto(Transition next)
  	{
-@@ -116,6 +139,25 @@ public class Game : App
+@@ -116,6 +139,27 @@ public class Game : App
  
  	protected override void Update()
  	{
 +#if VISIONOS_KIT
 +		VisionOSKit.Tick();
++		// visionOS port: connection state of the gamepads for the "connect a game controller" line
++		VisionOSKit.GamepadPrompt.Update(Input, Time.Delta);
 +		// visionOS port: the host asks for a pause after the device was taken off; only a running
 +		// level reacts (its pause menu opens), the title and the overworld do nothing.
 +		if (VisionOSKit.ConsumePauseRequest())
@@ -1831,7 +1833,7 @@ index 312df59..41d0de9 100644
  		Audio.Update();
  
  		// toggle mouse camera mode
-@@ -316,9 +358,24 @@ public class Game : App
+@@ -316,13 +360,38 @@ public class Game : App
  
  	protected override void Render()
  	{
@@ -1859,7 +1861,21 @@ index 312df59..41d0de9 100644
  		{
  			// draw the world to the target
  			if (scenes.TryPeek(out var scene))
-@@ -332,16 +389,42 @@ public class Game : App
+ 				scene.Render(target);
++#if VISIONOS_KIT
++			// visionOS port: the "connect a game controller" line over the 2D image (title, overworld,
++			// canvas path); a level on the stereo path draws it into its UI layer instead
++			if (!VisionOSKit.FrameRendered && VisionOSKit.GamepadPrompt.Visible)
++			{
++				VisionOSKit.GamepadPrompt.Render(batcher, new Rect(0, 0, target.Width, target.Height), top: true);
++				batcher.Render(target);
++				batcher.Clear();
++			}
++#endif
+ 
+ 			// draw screen wipe over top
+ 			if (transitionStep != TransitionStep.None && transition.ToBlack != null)
+@@ -332,16 +401,42 @@ public class Game : App
  				batcher.Clear();
  			}
  
@@ -2619,7 +2635,7 @@ index 33da870..788a543 100644
  
  			if (easing < 1)
 diff --git a/Source/Scenes/World.cs b/Source/Scenes/World.cs
-index bdfb740..412db40 100644
+index bdfb740..46d307b 100644
 --- a/Source/Scenes/World.cs
 +++ b/Source/Scenes/World.cs
 @@ -70,9 +70,20 @@ public class World : Scene
@@ -2654,7 +2670,23 @@ index bdfb740..412db40 100644
  			optionsMenu.Add(new Menu.Toggle(() => Loc.Str("OptionsZGuide"), Save.Instance.ToggleZGuide, () => Save.Instance.ZGuide));
  			optionsMenu.Add(new Menu.Toggle(() => Loc.Str("OptionsTimer"), Save.Instance.ToggleTimer, () => Save.Instance.SpeedrunTimer));
  			string CameraInvertOption(int index) => Loc.Str(index switch
-@@ -394,10 +408,30 @@ public class World : Scene
+@@ -345,6 +359,15 @@ public class World : Scene
+ 		// normal game loop
+ 		if (!Paused)
+ 		{
++#if VISIONOS_KIT
++			// visionOS port: the gamepad went away during play: open the pause menu like a pause
++			// press (the connect line is drawn on the panel); reconnecting does not resume
++			if (VisionOSKit.GamepadPrompt.LostThisTick && IsPauseEnabled)
++			{
++				SetPaused(true);
++				return;
++			}
++#endif
+ 			// start pause menu
+ 			if (Controls.Pause.ConsumePress() && IsPauseEnabled)
+ 			{
+@@ -394,10 +417,30 @@ public class World : Scene
  			foreach (var actor in Actors)
  				if (actor.UpdateOffScreen || actor.WorldBounds.Intersects(view))
  					actor.LateUpdate();
@@ -2685,7 +2717,7 @@ index bdfb740..412db40 100644
  			if (Controls.Pause.ConsumePress() || (pauseMenu.IsInMainMenu && Controls.Cancel.ConsumePress()))
  			{
  				pauseMenu.CloseSubMenus();
-@@ -408,6 +442,13 @@ public class World : Scene
+@@ -408,6 +451,13 @@ public class World : Scene
  			{
  				pauseMenu.Update(Time);
  			}
@@ -2699,7 +2731,7 @@ index bdfb740..412db40 100644
  		}
  
  		debugUpdTimer.Stop();
-@@ -432,6 +473,13 @@ public class World : Scene
+@@ -432,6 +482,13 @@ public class World : Scene
  
  			Controls.Consume();
  			Paused = paused;
@@ -2713,7 +2745,7 @@ index bdfb740..412db40 100644
  		}
  	}
  
-@@ -658,8 +706,26 @@ public class World : Scene
+@@ -658,8 +715,26 @@ public class World : Scene
  	public override void Render(Target target)
  	{
  		debugRndTimer.Restart();
@@ -2740,7 +2772,7 @@ index bdfb740..412db40 100644
  
  		// create render state
  		RenderState state = new(GraphicsDevice, Time);
-@@ -668,7 +734,11 @@ public class World : Scene
+@@ -668,7 +743,11 @@ public class World : Scene
  			state.ModelMatrix = Matrix.Identity;
  			state.SunDirection = new Vec3(0, -.7f, -1).Normalized();
  			state.Silhouette = false;
@@ -2752,7 +2784,7 @@ index bdfb740..412db40 100644
  			state.DepthMask = true;
  			state.VerticalFogColor = 0xdceaf0;
  		}
-@@ -698,9 +768,17 @@ public class World : Scene
+@@ -698,9 +777,17 @@ public class World : Scene
  			}
  
  			// sort models by distance (for transparency)
@@ -2770,7 +2802,7 @@ index bdfb740..412db40 100644
  
  			// perp all models
  			foreach (var it in models)
-@@ -709,13 +787,23 @@ public class World : Scene
+@@ -709,13 +796,23 @@ public class World : Scene
  
  		// draw the skybox first
  		{
@@ -2795,7 +2827,7 @@ index bdfb740..412db40 100644
  			}
  		}
  
-@@ -725,7 +813,11 @@ public class World : Scene
+@@ -725,7 +822,11 @@ public class World : Scene
  		// render silhouettes
  		{
  			var it = state;
@@ -2807,7 +2839,7 @@ index bdfb740..412db40 100644
  			it.DepthMask = false;
  			it.Silhouette = true;
  			RenderModels(ref it, models, ModelFlags.Silhouette);
-@@ -735,8 +827,45 @@ public class World : Scene
+@@ -735,8 +836,45 @@ public class World : Scene
  
  		// render main models
  		RenderModels(ref state, models, ModelFlags.Default);
@@ -2830,7 +2862,7 @@ index bdfb740..412db40 100644
 +			uiDialogActive = Get<Cutscene>() != null;
 +			uiSplashActive = strawberryEffect;
 +			var hudVisible = IsInEndingArea || Save.Instance.SpeedrunTimer || strawbCounterEase > 0 || uiDialogActive || uiSplashActive;
-+			uiLayerActive = VisionOSKit.Ui.Enabled && (Paused || hudVisible);
++			uiLayerActive = VisionOSKit.Ui.Enabled && (Paused || hudVisible || VisionOSKit.GamepadPrompt.Visible);
 +			if (uiLayerActive)
 +				RenderUiLayer();
 +			NoteHudVisibility(hudVisible && !Paused, vr);
@@ -2854,7 +2886,7 @@ index bdfb740..412db40 100644
  		ApplyPostEffects();
  
  		// render alpha threshold transparent stuff
-@@ -760,23 +889,94 @@ public class World : Scene
+@@ -760,23 +898,94 @@ public class World : Scene
  		}
  
  		// strawberry collect effect
@@ -2963,7 +2995,7 @@ index bdfb740..412db40 100644
  
  		// ui
  		{
-@@ -872,9 +1072,30 @@ public class World : Scene
+@@ -872,9 +1081,30 @@ public class World : Scene
  			// apply post fx
  			postMaterial.CopyFrom(Assets.Materials["Edge"]);
  			postMaterial.Fragment.Samplers[1] = new(target.Attachments[1], new(TextureFilter.Nearest, TextureWrap.Clamp, TextureWrap.Clamp));
@@ -2995,7 +3027,7 @@ index bdfb740..412db40 100644
  				Edge = new Color(0x110d33).ToVector4()
  			});
  			batch.PushMaterial(postMaterial);
-@@ -889,6 +1110,517 @@ public class World : Scene
+@@ -889,6 +1119,521 @@ public class World : Scene
  		}
  	}
  
@@ -3385,6 +3417,10 @@ index bdfb740..412db40 100644
 +			if (IsInEndingArea || Paused)
 +				UI.Text(batch, Game.VersionString, bounds.BottomLeft + new Vec2(4, -4) * Game.RelativeScale, new Vec2(0, 1), Color.White * 0.25f);
 +		}
++
++		// "connect a game controller": in the pause above the menu on the frozen panel, during
++		// play in the middle of the head-locked layer (the gaze)
++		VisionOSKit.GamepadPrompt.Render(batch, bounds, top: Paused);
 +	}
 +
 +	/// <summary>
@@ -3528,10 +3564,10 @@ index 650a35e..68b1c05 100644
  	private const float EaseClosePercent = 0.3f; // how long (in percent) it eases the entire screen
 diff --git a/Source/VisionOSKit.cs b/Source/VisionOSKit.cs
 new file mode 100644
-index 0000000..2512387
+index 0000000..48b970b
 --- /dev/null
 +++ b/Source/VisionOSKit.cs
-@@ -0,0 +1,1433 @@
+@@ -0,0 +1,1497 @@
 +#if VISIONOS_KIT
 +// VisionOSKit.cs — Schalter des visionOS-Ports für Mac-Läufe (K6b, nur mit UseLocalFoster gebaut).
 +//
@@ -4948,6 +4984,70 @@ index 0000000..2512387
 +
 +	/// <summary>True once per request; called from Game.Update.</summary>
 +	public static bool ConsumePauseRequest() => Interlocked.Exchange(ref pauseRequested, 0) == 1;
++
++	/// <summary>
++	/// The "connect a game controller" line (App Store badge Controller Required: the app starts
++	/// without a controller and asks for one). Game.Update feeds the state of Foster's controllers
++	/// every tick. The line appears after GraceSeconds without a gamepad, so a gamepad that reports
++	/// late at launch does not flash it, at once when a connected gamepad goes away, and disappears
++	/// as soon as one is connected. A level that loses its gamepad during play pauses on
++	/// LostThisTick. SimulatedConnected replaces the real state for the Mac check (MacHost
++	/// --gamepad-sim); the Mac itself has no gamepad, so the line shows there by default.
++	/// </summary>
++	public static class GamepadPrompt
++	{
++		public const string Text = "Connect a game controller to play";
++		public const float GraceSeconds = 1.5f;
++
++		/// <summary>Mac check: true or false replaces the real connection state; null uses it.</summary>
++		public static bool? SimulatedConnected { get; set; }
++		/// <summary>A controller with IsGamepad is connected (state of the last Update).</summary>
++		public static bool Connected { get; private set; }
++		/// <summary>The line is to be drawn.</summary>
++		public static bool Visible { get; private set; }
++		/// <summary>True in the tick in which the last gamepad disappeared.</summary>
++		public static bool LostThisTick { get; private set; }
++		private static float missingSeconds;
++
++		public static void Update(Input input, float delta)
++		{
++			var connected = false;
++			if (SimulatedConnected is { } simulated)
++				connected = simulated;
++			else
++				foreach (var controller in input.Controllers)
++					if (controller.Connected && controller.IsGamepad)
++					{
++						connected = true;
++						break;
++					}
++			LostThisTick = Connected && !connected;
++			if (connected != Connected)
++				Log.Info($"[c64-gamepad] {(connected ? "connected" : "lost")}{(SimulatedConnected != null ? " (simulated)" : "")}");
++			Connected = connected;
++			// a loss after a connection skips the grace period: the player is waiting for the game
++			missingSeconds = connected ? 0 : LostThisTick ? GraceSeconds : missingSeconds + delta;
++			var visible = !connected && missingSeconds >= GraceSeconds;
++			if (visible != Visible)
++				Log.Info($"[c64-gamepad] connect line {(visible ? "shown" : "hidden")}");
++			Visible = visible;
++		}
++
++		/// <summary>
++		/// Draws the line if it is visible, centred horizontally, in the UI's text style (white with
++		/// the black outline of UI.Text): 12 (* RelativeScale) below the top edge of bounds, or in
++		/// the middle of bounds.
++		/// </summary>
++		public static void Render(Batcher batch, in Rect bounds, bool top)
++		{
++			if (!Visible)
++				return;
++			if (top)
++				UI.Text(batch, Text, bounds.TopCenter + new Vec2(0, 12 * Game.RelativeScale), new Vec2(0.5f, 0), Color.White);
++			else
++				UI.Text(batch, Text, bounds.Center, new Vec2(0.5f, 0.5f), Color.White);
++		}
++	}
 +
 +	/// <summary>FMOD mixer suspend or resume for a backgrounded app (see Audio.SuspendMixer).</summary>
 +	public static FMOD.RESULT SuspendAudio(bool suspend) => Audio.SuspendMixer(suspend);
