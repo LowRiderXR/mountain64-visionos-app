@@ -2560,7 +2560,7 @@ index 697d6fe..354fd46 100644
  			});
  		}
 diff --git a/Source/Scenes/Titlescreen.cs b/Source/Scenes/Titlescreen.cs
-index 33da870..7590a36 100644
+index 33da870..788a543 100644
 --- a/Source/Scenes/Titlescreen.cs
 +++ b/Source/Scenes/Titlescreen.cs
 @@ -39,7 +39,11 @@ public class Titlescreen : Scene
@@ -2587,6 +2587,37 @@ index 33da870..7590a36 100644
  			DepthMask = true,
  			CutoutMode = false,
  		};
+@@ -102,6 +110,30 @@ public class Titlescreen : Scene
+ 				at.X -= width + 8 * Game.RelativeScale;
+ 				UI.Prompt(batch, Controls.GetPrompt(Controls.Confirm), Loc.Str("Confirm"), at, out _, 1.0f);
+ 				UI.Text(batch, Game.VersionString, bounds.BottomLeft + new Vec2(4, -4) * Game.RelativeScale, new Vec2(0, 1), Color.White * 0.25f);
++#if VISIONOS_KIT
++				// visionOS port: fan-port notice (Celeste 64 ReadMe: make clear it is not made or
++				// endorsed by the Celeste team) and the FMOD credit line (FMOD EULA clause 3) above the
++				// version, same colour, at half size: two lines of 16 px would run into the logo's
++				// pedestal above and the prompts on the right (checked with the Mac dump)
++				const float noticeScale = 0.5f;
++				var noticeColor = Color.White * 0.25f;
++				var noticeAt = bounds.BottomLeft + new Vec2(4, -4) * Game.RelativeScale;
++				var fontLineHeight = Language.Current.SpriteFont.LineHeight;
++				var noticeLineHeight = fontLineHeight * noticeScale;
++				// the version line below keeps its full height, so the first step is the full line
++				noticeAt.Y -= fontLineHeight;
++				string[] noticeLines = [
++					"Unofficial fan port of Celeste 64: Fragments of the Mountain. Not made or endorsed by the Celeste team.",
++					"Audio: FMOD Studio by Firelight Technologies Pty Ltd.",
++				];
++				for (int i = noticeLines.Length - 1; i >= 0; i--)
++				{
++					batch.PushMatrix(Matrix3x2.CreateScale(noticeScale) * Matrix3x2.CreateTranslation(noticeAt));
++					UI.Text(batch, noticeLines[i], Vec2.Zero, new Vec2(0, 1), noticeColor);
++					batch.PopMatrix();
++					noticeAt.Y -= noticeLineHeight;
++				}
++#endif
+ 			}
+ 
+ 			if (easing < 1)
 diff --git a/Source/Scenes/World.cs b/Source/Scenes/World.cs
 index bdfb740..412db40 100644
 --- a/Source/Scenes/World.cs
