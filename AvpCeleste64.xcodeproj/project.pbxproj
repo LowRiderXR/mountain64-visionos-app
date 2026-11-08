@@ -49,6 +49,7 @@
 			membershipExceptions = (
 				mac/kit_main.c,
 				"mac/run-mac.sh",
+				"tools/compile-kit-shaders.sh",
 				"tools/msl-amplification.sh",
 			);
 			target = 732C7D37307EBA4C00C3A31D /* AvpCeleste64 */;
