@@ -65,6 +65,13 @@ xcrun -sdk xros clang++ \
     -framework Foundation \
     -o "$FW/FMOD"
 
+step "dSYM (symbol table only: Firelight's libraries carry no DWARF)"
+# scripts/copy-framework-dsyms.sh copies it into the archive; the UUID matches the dylib just
+# linked. Before signing and stripping, which never happens here (FMOD keeps its symbol table).
+rm -rf "$OUT_DIR/FMOD.framework.dSYM"
+dsymutil "$FW/FMOD" -o "$OUT_DIR/FMOD.framework.dSYM"
+echo "-- dSYM: $OUT_DIR/FMOD.framework.dSYM ($(dwarfdump --uuid "$OUT_DIR/FMOD.framework.dSYM" | awk '{print $2}' | head -1))"
+
 cat > "$FW/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

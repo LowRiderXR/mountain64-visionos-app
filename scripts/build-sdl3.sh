@@ -112,6 +112,15 @@ build_xros() {
     rm -rf "$FW"
     mkdir -p "$OUT_DIR"
     cp -R "$built" "$FW"
+    # dSYM des Release-Baus (dwarf-with-dsym) daneben ablegen: scripts/copy-framework-dsyms.sh
+    # nimmt sie beim Archivieren mit (gleiche UUID wie das Binary, Prüfung dort).
+    rm -rf "$FW.dSYM"
+    if [[ -d "$built.dSYM" ]]; then
+        cp -R "$built.dSYM" "$FW.dSYM"
+        echo "dSYM: $FW.dSYM ($(dwarfdump --uuid "$FW.dSYM" | awk '{print $2}' | head -1))"
+    else
+        echo "warning: $built.dSYM fehlt, keine Symbole für das Archiv" >&2
+    fi
     # Headers bleiben: die C-Testszene (Kit/sdl-gpu-kit) wird gegen das Framework kompiliert.
     # Xcode entfernt sie beim Einbetten (RemoveHeadersOnCopy). Keine Build-Dateien, keine Doku.
     rm -rf "$FW/CMake" "$FW/INSTALL.md" "$FW/README.md"
