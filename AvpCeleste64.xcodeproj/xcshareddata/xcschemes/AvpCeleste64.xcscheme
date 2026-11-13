@@ -114,16 +114,6 @@
             isEnabled = "NO">
          </EnvironmentVariable>
          <EnvironmentVariable
-            key = "C64_CELESTE"
-            value = "play"
-            isEnabled = "NO">
-         </EnvironmentVariable>
-         <EnvironmentVariable
-            key = "C64_PROBE_TRUNCATE"
-            value = "1"
-            isEnabled = "NO">
-         </EnvironmentVariable>
-         <EnvironmentVariable
             key = "C64_CANVAS_FOV"
             value = "50"
             isEnabled = "NO">
