@@ -3,8 +3,8 @@
 //  AvpCeleste64
 //
 //  M4a.2: die Leinwand, auf der später Celestes Bild liegt (M4a.3), hier mit einer vom Host
-//  gefüllten Textur. Ein Quad in 500 m (Plattformwissen: weit weg, damit die Ebene keine
-//  Stereo-Disparität hinzufügt), Breite nach Winkel (C64_CANVAS_FOV, Standard 50°, 16:9), in der
+//  gefüllten Textur. Ein Quad in 500 m (far away, so that the plane adds no stereo
+//  disparity), Breite nach Winkel (C64_CANVAS_FOV, Standard 50°, 16:9), in der
 //  Welt verankert wie die Testszene (Pose der ersten 90 Frames, dann eingefroren), beide Augen
 //  in einem Draw per Vertex Amplification mit der Matrix pro View aus computeProjection, Rate
 //  Map des Compositors am Pass, Tiefentest greater mit Schreiben (Reverse-Z: die Leinwand
@@ -54,7 +54,7 @@ nonisolated final class CanvasScene {
         halfHeight = halfWidth * 9 / 16
 
         guard texture.usage.contains(.pixelFormatView), let view = texture.makeTextureView(pixelFormat: .rgba8Unorm_srgb) else {
-            c64Record("[c64-canvas] sRGB-Ansicht nicht möglich (Textur ohne PixelFormatView oder Format \(texture.pixelFormat.rawValue))")
+            c64Record("[c64-canvas] sRGB view not possible (texture without PixelFormatView or format \(texture.pixelFormat.rawValue))")
             return nil
         }
         srgbView = view
@@ -62,7 +62,7 @@ nonisolated final class CanvasScene {
         guard let library = device.makeDefaultLibrary(),
               let vertex = library.makeFunction(name: "c64_test_vertex"),
               let fragment = library.makeFunction(name: "c64_canvas_fragment") else {
-            c64Record("[c64-canvas] Shader nicht gefunden (c64_test_vertex, c64_canvas_fragment)")
+            c64Record("[c64-canvas] shaders not found (c64_test_vertex, c64_canvas_fragment)")
             return nil
         }
         let descriptor = MTLRenderPipelineDescriptor()
@@ -77,7 +77,7 @@ nonisolated final class CanvasScene {
         do {
             pipeline = try device.makeRenderPipelineState(descriptor: descriptor)
         } catch {
-            c64Record("[c64-canvas] Pipeline fehlgeschlagen: \(error)")
+            c64Record("[c64-canvas] pipeline failed: \(error)")
             return nil
         }
 
@@ -85,7 +85,7 @@ nonisolated final class CanvasScene {
         depthDescriptor.depthCompareFunction = .greater
         depthDescriptor.isDepthWriteEnabled = true
         guard let state = device.makeDepthStencilState(descriptor: depthDescriptor) else {
-            c64Record("[c64-canvas] DepthStencilState fehlgeschlagen")
+            c64Record("[c64-canvas] DepthStencilState failed")
             return nil
         }
         depthState = state
@@ -97,12 +97,12 @@ nonisolated final class CanvasScene {
         samplerDescriptor.sAddressMode = .clampToEdge
         samplerDescriptor.tAddressMode = .clampToEdge
         guard let samplerState = device.makeSamplerState(descriptor: samplerDescriptor) else {
-            c64Record("[c64-canvas] SamplerState fehlgeschlagen")
+            c64Record("[c64-canvas] SamplerState failed")
             return nil
         }
         sampler = samplerState
 
-        c64Record(String(format: "[c64-canvas] bereit: texture=%dx%d format=%lu srgbView=%lu fov=%.1f° size=%.1fx%.1f m distance=%.0f m filter=%@ maxVertexAmplificationCount=%d",
+        c64Record(String(format: "[c64-canvas] ready: texture=%dx%d format=%lu srgbView=%lu fov=%.1f° size=%.1fx%.1f m distance=%.0f m filter=%@ maxVertexAmplificationCount=%d",
                          texture.width, texture.height, texture.pixelFormat.rawValue, srgbView.pixelFormat.rawValue,
                          fovDegrees, halfWidth * 2, halfHeight * 2, Self.distance, nearest ? "nearest" : "linear",
                          descriptor.maxVertexAmplificationCount))
@@ -130,19 +130,19 @@ nonisolated final class CanvasScene {
             frozen = true
             let verticalDegrees = 2 * atan(halfHeight / Self.distance) * 180 / .pi
             let gazeYaw = atan2(gaze.x, -gaze.z) * 180 / .pi
-            c64Record(String(format: "[c64-canvas] eingefroren nach %d Frames auf -Z des Ursprungs (Gieren 0): Mitte (%.1f, %.1f, %.1f) m, Kopf (%.2f, %.2f, %.2f) m, Blick (%.2f, %.2f, %.2f) = %.1f°, Leinwand %.1fx%.1f m = %.1f°x%.1f° in %.0f m",
+            c64Record(String(format: "[c64-canvas] frozen after %d frames on -Z of the origin (yaw 0): centre (%.1f, %.1f, %.1f) m, head (%.2f, %.2f, %.2f) m, gaze (%.2f, %.2f, %.2f) = %.1f°, canvas %.1fx%.1f m = %.1f°x%.1f° at %.0f m",
                              placementFrames, center!.x, center!.y, center!.z,
                              position.x, position.y, position.z, gaze.x, gaze.y, gaze.z, gazeYaw,
                              halfWidth * 2, halfHeight * 2, fovDegrees, verticalDegrees, Self.distance))
         } else if placementFrames == 1 {
-            c64Record(String(format: "[c64-canvas] tMs=\(LaunchClock.tMs) erste Pose: Kopf (%.2f, %.2f, %.2f) m, Blick (%.2f, %.2f, %.2f)",
+            c64Record(String(format: "[c64-canvas] tMs=\(LaunchClock.tMs) first pose: head (%.2f, %.2f, %.2f) m, gaze (%.2f, %.2f, %.2f)",
                              position.x, position.y, position.z, gaze.x, gaze.y, gaze.z))
         }
     }
 
     /// Einmal: Tangenten beider Augen aus computeProjection (aussermittige Projektion: Spalte 0
-    /// und 1 skalieren, Spalte 2 trägt die Aussermittigkeit, Plattformwissen «Augen-Frustum ist
-    /// asymmetrisch»; tanR = (1 + m20)/m00, tanL = (1 − m20)/m00, tanT = (1 + m21)/m11,
+    /// und 1 skalieren, Spalte 2 trägt die Aussermittigkeit; the eye frustum is asymmetric,
+    /// so the four tangents differ; tanR = (1 + m20)/m00, tanL = (1 − m20)/m00, tanT = (1 + m21)/m11,
     /// tanB = (1 − m21)/m11), daraus das Sichtfeld, dazu Drawable- und Map-Grössen; danach die
     /// Messung «nativ» (logNativeSpan). cp_view_get_tangents ist seit visionOS 2 veraltet.
     func logEyesOnce(drawable: LayerRenderer.Drawable, views: [LayerRenderer.Drawable.View], maps: [MTLRasterizationRateMap]) {
@@ -232,7 +232,7 @@ nonisolated final class CanvasScene {
         if fadeFrames <= Self.fadeInFrames { fadeFrames += 1 }
         if !fadeLogged, fade >= 1 {
             fadeLogged = true
-            c64Record("[c64-canvas] sichtbar: Einblendung nach \(Self.fadeInFrames) Frames abgeschlossen")
+            c64Record("[c64-canvas] visible: fade-in finished after \(Self.fadeInFrames) frames")
         }
         var matrices = [matrix_identity_float4x4, matrix_identity_float4x4]
         for (slot, viewIndex) in viewIndices.prefix(2).enumerated() {

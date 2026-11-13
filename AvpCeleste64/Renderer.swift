@@ -124,10 +124,10 @@ nonisolated final class Renderer: @unchecked Sendable {
     /// Ticks weiter. Kehrt bei .invalidated zurück, der Schleifenkopf beendet dann.
     private func pauseBranch() {
         let initial = totalFrames == 0 && !CelesteProbe.pauseState.isBackground
-        c64Record("[c64-loop] tMs=\(LaunchClock.tMs) Layer pausiert, warte; \(pauseReasonText) provider=\(Self.name(worldTracking.state)) frames=\(totalFrames) initial=\(initial ? 1 : 0)")
+        c64Record("[c64-loop] tMs=\(LaunchClock.tMs) layer paused, waiting; \(pauseReasonText) provider=\(Self.name(worldTracking.state)) frames=\(totalFrames) initial=\(initial ? 1 : 0)")
         if initial {
             layerRenderer.waitUntilRunning()
-            c64Record("[c64-loop] tMs=\(LaunchClock.tMs) Layer läuft (Start); provider=\(Self.name(worldTracking.state))")
+            c64Record("[c64-loop] tMs=\(LaunchClock.tMs) layer running (start); provider=\(Self.name(worldTracking.state))")
             lastPresentationTime = nil
             lastQueryReturn = nil
         lastPredictedPresentation = nil
@@ -146,7 +146,7 @@ nonisolated final class Renderer: @unchecked Sendable {
                 audioSuspended = true
             }
         } else if game, audioSuspended {
-            c64Record("[c64-audio] tMs=\(LaunchClock.tMs) mixer bleibt suspendiert (kein zweites Suspend)")
+            c64Record("[c64-audio] tMs=\(LaunchClock.tMs) mixer stays suspended (no second suspend)")
         }
 
         // Warten, bis beides erfüllt ist. waitUntilRunning kehrt bei running oder invalidated
@@ -155,7 +155,7 @@ nonisolated final class Renderer: @unchecked Sendable {
         while true {
             let state = layerRenderer.state
             if state == .invalidated {
-                c64Record("[c64-loop] tMs=\(LaunchClock.tMs) Layer invalidiert während der Pause")
+                c64Record("[c64-loop] tMs=\(LaunchClock.tMs) layer invalidated during the pause")
                 return
             }
             if state == .paused {
@@ -165,14 +165,14 @@ nonisolated final class Renderer: @unchecked Sendable {
             if CelesteProbe.pauseState.isBackground {
                 if !loggedRunningInBackground {
                     loggedRunningInBackground = true
-                    c64Record("[c64-loop] tMs=\(LaunchClock.tMs) Layer läuft wieder, App im Hintergrund, warte")
+                    c64Record("[c64-loop] tMs=\(LaunchClock.tMs) layer running again, app in background, waiting")
                 }
                 Thread.sleep(forTimeInterval: 0.02)
                 continue
             }
             break
         }
-        c64Record("[c64-loop] tMs=\(LaunchClock.tMs) Fortsetzen; \(pauseReasonText) provider=\(Self.name(worldTracking.state))")
+        c64Record("[c64-loop] tMs=\(LaunchClock.tMs) resuming; \(pauseReasonText) provider=\(Self.name(worldTracking.state))")
         CelesteProbe.AliveProbe.shared.end(resumeMs: LaunchClock.elapsedMs)
         // M4b.4: Bezugspunkt O nach dem Fortsetzen neu, sobald die Pose ruhig ist
         CelesteProbe.StereoOrigin.shared.requestSettle("Fortsetzen")
@@ -194,12 +194,12 @@ nonisolated final class Renderer: @unchecked Sendable {
     private func resumeTicksIfAudioRunning(reason: String) {
         guard ticksHeldForAudio else { return }
         if audioSuspended {
-            c64Record("[c64-celeste] tMs=\(LaunchClock.tMs) Ticks bleiben aus, Mixer angehalten (reason=\(reason))")
+            c64Record("[c64-celeste] tMs=\(LaunchClock.tMs) ticks stay off, mixer suspended (reason=\(reason))")
             return
         }
         ticksHeldForAudio = false
         if ticksSkippedForAudio > 0 {
-            c64Record("[c64-celeste] tMs=\(LaunchClock.tMs) Ticks setzen wieder ein nach \(ticksSkippedForAudio) Frames ohne Tick (reason=\(reason))")
+            c64Record("[c64-celeste] tMs=\(LaunchClock.tMs) ticks resume after \(ticksSkippedForAudio) frames without a tick (reason=\(reason))")
             ticksSkippedForAudio = 0
         }
         if CelesteProbe.gameEnabled, CelesteProbe.tickState.isActive {
@@ -221,7 +221,7 @@ nonisolated final class Renderer: @unchecked Sendable {
     private func resumeAudioIfPossible(trigger: String, mediaServicesReset: Bool = false) {
         let now = CFAbsoluteTimeGetCurrent()
         if mediaServicesReset, !audioSuspended {
-            c64Record("[c64-audio] tMs=\(LaunchClock.tMs) media services reset im Vordergrund: Suspend und Resume als Paar (FMOD-Beispiel)")
+            c64Record("[c64-audio] tMs=\(LaunchClock.tMs) media services reset in the foreground: suspend and resume as a pair (FMOD example)")
             if CelesteProbe.suspendAudio(true, context: "reset pair") {
                 audioSuspended = true
             }
@@ -230,7 +230,7 @@ nonisolated final class Renderer: @unchecked Sendable {
         guard CelesteProbe.reactivateAudioSession() else {
             audioResumePending = true
             nextAudioRetryAt = now + 1
-            c64Record("[c64-audio] tMs=\(LaunchClock.tMs) resume pending: session nicht aktiv, Mixer bleibt suspendiert, Ticks ohne Ton (trigger=\(trigger))")
+            c64Record("[c64-audio] tMs=\(LaunchClock.tMs) resume pending: session not active, mixer stays suspended, ticks without sound (trigger=\(trigger))")
             return
         }
         if CelesteProbe.suspendAudio(false, context: trigger) {
@@ -241,7 +241,7 @@ nonisolated final class Renderer: @unchecked Sendable {
         }
         if !audioFallbackTried {
             audioFallbackTried = true
-            c64Record("[c64-audio] tMs=\(LaunchClock.tMs) fallback pair: Suspend und Resume nochmals (FMOD-Beispiel für gestörte Ausgabe)")
+            c64Record("[c64-audio] tMs=\(LaunchClock.tMs) fallback pair: suspend and resume once more (FMOD example for a broken output)")
             CelesteProbe.suspendAudio(true, context: "fallback pair")
             if CelesteProbe.suspendAudio(false, context: "fallback pair") {
                 audioSuspended = false
@@ -253,7 +253,7 @@ nonisolated final class Renderer: @unchecked Sendable {
         // Annahme: nach einem gescheiterten Resume ist FMOD weiterhin suspendiert.
         audioResumePending = true
         nextAudioRetryAt = now + 1
-        c64Record("[c64-audio] tMs=\(LaunchClock.tMs) resume pending: mixerResume gescheitert, nächster Versuch in 1 s (trigger=\(trigger))")
+        c64Record("[c64-audio] tMs=\(LaunchClock.tMs) resume pending: mixerResume failed, next attempt in 1 s (trigger=\(trigger))")
     }
 
     /// Schleifenkopf bei laufendem Spiel: offene Ton-Versuche und Bitten des Hauptthreads.
@@ -452,11 +452,11 @@ nonisolated final class Renderer: @unchecked Sendable {
             self.commandQueue = shared
             c64Record("[c64-canvas] queue shared=1 label=\"\(shared.label ?? "")\" layerDevice=\(Unmanaged.passUnretained(layerRenderer.device).toOpaque()) hostDevice=\(hostDevice.map { "\(Unmanaged.passUnretained($0).toOpaque())" } ?? "nil") same=\(same ? 1 : 0)")
             if !same {
-                c64Record("[c64-canvas] WARNUNG: LayerRenderer-Device und Host-Device sind verschieden; Texturen des einen sind auf dem anderen ungültig")
+                c64Record("[c64-canvas] WARNING: LayerRenderer device and host device differ; textures of one are invalid on the other")
             }
         } else {
             guard let queue = device.makeCommandQueue() else {
-                fatalError("MTLCommandQueue konnte nicht erzeugt werden")
+                fatalError("MTLCommandQueue could not be created")
             }
             queue.label = "c64-render-queue"
             self.commandQueue = queue
@@ -602,7 +602,7 @@ nonisolated final class Renderer: @unchecked Sendable {
     private func renderLoop() {
         let start = CFAbsoluteTimeGetCurrent()
         statWindowStart = start
-        c64Record("[c64-loop] tMs=\(LaunchClock.tMs) Renderschleife gestartet, thread=\(Thread.current.name ?? "?")")
+        c64Record("[c64-loop] tMs=\(LaunchClock.tMs) render loop started, thread=\(Thread.current.name ?? "?")")
         // M4a.5c-6: Layer-Zustand für die Lebenszeichen-Sonde (cp_layer_renderer_get_state, ohne Lock).
         CelesteProbe.AliveProbe.shared.setLayerStateReader { [layerRenderer] in Self.name(layerRenderer.state) }
         if CelesteProbe.gameEnabled {
@@ -626,21 +626,21 @@ nonisolated final class Renderer: @unchecked Sendable {
         if KitProbe.mode == .import {
             kitImportSession = KitProbe.beginImport(device: device, queue: commandQueue)
             kitImportFailed = (kitImportSession == nil)
-            c64Record("[c64-kit] import session=\(kitImportSession == nil ? "FEHLT, Gerüst löscht selbst" : "ok")")
+            c64Record("[c64-kit] import session=\(kitImportSession == nil ? "MISSING, scaffold clears itself" : "ok")")
         }
         // Kit-Stufe K2 (C64_KIT=multiview): Sitzung mit Pipeline view_count 2 für die ganze Schleife.
         if KitProbe.mode == .multiview {
             kitMultiviewSession = KitProbe.beginMultiview(device: device, queue: commandQueue, msaaSamples: kitMsaaSamples, memoryless: kitMemoryless,
                                                           depthStore: kitDepthStore)
             kitImportFailed = (kitMultiviewSession == nil)
-            c64Record("[c64-kit] multiview session=\(kitMultiviewSession == nil ? "FEHLT, Gerüst löscht selbst" : "ok")")
+            c64Record("[c64-kit] multiview session=\(kitMultiviewSession == nil ? "MISSING, scaffold clears itself" : "ok")")
         }
         #endif
 
         while true {
             switch layerRenderer.state {
             case .invalidated:
-                c64Record("[c64-loop] Layer invalidiert, Schleife endet nach \(totalFrames) Frames")
+                c64Record("[c64-loop] layer invalidated, loop ends after \(totalFrames) frames")
                 logLoopSummary()
                 if CelesteProbe.gameEnabled {
                     // M4a.5a: der geschlossene Raum (Digital Crown) beendet die App sauber:
@@ -690,7 +690,7 @@ nonisolated final class Renderer: @unchecked Sendable {
     /// läuft die Schleife normal weiter; die ersten [c64-frame]-Zeilen zeigen, ob cmdErr=0 bleibt.
     private func runKitInjectProbe() {
         let result = KitProbe.runInject(device: device, queue: commandQueue)
-        c64Record("[c64-kit] inject \(result == 0 ? "bestanden (geteiltes Device und Queue)" : "fehlgeschlagen in Schritt \(result)")")
+        c64Record("[c64-kit] inject \(result == 0 ? "passed (shared device and queue)" : "failed at step \(result)")")
     }
 
     /// K1b: SDL importiert Farb- und Tiefentextur des Drawables und löscht alle Schichten
@@ -710,7 +710,7 @@ nonisolated final class Renderer: @unchecked Sendable {
             // depthRange: x = far, y = near, in Metern (drawable.h:317-320).
             let range = drawable.depthRange
             let distance = importClearDepth > 0 ? String(format: "%.1f m", range.y / importClearDepth) : "unendlich (kein Inhalt für den Compositor)"
-            c64Record(String(format: "[c64-kit] step=import-depth clear=%.4f depthRange far=%.3f near=%.3f entspricht Abstand %@",
+            c64Record(String(format: "[c64-kit] step=import-depth clear=%.4f depthRange far=%.3f near=%.3f corresponds to distance %@",
                              importClearDepth, range.x, range.y, distance))
         }
         for index in textureIndices {
@@ -764,7 +764,7 @@ nonisolated final class Renderer: @unchecked Sendable {
         fovMeasureLast = now
         let verbose = fovMeasureCount == 0
         guard let m = KitProbe.multiviewMeasure(session: session, rateMap: rateMap, verbose: verbose) else {
-            c64Record("[c64-kit] step=fov-measure FAIL (Messbild nicht gerendert oder nicht gelesen)")
+            c64Record("[c64-kit] step=fov-measure FAIL (measurement image not rendered or not read)")
             return
         }
         fovMeasureCount += 1
@@ -864,7 +864,7 @@ nonisolated final class Renderer: @unchecked Sendable {
         let texture = pending.color
         guard let buffer = device.makeBuffer(length: 64, options: .storageModeShared),
               let blit = commandBuffer.makeBlitCommandEncoder() else {
-            c64Record("[c64-kit] step=present-verify frame=\(frameIndex) blit nicht möglich")
+            c64Record("[c64-kit] step=present-verify frame=\(frameIndex) blit not possible")
             return
         }
         blit.label = "c64-verify-before-present"
@@ -895,11 +895,11 @@ nonisolated final class Renderer: @unchecked Sendable {
         let soll = stallPlan[stallIndex]
         let nummer = stallIndex + 1
         let sollMs = Int((soll * 1000).rounded())
-        c64Record("[c64-stall] vor Block \(nummer)/\(stallPlan.count) soll=\(sollMs) ms frames=\(totalFrames)")
+        c64Record("[c64-stall] before block \(nummer)/\(stallPlan.count) soll=\(sollMs) ms frames=\(totalFrames)")
         let t0 = CFAbsoluteTimeGetCurrent()
         Thread.sleep(forTimeInterval: soll)
         let ist = CFAbsoluteTimeGetCurrent() - t0
-        c64Record(String(format: "[c64-stall] nach Block %d/%d soll=%d ms ist=%.1f ms layerState=%@",
+        c64Record(String(format: "[c64-stall] after block %d/%d soll=%d ms ist=%.1f ms layerState=%@",
                          nummer, stallPlan.count, sollMs, ist * 1000, Self.name(layerRenderer.state)))
 
         stallIndex += 1
@@ -911,7 +911,7 @@ nonisolated final class Renderer: @unchecked Sendable {
         postStallBlock = nummer
         postStallSamples.removeAll()
         if stallIndex == stallPlan.count {
-            c64Record("[c64-stall] Sequenz beendet, alle \(stallPlan.count) Blöcke überstanden")
+            c64Record("[c64-stall] sequence finished, all \(stallPlan.count) blocks survived")
         }
     }
     #endif
@@ -1005,7 +1005,7 @@ nonisolated final class Renderer: @unchecked Sendable {
         if rc == 1 { stereoWorldFrames += 1 }
         guard rc != lastStereoRc else { return }
         lastStereoRc = rc
-        c64Record("[c64-stereo] tMs=\(LaunchClock.tMs) frame=\(frameIndex) rc=\(rc) (\(rc == 1 ? "Welt im Drawable" : rc == 0 ? "Leinwand" : "kein Render")) drewWorld=\(frame.drew_world) flushes=\(frame.flushes) texture=\(frame.width)x\(frame.height) logical=\(frame.logical_width)x\(frame.logical_height) physical=\(frame.physical_width)x\(frame.physical_height) srgb=\(frame.color_srgb) map=\(frame.rasterization_rate_map != nil ? 1 : 0) near=\(String(format: "%.3f", frame.near_meters)) worldFrames=\(stereoWorldFrames)")
+        c64Record("[c64-stereo] tMs=\(LaunchClock.tMs) frame=\(frameIndex) rc=\(rc) (\(rc == 1 ? "world in drawable" : rc == 0 ? "canvas" : "no render")) drewWorld=\(frame.drew_world) flushes=\(frame.flushes) texture=\(frame.width)x\(frame.height) logical=\(frame.logical_width)x\(frame.logical_height) physical=\(frame.physical_width)x\(frame.physical_height) srgb=\(frame.color_srgb) map=\(frame.rasterization_rate_map != nil ? 1 : 0) near=\(String(format: "%.3f", frame.near_meters)) worldFrames=\(stereoWorldFrames)")
     }
 
     /// M4b.2: Near-Ebene der Layer-Konfiguration (defaultDepthRange: x = far, y = near, Meter,
@@ -1069,7 +1069,7 @@ nonisolated final class Renderer: @unchecked Sendable {
             // präsentiert (Leinwand mit dem letzten Bild).
             ticksSkippedForAudio += 1
             if ticksSkippedForAudio == 1 {
-                c64Record("[c64-celeste] tMs=\(LaunchClock.tMs) Tick ausgelassen, Mixer angehalten; Schleife präsentiert weiter")
+                c64Record("[c64-celeste] tMs=\(LaunchClock.tMs) tick skipped, mixer suspended; loop keeps presenting")
             }
         } else if CelesteProbe.gameEnabled {
             // M4b.2: vor dem ersten Update auf diesem Thread die Near-Ebene des Layers an Celeste
@@ -1128,7 +1128,7 @@ nonisolated final class Renderer: @unchecked Sendable {
             let now = CFAbsoluteTimeGetCurrent()
             if now - lastNoCmdBufLog >= 1.0 {
                 lastNoCmdBufLog = now
-                c64Log.error("[c64-loop] makeCommandBuffer lieferte nil, Frame \(frame.frameIndex) ohne Submission verlassen (bisher \(self.statNoCmdBuf) im Fenster)")
+                c64Log.error("[c64-loop] makeCommandBuffer returned nil, frame \(frame.frameIndex) left without a submission (\(self.statNoCmdBuf) so far in this window)")
             }
             return
         }
@@ -1327,7 +1327,7 @@ nonisolated final class Renderer: @unchecked Sendable {
                 let text = postStallSamples.map {
                     String(format: "idx=%llu rel=%+.1f ms late=%+.1f ms", $0.index, $0.relative * 1000, $0.late * 1000)
                 }.joined(separator: " | ")
-                c64Record("[c64-stall] Block \(postStallBlock)/\(stallPlan.count) erste Frames: \(text)")
+                c64Record("[c64-stall] block \(postStallBlock)/\(stallPlan.count) first frames: \(text)")
             }
         }
         #endif
@@ -1392,7 +1392,7 @@ nonisolated final class Renderer: @unchecked Sendable {
                 descriptor.rasterizationRateMap = map
             }
             guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: descriptor) else {
-                c64Log.error("[c64-frame] makeRenderCommandEncoder lieferte nil (layered, \(views.count) Schichten)")
+                c64Log.error("[c64-frame] makeRenderCommandEncoder returned nil (layered, \(views.count) layers)")
                 return
             }
             encoder.label = "c64-clear layered x\(views.count)"
@@ -1416,7 +1416,7 @@ nonisolated final class Renderer: @unchecked Sendable {
                 descriptor.rasterizationRateMap = textureMap.textureIndex < maps.count ? maps[textureMap.textureIndex] : maps[0]
             }
             guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: descriptor) else {
-                c64Log.error("[c64-frame] makeRenderCommandEncoder lieferte nil (view \(viewIndex))")
+                c64Log.error("[c64-frame] makeRenderCommandEncoder returned nil (view \(viewIndex))")
                 continue
             }
             encoder.label = "c64-clear view\(viewIndex)"
@@ -1437,7 +1437,7 @@ nonisolated final class Renderer: @unchecked Sendable {
         if let canvasScene { return canvasScene }
         guard let texture = canvasTexture else {
             canvasFailed = true
-            c64Record("[c64-canvas] keine Leinwandtextur vom Host (prepareCanvas lief nicht), Leinwand bleibt aus")
+            c64Record("[c64-canvas] no canvas texture from the host (prepareCanvas did not run), canvas stays off")
             return nil
         }
         let config = layerRenderer.configuration
@@ -1493,7 +1493,7 @@ nonisolated final class Renderer: @unchecked Sendable {
 
     /// Render Quality zur Laufzeit setzen, einmal nach dem ersten Drawable. Nur mit Foveation
     /// und gesetzter Obergrenze; der Wert wird auf maxRenderQuality geklemmt, weil ein höherer
-    /// Wert CompositorServices abbrechen lässt (Plattformwissen, Vice City [vc-rq]).
+    /// Wert CompositorServices abbrechen lässt.
     private func applyRenderQualityIfRequested() {
         guard !renderQualityApplied else { return }
         renderQualityApplied = true
@@ -1501,13 +1501,13 @@ nonisolated final class Renderer: @unchecked Sendable {
         let wanted = HostEnvironment.string("C64_RENDERQUALITY").flatMap({ Float($0) }) ?? Self.defaultRenderQuality
         let config = layerRenderer.configuration
         guard config.isFoveationEnabled else {
-            c64Record("[c64-rq] C64_RENDERQUALITY=\(wanted) ignoriert: Foveation aus")
+            c64Record("[c64-rq] C64_RENDERQUALITY=\(wanted) ignored: foveation off")
             return
         }
         let before = layerRenderer.renderQuality.rawValue
         let clamped = max(0.0, min(config.maxRenderQuality.rawValue, wanted))
         layerRenderer.renderQuality = LayerRenderer.RenderQuality(clamped)
-        c64Record(String(format: "[c64-rq] renderQuality %.3f -> %.3f (gewünscht %.3f, max %.3f); Übergang dauert laut Header einige Frames",
+        c64Record(String(format: "[c64-rq] renderQuality %.3f -> %.3f (wanted %.3f, max %.3f); the transition takes a few frames per the header",
                          before, layerRenderer.renderQuality.rawValue, wanted, config.maxRenderQuality.rawValue))
     }
 

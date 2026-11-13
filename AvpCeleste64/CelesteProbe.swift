@@ -73,7 +73,7 @@ nonisolated enum CelesteProbe {
     /// runInit und vor der Freigabe des Render-Threads, also ohne laufenden Tick.
     @MainActor static func attachCanvasToGame() -> Bool {
         guard let texture = canvasTexture else {
-            c64Record("[c64-canvas] keine Leinwandtextur für celeste_set_canvas")
+            c64Record("[c64-canvas] no canvas texture for celeste_set_canvas")
             return false
         }
         let rc = celeste_set_canvas(Unmanaged.passUnretained(texture).toOpaque(), Int32(texture.width), Int32(texture.height))
@@ -82,7 +82,7 @@ nonisolated enum CelesteProbe {
             c64Record("[c64-canvas] celeste_set_canvas rc=\(rc) error=\"\(error)\"")
             return false
         }
-        c64Record("[c64-canvas] celeste_set_canvas rc=0: Celestes Endbild geht in die Leinwand \(texture.width)x\(texture.height)")
+        c64Record("[c64-canvas] celeste_set_canvas rc=0: Celeste's final image goes to the canvas \(texture.width)x\(texture.height)")
         return true
     }
 
@@ -98,7 +98,7 @@ nonisolated enum CelesteProbe {
         guard let buffer = queue.device.makeBuffer(length: bytesPerRow * height, options: .storageModeShared),
               let commandBuffer = queue.makeCommandBuffer(),
               let blit = commandBuffer.makeBlitCommandEncoder() else {
-            c64Record("[c64-canvas] snapshot \(label): Blit nicht möglich")
+            c64Record("[c64-canvas] snapshot \(label): blit not possible")
             return
         }
         let start = DispatchTime.now()
@@ -185,7 +185,7 @@ nonisolated enum CelesteProbe {
         } else if let known = resolutions[resText] {
             resolution = known
         } else {
-            c64Record("[c64-res] error: C64_RES=\"\(resText)\" unbekannt (640x360, 1280x720, 1920x1080, 2560x1440, native), Standard \(defaultResolution.0)x\(defaultResolution.1)")
+            c64Record("[c64-res] error: C64_RES=\"\(resText)\" unknown (640x360, 1280x720, 1920x1080, 2560x1440, native), default \(defaultResolution.0)x\(defaultResolution.1)")
         }
         let lineText = environment["C64_LINE"] ?? ""
         let autoLine = max(1, min(4, Int((Double(resolution.1) / 360).rounded())))
@@ -195,7 +195,7 @@ nonisolated enum CelesteProbe {
         } else if let value = Int(lineText), (1...4).contains(value) {
             line = value
         } else {
-            c64Record("[c64-res] error: C64_LINE=\"\(lineText)\" ungültig (1, 2, 3, 4, auto), Standard auto=\(autoLine)")
+            c64Record("[c64-res] error: C64_LINE=\"\(lineText)\" invalid (1, 2, 3, 4, auto), default auto=\(autoLine)")
         }
         let result = GameSettings(internalWidth: resolution.0, internalHeight: resolution.1, edgeLineWidth: line)
         c64Record("[c64-res] C64_RES=\(resNote) -> internal=\(result.internalWidth)x\(result.internalHeight) canvas=\(result.canvasWidth)x\(result.canvasHeight) C64_LINE=\(lineText.isEmpty ? "unset" : lineText) -> line=\(line) (auto=\(autoLine))")
@@ -493,7 +493,7 @@ nonisolated enum CelesteProbe {
     @MainActor static func ensureHostDevice() -> Bool {
         if device != nil, commandQueue != nil { return true }
         guard let mtlDevice = MTLCreateSystemDefaultDevice(), let queue = mtlDevice.makeCommandQueue() else {
-            c64Record("[c64-celeste] kein MTLDevice oder keine Queue")
+            c64Record("[c64-celeste] no MTLDevice or no queue")
             return false
         }
         queue.label = "c64-celeste-queue"
@@ -516,7 +516,7 @@ nonisolated enum CelesteProbe {
         descriptor.storageMode = .private
         descriptor.usage = [.renderTarget, .shaderRead, .pixelFormatView]
         guard let texture = device.makeTexture(descriptor: descriptor) else {
-            c64Record("[c64-canvas] Leinwandtextur konnte nicht angelegt werden")
+            c64Record("[c64-canvas] canvas texture could not be created")
             return false
         }
         texture.label = "c64-canvas"
@@ -538,7 +538,7 @@ nonisolated enum CelesteProbe {
         guard let staging = device.makeBuffer(bytes: pixels, length: pixels.count, options: .storageModeShared),
               let commandBuffer = queue.makeCommandBuffer(),
               let blit = commandBuffer.makeBlitCommandEncoder() else {
-            c64Record("[c64-canvas] Staging oder Blit nicht möglich")
+            c64Record("[c64-canvas] staging or blit not possible")
             return false
         }
         blit.copy(from: staging, sourceOffset: 0, sourceBytesPerRow: width * 4, sourceBytesPerImage: pixels.count,
@@ -548,7 +548,7 @@ nonisolated enum CelesteProbe {
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
         canvasTexture = texture
-        c64Record("[c64-canvas] Leinwandtextur \(width)x\(height) rgba8Unorm usage=0x\(String(texture.usage.rawValue, radix: 16)) hazard=\(texture.hazardTrackingMode.rawValue) gefüllt (status=\(commandBuffer.status.rawValue)) fov=\(canvasFovDegrees)° filter=\(canvasNearest ? "nearest" : "linear")")
+        c64Record("[c64-canvas] canvas texture \(width)x\(height) rgba8Unorm usage=0x\(String(texture.usage.rawValue, radix: 16)) hazard=\(texture.hazardTrackingMode.rawValue) filled (status=\(commandBuffer.status.rawValue)) fov=\(canvasFovDegrees)° filter=\(canvasNearest ? "nearest" : "linear")")
         return true
     }
 
@@ -600,7 +600,7 @@ nonisolated enum CelesteProbe {
                 snapshotQueue = queue
                 snapshotTexture = texture
             }
-            c64Record("[c64-celeste] Leinwand-Rücklesen nach \(Self.snapshotAtTicks) Ticks (C64_SNAPSHOT=1)")
+            c64Record("[c64-celeste] canvas readback after \(Self.snapshotAtTicks) ticks (C64_SNAPSHOT=1)")
         }
 
         /// Nach einem Render: einmal die Leinwand zurücklesen, falls verlangt (unter dem Lock).
@@ -618,7 +618,7 @@ nonisolated enum CelesteProbe {
 
         func markReady() {
             lock.withLock { ready = true }
-            c64Record("[c64-celeste] tick ready: Ticks laufen im Render-Thread, sobald der ImmersiveSpace offen ist")
+            c64Record("[c64-celeste] tick ready: ticks run on the render thread once the immersive space is open")
         }
 
         /// Ein Tick pro Compositor-Frame. frameInterval: Wanduhr-Intervall zwischen den Rückkehren
@@ -1008,7 +1008,7 @@ nonisolated enum CelesteProbe {
         let frameworkBundle = Bundle(identifier: celesteFrameworkIdentifier)
             ?? Bundle.main.privateFrameworksPath.flatMap { Bundle(path: ($0 as NSString).appendingPathComponent("Celeste64.VisionOS.framework")) }
         guard let contentRoot = frameworkBundle?.bundlePath else {
-            c64Error("[c64-celeste] step=init skipped: Celeste64.VisionOS.framework nicht gefunden (Bundle-ID \(celesteFrameworkIdentifier), privateFrameworksPath \(Bundle.main.privateFrameworksPath ?? "nil"))")
+            c64Error("[c64-celeste] step=init skipped: Celeste64.VisionOS.framework not found (bundle ID \(celesteFrameworkIdentifier), privateFrameworksPath \(Bundle.main.privateFrameworksPath ?? "nil"))")
             result.ok = false
             result.capabilitiesLine = "Framework nicht gefunden"
             return result
@@ -1016,7 +1016,7 @@ nonisolated enum CelesteProbe {
         let contentDir = (contentRoot as NSString).appendingPathComponent("Content")
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: contentDir, isDirectory: &isDirectory), isDirectory.boolValue else {
-            c64Error("[c64-celeste] step=init skipped: kein Ordner Content in \(contentRoot); scripts/build-game.sh neu laufen lassen (es kopiert Source/Celeste64/Content ins Framework)")
+            c64Error("[c64-celeste] step=init skipped: no Content folder in \(contentRoot); run scripts/build-game.sh again (it copies Source/Celeste64/Content into the framework)")
             result.ok = false
             result.capabilitiesLine = "Content fehlt im Framework"
             return result
@@ -1026,7 +1026,7 @@ nonisolated enum CelesteProbe {
 
         // Device und Queue des Hosts; der Renderer übernimmt dieselbe Queue (M4a.2).
         guard ensureHostDevice(), let mtlDevice = device, let queue = commandQueue else {
-            c64Record("[c64-celeste] step=init skipped: kein MTLDevice oder keine Queue")
+            c64Record("[c64-celeste] step=init skipped: no MTLDevice or no queue")
             result.ok = false
             return result
         }
@@ -1185,7 +1185,7 @@ nonisolated enum CelesteProbe {
                 background = true
                 return !was
             }
-            c64Record("[c64-pause] tMs=\(LaunchClock.tMs) background=1 reason=\(reason)\(changed ? "" : " (schon gesetzt)")")
+            c64Record("[c64-pause] tMs=\(LaunchClock.tMs) background=1 reason=\(reason)\(changed ? "" : " (already set)")")
             if changed {
                 CelesteProbe.AliveProbe.shared.begin()
             }
@@ -1196,7 +1196,7 @@ nonisolated enum CelesteProbe {
             let app = UIApplication.shared.applicationState
             let foregroundScene = UIApplication.shared.connectedScenes.contains { $0.activationState == .foregroundActive }
             guard app == .active, foregroundScene else {
-                c64Record("[c64-pause] tMs=\(LaunchClock.tMs) background bleibt 1 reason=\(reason) app=\(app == .active ? "active" : (app == .inactive ? "inactive" : "background")) foregroundScene=\(foregroundScene ? 1 : 0)")
+                c64Record("[c64-pause] tMs=\(LaunchClock.tMs) background stays 1 reason=\(reason) app=\(app == .active ? "active" : (app == .inactive ? "inactive" : "background")) foregroundScene=\(foregroundScene ? 1 : 0)")
                 return
             }
             let changed = lock.withLock { () -> Bool in
@@ -1361,7 +1361,7 @@ nonisolated enum CelesteProbe {
                     reference = o
                     referenceInverse = o.inverse
                     resets += 1
-                    c64Record(String(format: "[c64-recenter] tMs=%@ frame=%llu O neu gesetzt (%@): O=(%.2f, %.2f, %.2f) yaw=%.1f° resets=%d",
+                    c64Record(String(format: "[c64-recenter] tMs=%@ frame=%llu O set anew (%@): O=(%.2f, %.2f, %.2f) yaw=%.1f° resets=%d",
                                      LaunchClock.tMs, frameIndex, reason, Self.position(o).x, Self.position(o).y, Self.position(o).z, Self.yawDegrees(o), resets))
                 } else {
                     // noch kein O: vorläufig die eigene Pose als Bezug (kopffest bis zur Ruhephase)
@@ -1451,7 +1451,7 @@ nonisolated enum CelesteProbe {
             if let last {
                 c64Record(String(format: "[c64-alive] tMs=%.1f gap=%.0f ms beats=%d", resumeMs, resumeMs - last, count))
             } else {
-                c64Record(String(format: "[c64-alive] tMs=%.1f gap=- beats=0 (kein Lebenszeichen in dieser Pause)", resumeMs))
+                c64Record(String(format: "[c64-alive] tMs=%.1f gap=- beats=0 (no sign of life during this pause)", resumeMs))
             }
         }
 

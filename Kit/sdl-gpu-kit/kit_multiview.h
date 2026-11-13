@@ -8,7 +8,7 @@
  * auf die importierten Drawable-Texturen (P3) des Hosts (P1). View i schreibt Schicht i.
  * Shader aus shaders/multiview.hlsl über die Kit-Werkzeugkette (kit_shaders_generated.h).
  *
- * Regeln (Plattformwissen, Reverse-Z): Clear mit Tiefe > 0 (Standard 0.001), Quad mit
+ * Regeln (reverse-Z depth on visionOS: 0 is far, larger is nearer): Clear mit Tiefe > 0 (Standard 0.001), Quad mit
  * Tiefenschreiben und Vergleich greater; der Host präsentiert nach dem SDL-Submit.
  */
 

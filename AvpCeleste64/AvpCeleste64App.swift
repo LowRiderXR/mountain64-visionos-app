@@ -116,7 +116,7 @@ struct LauncherView: View {
                     c64Record("[c64-launch] tMs=\(LaunchClock.tMs) openImmersiveSpace: error")
                 @unknown default:
                     appModel.immersiveState = .closed
-                    c64Record("[c64-launch] tMs=\(LaunchClock.tMs) openImmersiveSpace: unbekanntes Ergebnis")
+                    c64Record("[c64-launch] tMs=\(LaunchClock.tMs) openImmersiveSpace: unknown result")
                 }
             }
     }
@@ -165,7 +165,7 @@ enum GameStartup {
         c64Record("[c64-start] prepareHost game=\(CelesteProbe.gameEnabled ? 1 : 0)")
         guard CelesteProbe.gameEnabled else { return }
         if !CelesteProbe.prepareCanvas() {
-            c64Error("[c64-start] Leinwand konnte nicht angelegt werden")
+            c64Error("[c64-start] canvas could not be created")
         }
     }
 
@@ -205,7 +205,7 @@ enum GameStartup {
             // M4a.3: Celeste laden, Endbild in die Leinwand (ohne laufenden Tick), Freigabe; die
             // Leinwand kommt aus prepareHost.
             if CelesteProbe.canvasTexture == nil {
-                c64Error("[c64-start] Leinwand fehlt (prepareHost), Celeste nicht gestartet")
+                c64Error("[c64-start] canvas missing (prepareHost), Celeste not started")
             } else {
                 let result = CelesteProbe.runInit(since: start)
                 if result.ok, CelesteProbe.attachCanvasToGame() {
@@ -217,13 +217,13 @@ enum GameStartup {
                         CelesteProbe.tickState.enableSnapshot(queue: queue, texture: texture)
                     }
                     #endif
-                    c64Record("[c64-start] Celeste geladen (\(result.version)), Endbild auf der Leinwand; der Render-Thread tickt ab dem ersten Frame")
+                    c64Record("[c64-start] Celeste loaded (\(result.version)), final image on the canvas; the render thread ticks from the first frame")
                 } else {
-                    c64Error("[c64-start] Celeste-Start oder Leinwand fehlgeschlagen: \(result.capabilitiesLine)")
+                    c64Error("[c64-start] Celeste start or canvas failed: \(result.capabilitiesLine)")
                 }
             }
         } else {
-            c64Record("[c64-start] Spiel aus (Kit-Modus)")
+            c64Record("[c64-start] game off (kit mode)")
         }
 
         #if DEBUG
@@ -235,10 +235,10 @@ enum GameStartup {
             switch kitMode {
             case .basic:
                 let result = KitProbe.runBasic()
-                c64Record("[c64-start] Kit-Testszene \(result == 0 ? "bestanden" : "fehlgeschlagen in Schritt \(result)")")
+                c64Record("[c64-start] kit test scene \(result == 0 ? "passed" : "failed at step \(result)")")
             case .inject, .import, .multiview:
                 let ok = KitProbe.initSDL(for: kitMode)
-                c64Record("[c64-start] SDL_Init für Kit-Modus \(kitMode.rawValue): \(ok ? "ok" : "fehlgeschlagen")")
+                c64Record("[c64-start] SDL_Init for kit mode \(kitMode.rawValue): \(ok ? "ok" : "failed")")
             }
         }
         #endif
@@ -274,8 +274,8 @@ nonisolated struct ProbeLayerConfiguration: CompositorLayerConfiguration {
             configuration.layout = first
         }
 
-        // Render Quality: Obergrenze nur mit Foveation sinnvoll (Apple-Doku zu maxRenderQuality,
-        // Plattformwissen: beide Regler setzen). Standard 1,0 (M4a.5b), Schalter C64_RENDERQUALITY
+        // Render Quality: Obergrenze nur mit Foveation sinnvoll (Apple-Doku zu maxRenderQuality;
+        // both the limit here and the runtime value must be set). Standard 1,0, Schalter C64_RENDERQUALITY
         // mit Wert 0..1; der Laufzeitwert wird im Renderer gesetzt (layer_renderer.h:230-232).
         if foveation {
             let wanted = environment["C64_RENDERQUALITY"].flatMap({ Float($0) }) ?? Renderer.defaultRenderQuality

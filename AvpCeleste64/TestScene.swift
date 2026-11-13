@@ -68,7 +68,7 @@ nonisolated final class TestScene: @unchecked Sendable {
         guard let library = device.makeDefaultLibrary(),
               let vertex = library.makeFunction(name: "c64_test_vertex"),
               let fragment = library.makeFunction(name: "c64_test_fragment") else {
-            c64Record("[c64-testscene] Shader nicht gefunden (default.metallib fehlt oder Funktionen fehlen)")
+            c64Record("[c64-testscene] shaders not found (default.metallib missing or functions missing)")
             return nil
         }
 
@@ -87,7 +87,7 @@ nonisolated final class TestScene: @unchecked Sendable {
         do {
             pipeline = try device.makeRenderPipelineState(descriptor: descriptor)
         } catch {
-            c64Record("[c64-testscene] Pipeline fehlgeschlagen: \(error)")
+            c64Record("[c64-testscene] pipeline failed: \(error)")
             return nil
         }
 
@@ -96,12 +96,12 @@ nonisolated final class TestScene: @unchecked Sendable {
         depthDescriptor.depthCompareFunction = .greater
         depthDescriptor.isDepthWriteEnabled = true
         guard let state = device.makeDepthStencilState(descriptor: depthDescriptor) else {
-            c64Record("[c64-testscene] DepthStencilState fehlgeschlagen")
+            c64Record("[c64-testscene] DepthStencilState failed")
             return nil
         }
         depthState = state
 
-        c64Record("[c64-testscene] bereit (\(mode == .world ? "Welt" : "kopffest")): maxVertexAmplificationCount=\(descriptor.maxVertexAmplificationCount) color=\(ProbeContext.name(colorFormat)) depth=\(ProbeContext.name(depthFormat))")
+        c64Record("[c64-testscene] ready (\(mode == .world ? "world" : "head-locked")): maxVertexAmplificationCount=\(descriptor.maxVertexAmplificationCount) color=\(ProbeContext.name(colorFormat)) depth=\(ProbeContext.name(depthFormat))")
     }
 
     /// Weltmodus: Quad 1,5 m vor der Pose in horizontaler Blickrichtung, Höhe = Pose, senkrecht
@@ -125,12 +125,12 @@ nonisolated final class TestScene: @unchecked Sendable {
         placementFrames += 1
         if placementFrames >= Self.settleFrames {
             frozen = true
-            c64Record(String(format: "[c64-testscene] Quad eingefroren nach %d Frames bei (%.2f, %.2f, %.2f) m, Kopf (%.2f, %.2f, %.2f) m, Blick (%.2f, %.2f, %.2f), Kante %.1f m",
+            c64Record(String(format: "[c64-testscene] quad frozen after %d frames at (%.2f, %.2f, %.2f) m, head (%.2f, %.2f, %.2f) m, gaze (%.2f, %.2f, %.2f), edge %.1f m",
                              placementFrames, center!.x, center!.y, center!.z,
                              position.x, position.y, position.z,
                              forward.x, forward.y, forward.z, Self.halfSize * 2))
         } else if placementFrames == 1 {
-            c64Record(String(format: "[c64-testscene] erste Pose: Kopf (%.2f, %.2f, %.2f) m, Blick (%.2f, %.2f, %.2f)",
+            c64Record(String(format: "[c64-testscene] first pose: head (%.2f, %.2f, %.2f) m, gaze (%.2f, %.2f, %.2f)",
                              position.x, position.y, position.z, forward.x, forward.y, forward.z))
         }
     }

@@ -111,7 +111,7 @@ nonisolated final class ProgressFile: @unchecked Sendable {
         let path = Self.url.path
         fd = Darwin.open(path, O_WRONLY | O_CREAT | O_TRUNC, 0o644)
         if fd < 0 {
-            c64Log.error("[c64-file] Probe-Datei nicht geöffnet: \(path, privacy: .public) errno=\(errno)")
+            c64Log.error("[c64-file] probe file not opened: \(path, privacy: .public) errno=\(errno)")
         }
         // debugger= zeigt, ob der Lauf aus Xcode kam (der Debugger hält den Prozess im Hintergrund
         // wach, Quinn, Apple DTS, Forum 796528).

@@ -1,7 +1,7 @@
 /*
  * kit_testscene.h — SDL_GPU-Kit für visionOS, Testszene Stufen K0 und K1a.
  *
- * K0 (Docs/celeste64/sdl-gpu-kit-analyse.md, Stufenplan): SDL_GPU ohne Patches in einem fremden
+ * First stage of the kit: SDL_GPU ohne Patches in einem fremden
  * Prozess (SwiftUI-App auf visionOS, Kommandozeile auf macOS). Die Szene legt ein Device und
  * eine eigene Textur an, führt einen Clear-Pass aus, liest einen Pixel zurück und meldet jeden
  * Schritt als Zeile "[c64-kit] ..." über den Log-Callback. Kein Fenster, kein Swapchain.

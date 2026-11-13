@@ -83,8 +83,8 @@ int k6d_metal_supports_rate_map(void *device, unsigned layers)
 
 /* Zweischicht-Map (oder mehr) mit demselben Profil in jeder Schicht und in beiden Achsen:
    1,0 im ersten Drittel, edge_quality danach, samples Stützstellen pro Achse (Metal
-   interpoliert). Gleiche vertikale Kurve in allen Schichten ist Pflicht (Plattformwissen K3,
-   sonst fällt V stumm aus); die Compositor-Map hat ebenfalls gleich grosse Schichten. */
+   interpoliert). Gleiche vertikale Kurve in allen Schichten ist Pflicht (Metal silently drops
+   the vertical profile when the layers differ); die Compositor-Map hat ebenfalls gleich grosse Schichten. */
 void *k6d_metal_rate_map(void *device, unsigned screen_width, unsigned screen_height, unsigned layers,
                          unsigned samples, float edge_quality)
 {

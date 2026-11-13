@@ -5,7 +5,7 @@
  * SDL_GPUTexture über SDL_PROP_GPU_TEXTURE_CREATE_METAL_TEXTURE_POINTER (Fork sdl-visionos) und
  * löscht alle Schichten über SDL_GPU, pro Schicht ein Render-Pass. Die Wrapper entstehen pro
  * Frame und werden nach dem Submit freigegeben (SDL zerstört sie verzögert, sobald der Command
- * Buffer fertig ist; Entscheidung in Docs/celeste64/sdl-gpu-kit-analyse.md, K1b).
+ * Buffer fertig ist; the wrappers are therefore safe to release right after the submit).
  *
  * Reihenfolge mit dem Present: SDL committet seinen Command Buffer synchron auf der geteilten
  * Queue (P1); der Host committet danach seinen Buffer mit encodePresent. MTLCommandQueue ist

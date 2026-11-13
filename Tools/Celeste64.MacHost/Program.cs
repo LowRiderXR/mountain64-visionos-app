@@ -278,17 +278,17 @@ for (int i = 0; i < args.Length; i++)
 			break;
 		}
 		case "--layer-dump": layerDump = args[++i]; break;
-		default: Console.Error.WriteLine($"Unbekanntes Argument: {args[i]}"); return 64;
+		default: Console.Error.WriteLine($"Unknown argument: {args[i]}"); return 64;
 	}
 }
 if (testProjection && !vrDepth)
 {
-	Console.Error.WriteLine("--test-projection braucht --vr-depth (die Projektion gilt nur auf dem Reverse-Z-Pfad)");
+	Console.Error.WriteLine("--test-projection requires --vr-depth (the projection only applies on the reverse-Z path)");
 	return 64;
 }
 if (vrWorld && (layers != "external" || views != 2))
 {
-	Console.Error.WriteLine("--vr-world braucht --layers external --views 2");
+	Console.Error.WriteLine("--vr-world requires --layers external --views 2");
 	return 64;
 }
 if (pixelMsaa >= 0)
@@ -311,7 +311,7 @@ if (vrDepth)
 }
 if (layers is not ("none" or "foster" or "external"))
 {
-	Console.Error.WriteLine($"--layers erwartet none, foster oder external, nicht '{layers}'");
+	Console.Error.WriteLine($"--layers expects none, foster or external, not '{layers}'");
 	return 64;
 }
 
@@ -331,14 +331,14 @@ if (layers == "external")
 	hostQueue = K6dMetal.k6d_metal_queue(hostDevice);
 	if (hostDevice == 0 || hostQueue == 0)
 	{
-		Log.Error("[machost] Metal-Device oder Queue des Hosts fehlt");
+		Log.Error("[machost] host Metal device or queue missing");
 		return 1;
 	}
 	if (kitProperties == 0)
 		kitProperties = SDL_CreateProperties();
 	SDL_SetPointerProperty(kitProperties, SDL_PROP_GPU_DEVICE_CREATE_METAL_DEVICE_POINTER, hostDevice);
 	SDL_SetPointerProperty(kitProperties, SDL_PROP_GPU_DEVICE_CREATE_METAL_COMMAND_QUEUE_POINTER, hostQueue);
-	Log.Info($"[machost] Host-Device 0x{hostDevice:x} und Queue 0x{hostQueue:x} als P1-Properties gesetzt");
+	Log.Info($"[machost] host device 0x{hostDevice:x} and queue 0x{hostQueue:x} set as import properties");
 }
 unsafe
 {
@@ -399,18 +399,18 @@ if (stereoSelftest)
 	var okAxes = Math.Abs(fl.Y - H / 2f) < 1 && Math.Abs(fl.X - (W / 2f + expected / 2f)) < 1
 		&& Math.Abs(rl.X - (W / 2f + W / 4f + expected / 2f)) < 1 && Math.Abs(rl.Y - H / 2f) < 1
 		&& Math.Abs(ul.Y - (H / 2f - H / 4f)) < 1 && Math.Abs(ul.X - fl.X) < 1;
-	Log.Info($"[machost] stereo selftest: point 2 m ahead left=({fl.X:F1},{fl.Y:F1}) right=({fr.X:F1},{fr.Y:F1}) disparity={disparity:F2} px expected={expected:F2} ({(okDisp ? "ok" : "FEHLER")}); axes: right mark left-eye=({rl.X:F1},{rl.Y:F1}) up mark=({ul.X:F1},{ul.Y:F1}) ({(okAxes ? "ok" : "FEHLER")}); scale={s}");
+	Log.Info($"[machost] stereo selftest: point 2 m ahead left=({fl.X:F1},{fl.Y:F1}) right=({fr.X:F1},{fr.Y:F1}) disparity={disparity:F2} px expected={expected:F2} ({(okDisp ? "ok" : "ERROR")}); axes: right mark left-eye=({rl.X:F1},{rl.Y:F1}) up mark=({ul.X:F1},{ul.Y:F1}) ({(okAxes ? "ok" : "ERROR")}); scale={s}");
 	// with a yawed game camera (looking +X) the forward mark must stay centred
 	var fy = VisionOSKit.DebugProject(cam, new Vec3(1, 0, 0), Matrix.Identity, proj, new Vec3(2 * s, 0, 0), W, H);
 	var fyUp = VisionOSKit.DebugProject(cam, new Vec3(1, 0, 0), Matrix.Identity, proj, new Vec3(2 * s, 0, 1 * s), W, H);
 	var okYaw = Math.Abs(fy.X - W / 2f) < 1 && Math.Abs(fy.Y - H / 2f) < 1 && Math.Abs(fyUp.Y - (H / 2f - H / 4f)) < 1;
-	Log.Info($"[machost] stereo selftest: yawed camera (+X) forward=({fy.X:F1},{fy.Y:F1}) up=({fyUp.X:F1},{fyUp.Y:F1}) ({(okYaw ? "ok" : "FEHLER")})");
+	Log.Info($"[machost] stereo selftest: yawed camera (+X) forward=({fy.X:F1},{fy.Y:F1}) up=({fyUp.X:F1},{fyUp.Y:F1}) ({(okYaw ? "ok" : "ERROR")})");
 	if (!(okDisp && okAxes && okYaw)) return 2;
 }
 
 var delta = TimeSpan.FromSeconds(1.0 / hz);
 game.Begin();
-Log.Info($"[machost] Begin fertig, Fenster {(noPresent ? "versteckt" : "sichtbar")}, Startzeit {game.Time.Elapsed.TotalMilliseconds:F1} ms, Fähigkeiten {game.GraphicsDevice.Capabilities}");
+Log.Info($"[machost] Begin done, window {(noPresent ? "hidden" : "visible")}, start time {game.Time.Elapsed.TotalMilliseconds:F1} ms, capabilities {game.GraphicsDevice.Capabilities}");
 
 // K6f.3: ein gewöhnlicher Pass, den SDL ablehnt, muss eine Ausnahme mit Meldung geben statt
 // die Draws still zu verwerfen. Einfachster erreichbarer Fall: SDLs Debugprüfung «Cannot bind a
@@ -426,15 +426,15 @@ if (passSelftest)
 		bigDepth = new Texture(gd, 4, 4, TextureFormat.Depth32, 256, TextureFlags.RenderTarget, 0, "k6f-depth-256");
 		bad = new Target(gd, [bigColor, bigDepth], 0, name: "k6f-bad-pass");
 		bad.Clear(Color.Black, 1, 0, ClearMask.Color | ClearMask.Depth);
-		Log.Error("[machost] pass selftest 'Tiefe mit 256 Schichten': KEINE Ausnahme (Draws still verworfen)");
+		Log.Error("[machost] pass selftest 'depth with 256 layers': NO exception (draws silently dropped)");
 	}
 	catch (InvalidOperationException e)
 	{
-		Log.Info($"[machost] pass selftest 'Tiefe mit 256 Schichten': abgelehnt ({e.GetType().Name}: {e.Message})");
+		Log.Info($"[machost] pass selftest 'depth with 256 layers': rejected ({e.GetType().Name}: {e.Message})");
 	}
 	catch (Exception e)
 	{
-		Log.Error($"[machost] pass selftest 'Tiefe mit 256 Schichten': unerwartet {e.GetType().Name}: {e.Message}");
+		Log.Error($"[machost] pass selftest 'depth with 256 layers': unexpected {e.GetType().Name}: {e.Message}");
 	}
 	finally
 	{
@@ -444,11 +444,11 @@ if (passSelftest)
 	{
 		using var good = new Target(gd, 8, 8, "k6f-good-pass");
 		good.Clear(Color.Black);
-		Log.Info("[machost] pass selftest 'gültiges Ziel 8x8': ok (keine Ausnahme)");
+		Log.Info("[machost] pass selftest 'valid target 8x8': ok (no exception)");
 	}
 	catch (Exception e)
 	{
-		Log.Error($"[machost] pass selftest 'gültiges Ziel 8x8': FEHLER {e.GetType().Name}: {e.Message}");
+		Log.Error($"[machost] pass selftest 'valid target 8x8': ERROR {e.GetType().Name}: {e.Message}");
 	}
 }
 
@@ -497,14 +497,14 @@ if (layers != "none")
 			// K6e.1: ein Ziel über beiden Schichten, ein Pass rendert beide Views
 			layer0 = new Target(gd, attachments, 0, samples, multiSampleStore, DepthResolveFilter.Min, colorMemoryless, depthMemoryless, viewCount: 2, name: "k6e-views");
 			layer1 = null;
-			Log.Info($"[machost] views=2 msaa={hostMsaa} memoryless={memoryless} multiSampleStore={multiSampleStore} depthFormat={depthFormat}: ein Ziel mit ViewCount {layer0.ViewCount} (Farbe {(layer0.ColorMemoryless ? "memoryless" : "privat")}, Tiefe {(layer0.DepthMemoryless ? "memoryless" : "privat")})");
+			Log.Info($"[machost] views=2 msaa={hostMsaa} memoryless={memoryless} multiSampleStore={multiSampleStore} depthFormat={depthFormat}: one target with ViewCount {layer0.ViewCount} (colour {(layer0.ColorMemoryless ? "memoryless" : "private")}, depth {(layer0.DepthMemoryless ? "memoryless" : "private")})");
 		}
 		else if (hostMsaa > 1)
 		{
 			// K6d.3: MSAA-Ziel über den vorhandenen Schichten, Auflösung in die Schichten
 			layer0 = new Target(gd, attachments, 0, samples, multiSampleStore, DepthResolveFilter.Min, colorMemoryless, depthMemoryless, name: "k6d-layer0");
 			layer1 = new Target(gd, attachments, 1, samples, multiSampleStore, DepthResolveFilter.Min, colorMemoryless, depthMemoryless, name: "k6d-layer1");
-			Log.Info($"[machost] msaa={hostMsaa} memoryless={memoryless} multiSampleStore={multiSampleStore} depthFormat={depthFormat}: Ziele über den Schichten angelegt (Farbe {(layer0.ColorMemoryless ? "memoryless" : "privat")}, Tiefe {(layer0.DepthMemoryless ? "memoryless" : "privat")})");
+			Log.Info($"[machost] msaa={hostMsaa} memoryless={memoryless} multiSampleStore={multiSampleStore} depthFormat={depthFormat}: targets created over the layers (colour {(layer0.ColorMemoryless ? "memoryless" : "private")}, depth {(layer0.DepthMemoryless ? "memoryless" : "private")})");
 		}
 		else
 		{
@@ -547,15 +547,15 @@ if (layers != "none")
 			uint sw = 0, sh = 0, lc = 0, pw1 = 0, ph1 = 0;
 			K6dMetal.k6d_metal_rate_map_info(rateMapPtr, 0, out sw, out sh, out physW, out physH, out lc);
 			K6dMetal.k6d_metal_rate_map_info(rateMapPtr, 1, out _, out _, out pw1, out ph1, out _);
-			Log.Info($"[machost] rate map: screen={sw}x{sh} layers={lc} physical layer0={physW}x{physH} layer1={pw1}x{ph1} texture={LayerW}x{LayerH} fits={(physW <= LayerW && physH <= LayerH ? "ja" : "NEIN (Negativtest)")} Target vor dem Setzen: logical={layer0.LogicalSize} inPixels={((IDrawableTarget)layer0).WidthInPixels}x{((IDrawableTarget)layer0).HeightInPixels}");
+			Log.Info($"[machost] rate map: screen={sw}x{sh} layers={lc} physical layer0={physW}x{physH} layer1={pw1}x{ph1} texture={LayerW}x{LayerH} fits={(physW <= LayerW && physH <= LayerH ? "yes" : "NO (negative test)")} target before setting: logical={layer0.LogicalSize} inPixels={((IDrawableTarget)layer0).WidthInPixels}x{((IDrawableTarget)layer0).HeightInPixels}");
 			// Negativtests der Foster-Prüfungen (die Map selbst bleibt gültig)
 			Selftest2("Map mit logischer Grösse 0", () => layer0.SetRasterizationRateMap(rateMapPtr, 0, 0));
 			if (layer1 != null)
 				Selftest2("Map auf Ziel mit Schicht 1", () => layer1.SetRasterizationRateMap(rateMapPtr, logicalW, logicalH));
 			void Selftest2(string what, Action action)
 			{
-				try { action(); Log.Error($"[machost] selftest '{what}': KEINE Ausnahme (Fehler)"); }
-				catch (Exception e) { Log.Info($"[machost] selftest '{what}': abgelehnt ({e.GetType().Name}: {e.Message})"); }
+				try { action(); Log.Error($"[machost] selftest '{what}': NO exception (error)"); }
+				catch (Exception e) { Log.Info($"[machost] selftest '{what}': rejected ({e.GetType().Name}: {e.Message})"); }
 			}
 			// Messbild: schwarzes Bild in logischer Grösse, fünf rote senkrechte und drei blaue
 			// waagrechte Balken, je 6 logische Pixel breit, an bekannten logischen Positionen
@@ -598,7 +598,7 @@ if (layers != "none")
 			VisionOSKit.AfterOutput = output =>
 			{
 				if (++afterOutputCalls == 1)
-					Log.Info($"[machost] AfterOutput erstmals: output={output.GetType().Name} {output.WidthInPixels}x{output.HeightInPixels} (logisch)");
+					Log.Info($"[machost] AfterOutput first call: output={output.GetType().Name} {output.WidthInPixels}x{output.HeightInPixels} (logical)");
 				var material = gd.Defaults.BatchMaterial;
 				// Projektion aus der Grösse «in Pixeln» des Ziels: mit Map die logische Grösse
 				material.Vertex.SetUniformBuffer(System.Numerics.Matrix4x4.CreateOrthographicOffCenter(0, output.WidthInPixels, output.HeightInPixels, 0, 0, float.MaxValue));
@@ -609,7 +609,7 @@ if (layers != "none")
 					gd.Draw(new DrawCommand(output, barsMesh, material) { DepthTestEnabled = false, DepthWriteEnabled = false, CullMode = CullMode.None, BlendMode = BlendMode.Premultiply });
 			};
 		}
-		Log.Info($"[machost] layers={layers}: Ziel {LayerW}x{LayerH} mit {LayerCount} Schichten ({(layerDepthTex != null ? "Farbe und Tiefe" : "nur Farbe")}), ein Pass pro Schicht, Vorschau nebeneinander");
+		Log.Info($"[machost] layers={layers}: target {LayerW}x{LayerH} with {LayerCount} layers ({(layerDepthTex != null ? "colour and depth" : "colour only")}), one pass per layer, preview side by side");
 
 		if (layerSelftest)
 		{
@@ -622,8 +622,8 @@ if (layers != "none")
 			Selftest("Target mit Schicht 2 von 2", () => new Target(gd, attachments, 2));
 			void Selftest(string what, Action action)
 			{
-				try { action(); Log.Error($"[machost] selftest '{what}': KEINE Ausnahme (Fehler)"); }
-				catch (Exception e) { Log.Info($"[machost] selftest '{what}': abgelehnt ({e.GetType().Name}: {e.Message})"); }
+				try { action(); Log.Error($"[machost] selftest '{what}': NO exception (error)"); }
+				catch (Exception e) { Log.Info($"[machost] selftest '{what}': rejected ({e.GetType().Name}: {e.Message})"); }
 				finally { batcher.Clear(); }   // ein abgelehnter Draw lässt den Batch sonst stehen
 			}
 		}
@@ -632,7 +632,7 @@ if (layers != "none")
 	{
 		// erwarteter Weg mit SDL 3.4.12 oder bei einer abgelehnten Kombination: klare Ausnahme,
 		// der Rest läuft im Fenster
-		Log.Warning($"[machost] layers={layers} nicht möglich, weiter mit dem Fenster: {e.GetType().Name}: {e.Message}");
+		Log.Warning($"[machost] layers={layers} not possible, continuing with the window: {e.GetType().Name}: {e.Message}");
 		VisionOSKit.Outputs = null; VisionOSKit.AfterRender = null; VisionOSKit.AfterOutput = null;
 		layerColor?.Dispose(); layerDepthTex?.Dispose();
 		layerColor = null; layerDepthTex = null;
@@ -663,7 +663,7 @@ if (blitSelftest)
 			if (x >= W && c.G == 255 && c.R == 0) rightGreen++;
 		}
 	var ok = leftRed == W * H && rightGreen == W * H;
-	Log.Info($"[machost] blit selftest: left red={leftRed}/{W * H} right green={rightGreen}/{W * H} ({(ok ? "ok" : "FEHLER")})");
+	Log.Info($"[machost] blit selftest: left red={leftRed}/{W * H} right green={rightGreen}/{W * H} ({(ok ? "ok" : "ERROR")})");
 }
 
 // K6d.2: Celestes Welt-Ziel beobachten (Rücklesen von Farbe und Tiefe).
@@ -730,7 +730,7 @@ VisionOSKit.AfterSceneRender = t =>
 		if (!rateMapLogged)
 		{
 			rateMapLogged = true;
-			Log.Info($"[machost] rate map gesetzt: Target.LogicalSize={layer0.LogicalSize} Bounds={layer0.Bounds} inPixels={((IDrawableTarget)layer0).WidthInPixels}x{((IDrawableTarget)layer0).HeightInPixels} map=0x{layer0.RasterizationRateMap:x}");
+			Log.Info($"[machost] rate map set: Target.LogicalSize={layer0.LogicalSize} Bounds={layer0.Bounds} inPixels={((IDrawableTarget)layer0).WidthInPixels}x{((IDrawableTarget)layer0).HeightInPixels} map=0x{layer0.RasterizationRateMap:x}");
 		}
 	}
 };
@@ -768,7 +768,7 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 		gapDone = true;
 		Thread.Sleep(TimeSpan.FromMilliseconds(gapMs));
 		next = clock.Elapsed;
-		Log.Info($"[machost] gap {gapMs:F0} ms bei t={clock.Elapsed.TotalSeconds:F2} s, nächster Tick ohne Nachholen");
+		Log.Info($"[machost] gap {gapMs:F0} ms at t={clock.Elapsed.TotalSeconds:F2} s, next tick without catching up");
 	}
 
 	// --windowed: Celeste schaltet nach dem Laden gemäss Spielstand ins Vollbild; hier zurück
@@ -777,7 +777,7 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 	{
 		game.Window.Fullscreen = false;
 		lastWindowedFix = clock.Elapsed;
-		Log.Info("[machost] Vollbild aufgehoben (--windowed)");
+		Log.Info("[machost] fullscreen lifted (--windowed)");
 	}
 
 	// Bestätigungstaste an festen Ticks: Druck in diesem Tick, Loslassen im nächsten
@@ -813,12 +813,12 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 	if (minimizeAt.Count >= 1 && totalTicks == minimizeAt[0])
 	{
 		var windows = SDL_GetWindows();
-		if (windows.Length > 0) { SDL_MinimizeWindow(windows[0]); Log.Info($"[machost] Fenster minimiert bei Tick {totalTicks}"); }
+		if (windows.Length > 0) { SDL_MinimizeWindow(windows[0]); Log.Info($"[machost] window minimized at tick {totalTicks}"); }
 	}
 	if (minimizeAt.Count >= 2 && totalTicks == minimizeAt[1])
 	{
 		var windows = SDL_GetWindows();
-		if (windows.Length > 0) { SDL_RestoreWindow(windows[0]); Log.Info($"[machost] Fenster zurückgeholt bei Tick {totalTicks}"); }
+		if (windows.Length > 0) { SDL_RestoreWindow(windows[0]); Log.Info($"[machost] window restored at tick {totalTicks}"); }
 	}
 	// K6e.2: Messframe (Balkenbild statt Celeste) in der Mitte zwischen zwei Schichtvergleichen
 	measureThisFrame = rateMapPtr != 0 && layerCheck > 0 && (totalTicks + 1) % layerCheck == layerCheck / 2;
@@ -846,7 +846,7 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 	{
 		// ein abgelehnter Pass (zum Beispiel Map physisch grösser als die Textur) kommt als
 		// klare Ausnahme aus Foster; der Lauf endet hier, der Text ist das Ergebnis
-		Log.Error($"[machost] Tick abgebrochen: {e.GetType().Name}: {e.Message}");
+		Log.Error($"[machost] tick aborted: {e.GetType().Name}: {e.Message}");
 		layerChecksFailed++;
 		break;
 	}
@@ -928,7 +928,7 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 		var ok = missing == 0 && maxDev <= 1.0f;
 		layerChecks++;
 		if (!ok) layerChecksFailed++;
-		Log.Info($"[machost] ratemap check frame={game.Time.Frame} logical={logicalW}x{logicalH} physical={physW}x{physH} samples={samples} missing={missing} maxDevPx={maxDev:F3} meanDevPx={(found > 0 ? sumDev / found : 0):F3} ({(ok ? "ok" : "FEHLER")})");
+		Log.Info($"[machost] ratemap check frame={game.Time.Frame} logical={logicalW}x{logicalH} physical={physW}x{physH} samples={samples} missing={missing} maxDevPx={maxDev:F3} meanDevPx={(found > 0 ? sumDev / found : 0):F3} ({(ok ? "ok" : "ERROR")})");
 	}
 
 	// M4b.2: Tiefe der Testquads zurücklesen (Depth32 des Reverse-Z-Pfads), near/d gegen den Abstand
@@ -939,12 +939,12 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 		{
 			// Blende (Perform oder Hold): Game.Render zeichnet die Szene nicht, das Welt-Ziel zeigt den
 			// letzten Frame ohne Testquads; nicht bewertet
-			Log.Info($"[machost] depth check frame={game.Time.Frame}: kein Szenenrender in diesem Frame (Blende), übersprungen");
+			Log.Info($"[machost] depth check frame={game.Time.Frame}: no scene render in this frame (wipe), skipped");
 			depthChecks--;
 		}
 		else if (!vrDepth || mainTarget.Attachments[1].Format != TextureFormat.Depth32)
 		{
-			Log.Warning($"[machost] depth check frame={game.Time.Frame}: braucht --vr-depth (Depth32), Format ist {mainTarget.Attachments[1].Format}");
+			Log.Warning($"[machost] depth check frame={game.Time.Frame}: requires --vr-depth (Depth32), format is {mainTarget.Attachments[1].Format}");
 			depthChecksFailed++;
 		}
 		else
@@ -962,7 +962,7 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 				var dev = Math.Abs(distance - depthPointsMeters[p]) / depthPointsMeters[p] * 100;
 				var pointOk = dev <= 1.0;
 				ok &= pointOk;
-				Log.Info($"[machost] depth point frame={game.Time.Frame} D={depthPointsMeters[p]:F1} m pixel=({px},{py}) d={d:E4} near/d={distance:F4} m dev={dev:F4}% ({(pointOk ? "ok" : "FEHLER")})");
+				Log.Info($"[machost] depth point frame={game.Time.Frame} D={depthPointsMeters[p]:F1} m pixel=({px},{py}) d={d:E4} near/d={distance:F4} m dev={dev:F4}% ({(pointOk ? "ok" : "ERROR")})");
 			}
 			float dmin = float.MaxValue, dmax = 0; long zero = 0;
 			foreach (var v in depth) { if (v <= 0) { zero++; continue; } if (v < dmin) dmin = v; if (v > dmax) dmax = v; }
@@ -973,7 +973,7 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 			var inWorld = tapConfirm.Count > 0 && totalTicks > tapConfirm[^1] + 300;
 			var skyOk = !inWorld || (zero == 0 && dmin >= skyLo * 0.99 && dmin <= skyHi * 1.01);
 			ok &= skyOk;
-			Log.Info($"[machost] depth sky frame={game.Time.Frame} inWorld={inWorld} zero={zero} of {depth.Length} minDepth={(zero == depth.Length ? 0 : dmin):E4} (= {(dmin > 0 && dmin < float.MaxValue ? nearM / dmin : 0):F0} m) maxDepth={dmax:E4} (= {(dmax > 0 ? nearM / dmax : 0):F3} m) dome={skyLo:E3}..{skyHi:E3} ({(skyOk ? "ok" : "FEHLER")}{(inWorld ? "" : ", nur im Level bewertet")})");
+			Log.Info($"[machost] depth sky frame={game.Time.Frame} inWorld={inWorld} zero={zero} of {depth.Length} minDepth={(zero == depth.Length ? 0 : dmin):E4} (= {(dmin > 0 && dmin < float.MaxValue ? nearM / dmin : 0):F0} m) maxDepth={dmax:E4} (= {(dmax > 0 ? nearM / dmax : 0):F3} m) dome={skyLo:E3}..{skyHi:E3} ({(skyOk ? "ok" : "ERROR")}{(inWorld ? "" : ", evaluated only in the level")})");
 			if (!ok) depthChecksFailed++;
 		}
 	}
@@ -1030,15 +1030,15 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 			var raw = new byte[tw * th * 4];
 			for (int i = 0; i < color.Length; i++) { raw[i * 4] = color[i].R; raw[i * 4 + 1] = color[i].G; raw[i * 4 + 2] = color[i].B; raw[i * 4 + 3] = color[i].A; }
 			File.WriteAllBytes(rawPath, raw);
-			Log.Info($"[machost] target dump {path} und {rawPath} ({tw}x{th})");
+			Log.Info($"[machost] target dump {path} and {rawPath} ({tw}x{th})");
 		}
 	}
 	// K6f.4: nach welchem Tick sieht Foster die Sonde? (Zustand nach Tick totalTicks)
 	if (keyProbeAt >= 0 && totalTicks >= keyProbeAt)
 	{
 		var down = game.Input.Keyboard.Down(Keys.F7);
-		if (down && keyProbeSeenDown < 0) { keyProbeSeenDown = totalTicks; Log.Info($"[machost] key probe: F7 eingespeist vor Tick {keyProbeAt}, als gedrückt gesehen nach Tick {totalTicks} (Verzögerung {totalTicks - keyProbeAt})"); }
-		if (!down && keyProbeSeenDown >= 0 && keyProbeSeenUp < 0) { keyProbeSeenUp = totalTicks; Log.Info($"[machost] key probe: F7 losgelassen vor Tick {keyProbeAt + 2}, als losgelassen gesehen nach Tick {totalTicks} (Verzögerung {totalTicks - keyProbeAt - 2})"); }
+		if (down && keyProbeSeenDown < 0) { keyProbeSeenDown = totalTicks; Log.Info($"[machost] key probe: F7 injected before tick {keyProbeAt}, seen as pressed after tick {totalTicks} (delay {totalTicks - keyProbeAt})"); }
+		if (!down && keyProbeSeenDown >= 0 && keyProbeSeenUp < 0) { keyProbeSeenUp = totalTicks; Log.Info($"[machost] key probe: F7 released before tick {keyProbeAt + 2}, seen as released after tick {totalTicks} (delay {totalTicks - keyProbeAt - 2})"); }
 	}
 	var stepped = (int)(game.Time.Frame - frameBefore);
 	ticks++; totalTicks++;
@@ -1063,7 +1063,7 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 		// im Stereo-Weltpass unterscheiden sich die Schichten (Projektion je Auge): nur Inhalt verlangt
 		var layersOk = vrWorld ? (nonBlack0 > 0 && nonBlack1 > 0) : (diff == 0 && nonBlack0 > 0);
 		if (!layersOk) layerChecksFailed++;
-		Log.Info($"[machost] layers check #{layerChecks} frame={game.Time.Frame} diff={diff} of {pixels0.Length} nonBlack0={nonBlack0} nonBlack1={nonBlack1} ({(layersOk ? "ok" : "FEHLER")}{(vrWorld ? ", Weltpass: Schichten dürfen abweichen" : "")})");
+		Log.Info($"[machost] layers check #{layerChecks} frame={game.Time.Frame} diff={diff} of {pixels0.Length} nonBlack0={nonBlack0} nonBlack1={nonBlack1} ({(layersOk ? "ok" : "ERROR")}{(vrWorld ? ", world pass: layers may differ" : "")})");
 		Log.Info($"[machost] frame stats: views={views} passes/frame={game.GraphicsDevice.RenderPassesLastFrame} draws/frame={game.GraphicsDevice.DrawCallsLastFrame}");
 
 		// M4b.3a: beide Schichten (physischer Bereich) als RGBA roh für compare-canvas.py
@@ -1209,7 +1209,7 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 				// Rundung des Sterns (Shader tastet an nicht ganzzahligen Offsets): unter 0,02 % gilt als 0
 				var flatOk = Pct(flatFarOut, flatFarN) < 0.02;
 				if (!flatOk) vrChecksFailed++;
-				Log.Info($"[machost] edge zones criterion=raw rawThreshold={VisionOSKit.RawEdgeThreshold:E2} outline near(z<5m)={Pct(nearOut, nearN):F2}% (n={nearN}) far(z>15m)={Pct(farOut, farN):F2}% (n={farN}) flat={Pct(flatOut, flatN):F3}% (n={flatN}) flatFar={Pct(flatFarOut, flatFarN):F3}% (n={flatFarN}, outline={flatFarOut}) ({(flatOk ? "ok" : "FEHLER")})");
+				Log.Info($"[machost] edge zones criterion=raw rawThreshold={VisionOSKit.RawEdgeThreshold:E2} outline near(z<5m)={Pct(nearOut, nearN):F2}% (n={nearN}) far(z>15m)={Pct(farOut, farN):F2}% (n={farN}) flat={Pct(flatOut, flatN):F3}% (n={flatN}) flatFar={Pct(flatFarOut, flatFarN):F3}% (n={flatFarN}, outline={flatFarOut}) ({(flatOk ? "ok" : "ERROR")})");
 			}
 			// Diagnose (C64_STEREO_TESTFILL=rate): die vom Shader gemalte Rate (rot = x/4) gegen die
 			// Rate des Decoders an fünf Spalten der Mittelzeile
@@ -1244,7 +1244,7 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 			}
 			var vrOk = fraction < 10 && widthOk;
 			if (!vrOk) vrChecksFailed++;
-			Log.Info($"[machost] vr check #{vrChecks} frame={game.Time.Frame} world region={w}x{h} msaa={VisionOSKit.PixelMsaa} differing={differing} ({fraction:F2}%) outlineLike={outlined} edge={VisionOSKit.EdgeAngleDegrees:F3}deg width(phys px) {string.Join(" | ", zoneText)} negative={(VisionOSKit.StereoNegativeNoAngle ? 1 : 0)} ({(vrOk ? "ok" : "FEHLER")})");
+			Log.Info($"[machost] vr check #{vrChecks} frame={game.Time.Frame} world region={w}x{h} msaa={VisionOSKit.PixelMsaa} differing={differing} ({fraction:F2}%) outlineLike={outlined} edge={VisionOSKit.EdgeAngleDegrees:F3}deg width(phys px) {string.Join(" | ", zoneText)} negative={(VisionOSKit.StereoNegativeNoAngle ? 1 : 0)} ({(vrOk ? "ok" : "ERROR")})");
 		}
 		// Test-Viereck: im schwarzen Feld zählen, wie viele Pixel rein grün sind und wie viele
 		// Zwischenwerte haben (nur mit MSAA > 0)
@@ -1268,7 +1268,7 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 					else if (c.R == 0 && c.B == 0 && c.G > 0) partial++;
 					else if (!(c.R == 0 && c.G == 0 && c.B == 0)) other++;
 				}
-			Log.Info($"[machost] quad check #{layerChecks} msaa={hostMsaa} afterOutputCalls={afterOutputCalls} region={qx0},{qy0}-{qx1},{qy1}{(rateMapPtr != 0 ? " (physisch aus der Map)" : "")} full={full} partial={partial} other={other} ({(hostMsaa > 1 ? (partial > 0 ? "ok" : "FEHLER") : (partial == 0 ? "ok" : "FEHLER"))})");
+			Log.Info($"[machost] quad check #{layerChecks} msaa={hostMsaa} afterOutputCalls={afterOutputCalls} region={qx0},{qy0}-{qx1},{qy1}{(rateMapPtr != 0 ? " (physical from the map)" : "")} full={full} partial={partial} other={other} ({(hostMsaa > 1 ? (partial > 0 ? "ok" : "ERROR") : (partial == 0 ? "ok" : "ERROR"))})");
 			if ((hostMsaa > 1) != (partial > 0)) layerChecksFailed++;
 		}
 
@@ -1327,7 +1327,7 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 			// im Stereo-Weltpass zeigen die Hälften verschiedene Augen
 			var composeOk = magenta == 0 && nonBlack > 0 && (halvesDiffer == 0 || vrWorld);
 			if (!composeOk) layerChecksFailed++;
-			Log.Info($"[machost] compose check #{layerChecks} window={size.X}x{size.Y} fullscreen={game.Window.Fullscreen} magenta={magenta} nonBlack={nonBlack} of {shot.Length} halvesDiffer={halvesDiffer} ({(composeOk ? "ok" : "FEHLER")})");
+			Log.Info($"[machost] compose check #{layerChecks} window={size.X}x{size.Y} fullscreen={game.Window.Fullscreen} magenta={magenta} nonBlack={nonBlack} of {shot.Length} halvesDiffer={halvesDiffer} ({(composeOk ? "ok" : "ERROR")})");
 		}
 	}
 

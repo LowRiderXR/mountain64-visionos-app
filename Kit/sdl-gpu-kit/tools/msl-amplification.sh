@@ -1,65 +1,67 @@
 #!/bin/zsh
-# msl-amplification.sh — View-Index in MSL von SPIRV-Cross auf Vertex Amplification umbiegen.
+# msl-amplification.sh - rewrite the view index in SPIRV-Cross MSL output to vertex amplification.
 #
-# Hintergrund (Docs/celeste64/sdl-gpu-kit-analyse.md, Abschnitt 3, Weg 1): DXC übersetzt
-# SV_ViewID nach SPIR-V ViewIndex; SPIRV-Cross kennt kein [[amplification_id]] und schreibt
-# ohne Multiview-Option am Anfang der Entry-Funktion
+# Background: DXC translates SV_ViewID to the SPIR-V ViewIndex builtin. SPIRV-Cross has no
+# notion of [[amplification_id]]; without its multiview option it emits, at the start of the
+# entry function,
 #     const uint gl_ViewIndex = 0;
-# (spirv_msl.cpp, BuiltInViewIndex-Fixup: "when not running under a multiview render pass,
-# ViewIndex is 0"). Dieses Skript entfernt die Zeile und hängt stattdessen den Parameter
+# (spirv_msl.cpp, BuiltInViewIndex fixup: "when not running under a multiview render pass,
+# ViewIndex is 0"). The kit renders both eyes in one pass through Metal vertex amplification,
+# so the view index has to come from the amplification slot instead. This script removes that
+# line and appends the parameter
 #     uint gl_ViewIndex [[amplification_id]]
-# an die Signatur der Vertex-Funktion. Alles andere bleibt unverändert; die Bindungen
-# (buffer(n), attribute(n)) sind nicht betroffen.
+# to the signature of the vertex function. Everything else stays unchanged; the bindings
+# (buffer(n), attribute(n)) are not affected.
 #
-# Aufruf: msl-amplification.sh <eingabe.msl> <ausgabe.msl>
-# Exit: 0 umgebaut, 2 kein ViewIndex-Fixup gefunden (Shader nutzt SV_ViewID nicht oder die
-# SPIRV-Cross-Ausgabe hat sich geändert), 3 Signatur nicht gefunden oder mehrdeutig.
+# Usage: msl-amplification.sh <input.msl> <output.msl>
+# Exit: 0 rewritten, 2 no ViewIndex fixup found (the shader does not use SV_ViewID or the
+# SPIRV-Cross output has changed), 3 signature not found or ambiguous.
 
 set -euo pipefail
 
-[[ $# -eq 2 ]] || { echo "Aufruf: $0 <eingabe.msl> <ausgabe.msl>" >&2; exit 64; }
+[[ $# -eq 2 ]] || { echo "Usage: $0 <input.msl> <output.msl>" >&2; exit 64; }
 IN="$1"
 OUT="$2"
-[[ -f "$IN" ]] || { echo "FEHLER: $IN nicht gefunden" >&2; exit 66; }
+[[ -f "$IN" ]] || { echo "ERROR: $IN not found" >&2; exit 66; }
 
 FIXUP_RE='^[[:space:]]*const u?int gl_ViewIndex = 0;[[:space:]]*$'
 fixups="$(grep -cE "$FIXUP_RE" "$IN" || true)"
 if [[ "$fixups" -ne 1 ]]; then
-    echo "FEHLER: erwartet genau einen ViewIndex-Fixup, gefunden: $fixups" >&2
+    echo "ERROR: expected exactly one ViewIndex fixup, found: $fixups" >&2
     exit 2
 fi
 
-# Der Typ des Fixups (uint oder int) wird für den Parameter übernommen.
+# The type of the fixup (uint or int) is reused for the parameter.
 VIEW_TYPE="$(grep -E "$FIXUP_RE" "$IN" | sed -E 's/^[[:space:]]*const (u?int) .*/\1/')"
 
-# Signatur: eine Zeile, die mit "vertex " beginnt und die Parameterliste mit ")" schliesst.
+# Signature: a single line that starts with "vertex " and closes the parameter list with ")".
 sigs="$(grep -cE '^vertex [^(]+\(.*\)[[:space:]]*$' "$IN" || true)"
 if [[ "$sigs" -ne 1 ]]; then
-    echo "FEHLER: erwartet genau eine Vertex-Signatur auf einer Zeile, gefunden: $sigs" >&2
+    echo "ERROR: expected exactly one vertex signature on one line, found: $sigs" >&2
     exit 3
 fi
 
-# SPIRV-Cross legt bei aktivem ViewIndex zusätzlich `uint gl_Layer [[render_target_array_index]]`
-# in die Ausgabestruktur (Instanz-Emulation), ohne sie zu beschreiben. Unter Amplification wählt
-# das View-Mapping die Schicht; der unbenutzte Ausgang verlangt sonst inputPrimitiveTopology an
-# der Pipeline («Vertex shader writes render_target_array_index but inputPrimitiveTopology is
-# not specified», Metal auf macOS). Er wird entfernt, wenn der Shader ihn nirgends zuweist.
+# With an active ViewIndex, SPIRV-Cross also places `uint gl_Layer [[render_target_array_index]]`
+# in the output struct (instance emulation) without ever writing it. Under amplification the
+# view mapping selects the layer; the unused output would otherwise require inputPrimitiveTopology
+# on the pipeline ("Vertex shader writes render_target_array_index but inputPrimitiveTopology is
+# not specified", Metal on macOS). It is removed when the shader never assigns it.
 STRIP_LAYER=0
 if grep -qE '^\s*uint gl_Layer \[\[render_target_array_index\]\];' "$IN" && ! grep -qE 'gl_Layer\s*=' "$IN"; then
     STRIP_LAYER=1
 fi
 
 perl -pe '
-    # Fixup-Zeile entfernen
+    # Remove the fixup line
     if (/^\s*const u?int gl_ViewIndex = 0;\s*$/) { $_ = ""; next; }
-    # Unbenutzten Layer-Ausgang entfernen
+    # Remove the unused layer output
     if ('"$STRIP_LAYER"' && /^\s*uint gl_Layer \[\[render_target_array_index\]\];\s*$/) { $_ = ""; next; }
-    # Parameter anhängen (leere Parameterliste berücksichtigen)
+    # Append the parameter (handle an empty parameter list)
     if (/^vertex [^(]+\(/) {
         if (/\(\)\s*$/) { s/\(\)\s*$/('"$VIEW_TYPE"' gl_ViewIndex [[amplification_id]])\n/; }
         else            { s/\)\s*$/, '"$VIEW_TYPE"' gl_ViewIndex [[amplification_id]])\n/; }
     }
 ' "$IN" > "$OUT"
 
-echo "OK: $OUT (Parameter: $VIEW_TYPE gl_ViewIndex [[amplification_id]]; gl_Layer-Ausgang entfernt: $STRIP_LAYER)"
+echo "OK: $OUT (parameter: $VIEW_TYPE gl_ViewIndex [[amplification_id]]; gl_Layer output removed: $STRIP_LAYER)"
 diff -u "$IN" "$OUT" || true

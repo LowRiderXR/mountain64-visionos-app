@@ -22,8 +22,8 @@
 //                       K4c: C64_KIT_DEPTH_STORE=store|dontcare (Standard nicht gesetzt) wählt den
 //                       store_op der MSAA-Tiefe und schaltet die Tiefenprobe ein (step=depth-probe).
 //
-//  Prüft Risiko R1 (K0), die Besitzregeln von P1 (K1a), den Texturimport P3 (K1b) und Multiview
-//  P6 (K2) aus Docs/celeste64/sdl-gpu-kit-analyse.md. Jede Zeile der Szene geht in die Probe.
+//  Checks the SDL GPU kit inside a foreign process: device ownership, texture import and
+//  multiview rendering. Jede Zeile der Szene geht in die Probe.
 //  Nur in Debug-Builds übersetzt (Release und Diagnostics kennen keinen Kit-Modus).
 //
 //  Thread-Belege (SDL main 4cfdb71ee): SDL_Init(VIDEO) läuft über UIKit_VideoInit
@@ -185,7 +185,7 @@ nonisolated enum KitProbe {
             options.depth_store = false
             options.depth_probe = true
         default:
-            c64Record("[c64-kit] step=multiview-options C64_KIT_DEPTH_STORE=\"\(depthStore ?? "")\" unbekannt (erwartet store|dontcare), Schalter ignoriert")
+            c64Record("[c64-kit] step=multiview-options C64_KIT_DEPTH_STORE=\"\(depthStore ?? "")\" unknown (expected store|dontcare), switch ignored")
         }
         return kit_multiview_begin_ex(pointer(device as AnyObject), pointer(queue as AnyObject), &options, logLine, nil)
     }
@@ -267,7 +267,7 @@ nonisolated struct KitQuadPlacement {
         placementFrames += 1
         if placementFrames >= Self.settleFrames {
             frozen = true
-            c64Record(String(format: "[c64-kit] step=multiview-quad eingefroren nach %d Frames bei (%.2f, %.2f, %.2f) m, Kopf (%.2f, %.2f, %.2f) m, Blick (%.2f, %.2f, %.2f), Kante %.1f m",
+            c64Record(String(format: "[c64-kit] step=multiview-quad frozen after %d frames at (%.2f, %.2f, %.2f) m, head (%.2f, %.2f, %.2f) m, gaze (%.2f, %.2f, %.2f), edge %.1f m",
                              placementFrames, center!.x, center!.y, center!.z,
                              position.x, position.y, position.z, forward.x, forward.y, forward.z, Self.halfSize * 2))
         }
