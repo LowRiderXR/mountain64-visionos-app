@@ -39,7 +39,7 @@
 #
 # Requirements: .NET 10 SDK, Xcode with the visionOS SDK, the Celeste 64 checkout in Source/Celeste64
 # with the visionOS patch applied (scripts/celeste-patch.sh apply), and the Foster fork for visionOS
-# (FOSTER_VISIONOS_DIR, default $HOME/Developer/visionOS/Kits/foster-visionos). The SDL3 and FMOD
+# in Source/foster-visionos (or FOSTER_VISIONOS_DIR); setup.sh prepares both. The SDL3 and FMOD
 # frameworks are not needed for this build; the library loads them at run time from the app bundle.
 
 set -euo pipefail
@@ -54,8 +54,8 @@ FW="$OUT_DIR/$NAME.framework"
 BUILD_DIR="$ROOT/build/wrapper"
 MODE="${1:-visionos}"
 
-DOTNET="${DOTNET:-$(command -v dotnet || echo /usr/local/share/dotnet/dotnet)}"
-[[ -x "$DOTNET" ]] || { echo "error: dotnet not found" >&2; exit 1; }
+DOTNET="${DOTNET:-$(command -v dotnet || true)}"
+[[ -n "$DOTNET" && -x "$DOTNET" ]] || { echo "error: dotnet not found on the PATH (install the .NET 10 SDK or set DOTNET)" >&2; exit 1; }
 
 # Global properties: they must reach the referenced projects during restore as well, which a
 # ProjectReference's AdditionalProperties does not guarantee. FosterUseExternalSDL=true keeps

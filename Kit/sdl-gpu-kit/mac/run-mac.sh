@@ -17,7 +17,7 @@
 set -euo pipefail
 
 ROOT="${0:A:h:h:h:h}"
-SDL_SRC="${SDL_SRC:-$HOME/Developer/visionOS/Kits/sdl-visionos}"
+SDL_SRC="${SDL_SRC:-$ROOT/Source/sdl-visionos}"
 MAC_DIR="$ROOT/Frameworks/macos"
 BUILD_DIR="$ROOT/build/kit-mac"
 BIN="$BUILD_DIR/kit-testscene"

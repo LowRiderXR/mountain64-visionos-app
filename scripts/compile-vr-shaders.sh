@@ -7,7 +7,9 @@
 # SV_ViewID, see compile-kit-shaders.sh).
 #
 #   scripts/compile-vr-shaders.sh            compile all variants, both stages
-#   DXC=... SHADERCROSS=... ...              tool overrides (default: ~/Developer/visionOS/Tools/SDL_shadercross/build)
+#   SHADERCROSS_BUILD_DIR=... DXC=... SHADERCROSS=...
+#                                            tool overrides (default: a build of SDL_shadercross in
+#                                            ThirdParty/SDL_shadercross/build, git-ignored)
 #
 # Output per variant and stage: <Name>.<stage>.msl (Metal, what Foster loads on macOS and visionOS,
 # GraphicsDriver.cs:30) and <Name>.<stage>.json (resource counts, Assets.cs:235). The SPIR-V is only
@@ -20,7 +22,7 @@ set -euo pipefail
 ROOT="${0:A:h:h}"
 SHADERS="$ROOT/Source/Celeste64/Content/Shaders"
 OUT="$SHADERS/Compiled"
-TOOLS="$HOME/Developer/visionOS/Tools/SDL_shadercross/build"
+TOOLS="${SHADERCROSS_BUILD_DIR:-$ROOT/ThirdParty/SDL_shadercross/build}"
 DXC="${DXC:-$TOOLS/external/DirectXShaderCompiler/bin/dxc}"
 SHADERCROSS="${SHADERCROSS:-$TOOLS/shadercross}"
 AMPLIFY="$ROOT/Kit/sdl-gpu-kit/tools/msl-amplification.sh"

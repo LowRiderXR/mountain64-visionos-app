@@ -14,7 +14,8 @@
 set -euo pipefail
 ROOT="${0:A:h:h}"
 CELESTE="$ROOT/Source/Celeste64"
-DOTNET="${DOTNET:-/usr/local/share/dotnet/dotnet}"
+DOTNET="${DOTNET:-$(command -v dotnet || true)}"
+[[ -n "$DOTNET" && -x "$DOTNET" ]] || { echo "error: dotnet not found on the PATH (install the .NET 10 SDK or set DOTNET)" >&2; exit 1; }
 MODE="${1:-}"; shift || true
 RUN=0
 if [[ "$MODE" != "machost" && "$MODE" != "aot-machost" ]]; then

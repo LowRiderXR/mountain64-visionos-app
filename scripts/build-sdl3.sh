@@ -18,12 +18,13 @@
 # macOS, Kontrolle der XR-Symbole, die nur in main existieren.
 #
 # Aufruf: scripts/build-sdl3.sh [xros|macos|all]   (Standard: all)
-# Umgebung: SDL_SRC (Fork-Pfad), SDL_PIN (Basis-Commit), SDL_ALLOW_BRANCH=1.
+# Umgebung: SDL_SRC (Fork-Pfad, Standard Source/sdl-visionos aus setup.sh), SDL_PIN (Basis-Commit),
+# SDL_ALLOW_BRANCH=1.
 
 set -euo pipefail
 
 ROOT="${0:A:h:h}"
-SDL_SRC="${SDL_SRC:-$HOME/Developer/visionOS/Kits/sdl-visionos}"
+SDL_SRC="${SDL_SRC:-$ROOT/Source/sdl-visionos}"
 SDL_PIN="${SDL_PIN:-4cfdb71ee1f52e0761d61e8e73cb7395a79d65df}"
 OUT_DIR="$ROOT/Frameworks"
 BUILD_DIR="$ROOT/build/sdl3"

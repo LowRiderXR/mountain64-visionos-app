@@ -9,12 +9,13 @@
 # kit_shaders_generated.h, damit CLI und App kein Dateiladen brauchen. Kein handgeschriebenes MSL.
 #
 # Aufruf: Kit/sdl-gpu-kit/tools/compile-kit-shaders.sh
-# Umgebung: DXC, SHADERCROSS (Pfade), Standard: Bau unter ~/Developer/visionOS/Tools/SDL_shadercross.
+# Umgebung: SHADERCROSS_BUILD_DIR, DXC, SHADERCROSS (Pfade), Standard: Bau unter ThirdParty/SDL_shadercross/build.
 
 set -euo pipefail
 
 KIT="${0:A:h:h}"
-TOOLS="$HOME/Developer/visionOS/Tools/SDL_shadercross/build"
+ROOT="${KIT:h:h}"
+TOOLS="${SHADERCROSS_BUILD_DIR:-$ROOT/ThirdParty/SDL_shadercross/build}"
 DXC="${DXC:-$TOOLS/external/DirectXShaderCompiler/bin/dxc}"
 SHADERCROSS="${SHADERCROSS:-$TOOLS/shadercross}"
 AMPLIFY="$KIT/tools/msl-amplification.sh"

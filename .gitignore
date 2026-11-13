@@ -1,8 +1,8 @@
 # Symlink to the private docs repo (no trailing slash: git stores symlinks as files)
 /Docs
-# Local clones until submodules are set up (M0a)
+# Clones made by setup.sh: Celeste 64, the Foster fork and the SDL fork
 /Source/
-# Own downloads and build output
+# Own downloads (FMOD package, SDL_shadercross build) and build output
 /ThirdParty/
 /Frameworks/
 build/

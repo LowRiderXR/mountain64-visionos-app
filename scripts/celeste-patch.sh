@@ -21,7 +21,8 @@ PATCH="$ROOT/Patches/celeste64-usefoster.patch"
 case "${1:-status}" in
   apply)
     git -C "$CELESTE" apply --check "$PATCH"
-    git -C "$CELESTE" apply "$PATCH"
+    # nowarn: the compiled shader files end with a blank line, which is not an error here.
+    git -C "$CELESTE" apply --whitespace=nowarn "$PATCH"
     echo "Patch angewendet: $PATCH"
     ;;
   revert)

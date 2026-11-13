@@ -1,21 +1,22 @@
 diff --git a/Celeste64.csproj b/Celeste64.csproj
-index d210edd..bc09646 100644
+index d210edd..a606f34 100644
 --- a/Celeste64.csproj
 +++ b/Celeste64.csproj
-@@ -12,12 +12,42 @@
+@@ -12,12 +12,43 @@
      <SelfContained>true</SelfContained>
    </PropertyGroup>
  
 +  <!-- visionOS kit (K6b): UseLocalFoster=true references the fork foster-visionos as a project
 +       instead of the NuGet package; UseKitSDL=true additionally ships the SDL built by
 +       scripts/build-sdl3.sh instead of the SDL inside Foster. Both default to off, so the
-+       reference build is unchanged. Paths come from properties or environment variables.
++       reference build is unchanged. Paths come from properties or environment variables
++       (FosterVisionOSDir or FOSTER_VISIONOS_DIR, default Source/foster-visionos next to this checkout).
 +       With UseLocalFoster the symbol VISIONOS_KIT enables the port's switches (VisionOSKit.cs). -->
 +  <PropertyGroup>
 +    <UseLocalFoster Condition="'$(UseLocalFoster)' == ''">false</UseLocalFoster>
 +    <UseKitSDL Condition="'$(UseKitSDL)' == ''">false</UseKitSDL>
 +    <FosterVisionOSDir Condition="'$(FosterVisionOSDir)' == '' and '$(FOSTER_VISIONOS_DIR)' != ''">$(FOSTER_VISIONOS_DIR)</FosterVisionOSDir>
-+    <FosterVisionOSDir Condition="'$(FosterVisionOSDir)' == ''">$(HOME)/Developer/visionOS/Kits/foster-visionos</FosterVisionOSDir>
++    <FosterVisionOSDir Condition="'$(FosterVisionOSDir)' == ''">$(MSBuildProjectDirectory)/../foster-visionos</FosterVisionOSDir>
 +    <KitSDLDylib Condition="'$(KitSDLDylib)' == '' and '$(KIT_SDL_DYLIB)' != ''">$(KIT_SDL_DYLIB)</KitSDLDylib>
 +    <KitSDLDylib Condition="'$(KitSDLDylib)' == ''">$(MSBuildProjectDirectory)/../../Frameworks/macos/libSDL3.0.dylib</KitSDLDylib>
 +  </PropertyGroup>
