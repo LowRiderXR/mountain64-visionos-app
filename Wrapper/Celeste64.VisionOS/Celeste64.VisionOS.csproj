@@ -26,6 +26,12 @@
     <NativeLib>Shared</NativeLib>
     <SelfContained>true</SelfContained>
 
+    <!-- Runtime pack and ILCompiler version. Without this the SDK uses the runtime it bundles
+         (10.0.12 for SDK 10.0.401), which NuGet flags with NU1903 (GHSA-p3jp-9v83-76w9); the
+         pinned servicing release is fetched from NuGet, so the installed SDK can stay. Raise it
+         with each .NET 10 servicing release, together with the Mac host project. -->
+    <RuntimeFrameworkVersion>10.0.15</RuntimeFrameworkVersion>
+
     <!-- Celeste 64 runs with the invariant culture anyway; this saves ICU. -->
     <InvariantGlobalization>true</InvariantGlobalization>
     <UseSystemResourceKeys>true</UseSystemResourceKeys>

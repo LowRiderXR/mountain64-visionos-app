@@ -15,6 +15,9 @@
     <Nullable>enable</Nullable>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <SelfContained>true</SelfContained>
+    <!-- Same .NET servicing release as the device library (Wrapper/Celeste64.VisionOS.csproj),
+         so Mac measurements run on the runtime the app ships; the pack comes from NuGet. -->
+    <RuntimeFrameworkVersion>10.0.15</RuntimeFrameworkVersion>
     <UseKitSDL Condition="'$(UseKitSDL)' == ''">true</UseKitSDL>
     <KitSDLDylib Condition="'$(KitSDLDylib)' == ''">$(MSBuildProjectDirectory)/../../Frameworks/macos/libSDL3.0.dylib</KitSDLDylib>
     <DefineConstants>$(DefineConstants);VISIONOS_KIT</DefineConstants>
