@@ -58,13 +58,19 @@ DOTNET="${DOTNET:-$(command -v dotnet || true)}"
 [[ -n "$DOTNET" && -x "$DOTNET" ]] || { echo "error: dotnet not found on the PATH (install the .NET 10 SDK or set DOTNET)" >&2; exit 1; }
 
 # Global properties: they must reach the referenced projects during restore as well, which a
-# ProjectReference's AdditionalProperties does not guarantee. FosterUseExternalSDL=true keeps
-# Foster from copying its own SDL library; the host app embeds SDL3.framework instead.
+# ProjectReference's AdditionalProperties does not guarantee. UseKitSDL=false and
+# FosterUseExternalSDL=false repeat exactly what the project references derive (the wrapper adds
+# UseKitSDL=$(UseKitSDL) for Celeste, Celeste adds FosterUseExternalSDL=$(UseKitSDL) for Foster):
+# the SDK also builds Foster as a transitive reference of the wrapper with the command-line
+# globals, and a value that differs between the two paths makes MSBuild build Foster twice in
+# parallel into the same output (CS0006 when the second compile reads a half-written DLL).
+# FosterUseExternalSDL only governs Foster's copy of its own SDL for macOS runtime identifiers;
+# for ios-arm64 nothing is copied either way, the host app embeds SDL3.framework.
 # IsAotCompatible=true as a global property runs the compiler's trim and AOT analyzers in the
 # referenced projects too, so the warning list matches a direct AOT publish of the game
 # (PublishAot itself must not be global: the SDK rejects it for the game's executable project
 # on an iOS runtime identifier, NETSDK1203).
-PROPS=(-p:UseLocalFoster=true -p:FosterUseExternalSDL=true -p:IsAotCompatible=true -p:TrimmerSingleWarn=false)
+PROPS=(-p:UseLocalFoster=true -p:UseKitSDL=false -p:FosterUseExternalSDL=false -p:IsAotCompatible=true -p:TrimmerSingleWarn=false)
 
 # Framework metadata. The bundle identifier must differ from the app's.
 BUNDLE_ID="${GAME_BUNDLE_ID:-com.lowriderxr.Celeste64.VisionOS}"

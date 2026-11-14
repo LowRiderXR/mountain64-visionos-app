@@ -1749,10 +1749,22 @@ index f2ba5d0..9814c98 100644
  		Audio.SetVCAVolume("vca:/sfx", Calc.Clamp(SfxVolume / 10.0f, 0, 1));
  	}
 diff --git a/Source/Game.cs b/Source/Game.cs
-index 312df59..6e8ca59 100644
+index 312df59..dce1ed3 100644
 --- a/Source/Game.cs
 +++ b/Source/Game.cs
-@@ -37,15 +37,29 @@ public class Game : App
+@@ -22,6 +22,11 @@ public struct Transition
+ 	public bool StopMusic;
+ 	public bool PerformAssetReload;
+ 	public float HoldOnBlackFor;
++#if VISIONOS_KIT
++	// visionOS port: end the game after the save of this transition instead of switching the
++	// scene ("Save & Quit" in the pause menu; the device has the one level, no overworld)
++	public bool ExitAfterSaving;
++#endif
+ }
+ 
+ public class Game : App
+@@ -37,15 +42,29 @@ public class Game : App
  
  	public const string GamePath = "Celeste64";
  	public const string GameTitle = "Celeste 64: Fragments of the Mountain";
@@ -1782,7 +1794,7 @@ index 312df59..6e8ca59 100644
  
  	private static Game? instance;
  	public static Game Instance => instance ?? throw new Exception("Game isn't running");
-@@ -66,7 +80,12 @@ public class Game : App
+@@ -66,7 +85,12 @@ public class Game : App
  
  	public Game(AppConfig config) : base(config)
  	{
@@ -1795,7 +1807,7 @@ index 312df59..6e8ca59 100644
  		batcher = new(GraphicsDevice);
  
  		GraphicsDevice.VSync = true;
-@@ -100,6 +119,10 @@ public class Game : App
+@@ -100,6 +124,10 @@ public class Game : App
  	}
  
  	public bool IsMidTransition => transitionStep != TransitionStep.None;
@@ -1806,7 +1818,7 @@ index 312df59..6e8ca59 100644
  
  	public void Goto(Transition next)
  	{
-@@ -116,6 +139,27 @@ public class Game : App
+@@ -116,6 +144,27 @@ public class Game : App
  
  	protected override void Update()
  	{
@@ -1834,7 +1846,24 @@ index 312df59..6e8ca59 100644
  		Audio.Update();
  
  		// toggle mouse camera mode
-@@ -316,13 +360,38 @@ public class Game : App
+@@ -191,6 +240,16 @@ public class Game : App
+ 			// perform game save between transitions
+ 			if (transition.Saving)
+ 				Save.Instance.SaveToFile(UserPath);
++#if VISIONOS_KIT
++			// visionOS port: "Save & Quit" ends the game here, with the screen still black from the
++			// wipe; Exit marks the game as exiting, the host then ends it like "Exit" on the title
++			if (transition.ExitAfterSaving)
++			{
++				Log.Info("[c64-exit] save and quit: saved, exiting");
++				Exit();
++				return;
++			}
++#endif
+ 
+ 			// perform transition
+ 			switch (transition.Mode)
+@@ -316,13 +375,38 @@ public class Game : App
  
  	protected override void Render()
  	{
@@ -1876,7 +1905,7 @@ index 312df59..6e8ca59 100644
  
  			// draw screen wipe over top
  			if (transitionStep != TransitionStep.None && transition.ToBlack != null)
-@@ -332,16 +401,42 @@ public class Game : App
+@@ -332,16 +416,42 @@ public class Game : App
  				batcher.Clear();
  			}
  
@@ -2636,7 +2665,7 @@ index 33da870..788a543 100644
  
  			if (easing < 1)
 diff --git a/Source/Scenes/World.cs b/Source/Scenes/World.cs
-index bdfb740..46d307b 100644
+index bdfb740..218dcf4 100644
 --- a/Source/Scenes/World.cs
 +++ b/Source/Scenes/World.cs
 @@ -70,9 +70,20 @@ public class World : Scene
@@ -2671,7 +2700,37 @@ index bdfb740..46d307b 100644
  			optionsMenu.Add(new Menu.Toggle(() => Loc.Str("OptionsZGuide"), Save.Instance.ToggleZGuide, () => Save.Instance.ZGuide));
  			optionsMenu.Add(new Menu.Toggle(() => Loc.Str("OptionsTimer"), Save.Instance.ToggleTimer, () => Save.Instance.SpeedrunTimer));
  			string CameraInvertOption(int index) => Loc.Str(index switch
-@@ -345,6 +359,15 @@ public class World : Scene
+@@ -122,6 +136,21 @@ public class World : Scene
+ 				Get<Player>()?.Kill();
+ 			}));
+ 			pauseMenu.Add(new Menu.Submenu(() => Loc.Str("PauseOptions"), pauseMenu, optionsMenu));
++#if VISIONOS_KIT
++			// visionOS port: "Save & Quit" keeps its text, wipe and save, but ends the game after the
++			// save (Game.Update) instead of loading the overworld: the device has the one level, and
++			// an explicit quit is the only way to end the app that does not depend on the layer
++			pauseMenu.Add(new Menu.Option(() => Loc.Str("PauseSaveQuit"), () => Game.Instance.Goto(new Transition()
++			{
++				Mode = Transition.Modes.Replace,
++				Scene = () => new Overworld(true),
++				FromPause = true,
++				ToPause = true,
++				ToBlack = new SlideWipe(),
++				Saving = true,
++				ExitAfterSaving = true
++			})));
++#else
+ 			pauseMenu.Add(new Menu.Option(() => Loc.Str("PauseSaveQuit"), () => Game.Instance.Goto(new Transition()
+ 			{
+ 				Mode = Transition.Modes.Replace,
+@@ -131,6 +160,7 @@ public class World : Scene
+ 				ToBlack = new SlideWipe(),
+ 				Saving = true
+ 			})));
++#endif
+ 		}
+ 
+ 		// environment
+@@ -345,6 +375,15 @@ public class World : Scene
  		// normal game loop
  		if (!Paused)
  		{
@@ -2687,7 +2746,7 @@ index bdfb740..46d307b 100644
  			// start pause menu
  			if (Controls.Pause.ConsumePress() && IsPauseEnabled)
  			{
-@@ -394,10 +417,30 @@ public class World : Scene
+@@ -394,10 +433,30 @@ public class World : Scene
  			foreach (var actor in Actors)
  				if (actor.UpdateOffScreen || actor.WorldBounds.Intersects(view))
  					actor.LateUpdate();
@@ -2718,7 +2777,7 @@ index bdfb740..46d307b 100644
  			if (Controls.Pause.ConsumePress() || (pauseMenu.IsInMainMenu && Controls.Cancel.ConsumePress()))
  			{
  				pauseMenu.CloseSubMenus();
-@@ -408,6 +451,13 @@ public class World : Scene
+@@ -408,6 +467,13 @@ public class World : Scene
  			{
  				pauseMenu.Update(Time);
  			}
@@ -2732,7 +2791,7 @@ index bdfb740..46d307b 100644
  		}
  
  		debugUpdTimer.Stop();
-@@ -432,6 +482,13 @@ public class World : Scene
+@@ -432,6 +498,13 @@ public class World : Scene
  
  			Controls.Consume();
  			Paused = paused;
@@ -2746,7 +2805,7 @@ index bdfb740..46d307b 100644
  		}
  	}
  
-@@ -658,8 +715,26 @@ public class World : Scene
+@@ -658,8 +731,26 @@ public class World : Scene
  	public override void Render(Target target)
  	{
  		debugRndTimer.Restart();
@@ -2773,7 +2832,7 @@ index bdfb740..46d307b 100644
  
  		// create render state
  		RenderState state = new(GraphicsDevice, Time);
-@@ -668,7 +743,11 @@ public class World : Scene
+@@ -668,7 +759,11 @@ public class World : Scene
  			state.ModelMatrix = Matrix.Identity;
  			state.SunDirection = new Vec3(0, -.7f, -1).Normalized();
  			state.Silhouette = false;
@@ -2785,7 +2844,7 @@ index bdfb740..46d307b 100644
  			state.DepthMask = true;
  			state.VerticalFogColor = 0xdceaf0;
  		}
-@@ -698,9 +777,17 @@ public class World : Scene
+@@ -698,9 +793,17 @@ public class World : Scene
  			}
  
  			// sort models by distance (for transparency)
@@ -2803,7 +2862,7 @@ index bdfb740..46d307b 100644
  
  			// perp all models
  			foreach (var it in models)
-@@ -709,13 +796,23 @@ public class World : Scene
+@@ -709,13 +812,23 @@ public class World : Scene
  
  		// draw the skybox first
  		{
@@ -2828,7 +2887,7 @@ index bdfb740..46d307b 100644
  			}
  		}
  
-@@ -725,7 +822,11 @@ public class World : Scene
+@@ -725,7 +838,11 @@ public class World : Scene
  		// render silhouettes
  		{
  			var it = state;
@@ -2840,7 +2899,7 @@ index bdfb740..46d307b 100644
  			it.DepthMask = false;
  			it.Silhouette = true;
  			RenderModels(ref it, models, ModelFlags.Silhouette);
-@@ -735,8 +836,45 @@ public class World : Scene
+@@ -735,8 +852,45 @@ public class World : Scene
  
  		// render main models
  		RenderModels(ref state, models, ModelFlags.Default);
@@ -2887,7 +2946,7 @@ index bdfb740..46d307b 100644
  		ApplyPostEffects();
  
  		// render alpha threshold transparent stuff
-@@ -760,23 +898,94 @@ public class World : Scene
+@@ -760,23 +914,94 @@ public class World : Scene
  		}
  
  		// strawberry collect effect
@@ -2996,7 +3055,7 @@ index bdfb740..46d307b 100644
  
  		// ui
  		{
-@@ -872,9 +1081,30 @@ public class World : Scene
+@@ -872,9 +1097,30 @@ public class World : Scene
  			// apply post fx
  			postMaterial.CopyFrom(Assets.Materials["Edge"]);
  			postMaterial.Fragment.Samplers[1] = new(target.Attachments[1], new(TextureFilter.Nearest, TextureWrap.Clamp, TextureWrap.Clamp));
@@ -3028,7 +3087,7 @@ index bdfb740..46d307b 100644
  				Edge = new Color(0x110d33).ToVector4()
  			});
  			batch.PushMaterial(postMaterial);
-@@ -889,6 +1119,521 @@ public class World : Scene
+@@ -889,6 +1135,521 @@ public class World : Scene
  		}
  	}
  
