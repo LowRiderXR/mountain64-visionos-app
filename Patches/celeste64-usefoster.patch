@@ -2665,7 +2665,7 @@ index 33da870..788a543 100644
  
  			if (easing < 1)
 diff --git a/Source/Scenes/World.cs b/Source/Scenes/World.cs
-index bdfb740..2b1f0dc 100644
+index bdfb740..dd03d0f 100644
 --- a/Source/Scenes/World.cs
 +++ b/Source/Scenes/World.cs
 @@ -70,9 +70,20 @@ public class World : Scene
@@ -2805,7 +2805,7 @@ index bdfb740..2b1f0dc 100644
  		}
  	}
  
-@@ -658,8 +731,26 @@ public class World : Scene
+@@ -658,8 +731,27 @@ public class World : Scene
  	public override void Render(Target target)
  	{
  		debugRndTimer.Restart();
@@ -2813,7 +2813,8 @@ index bdfb740..2b1f0dc 100644
 +		// visionOS port: depth clear and compares follow the depth convention (reverse-Z: 0, Greater).
 +		// Stereo frame: the 3D passes render into the intermediate array A (both views in
 +		// one pass), the edge pass copies it into the host's drawable, sprites and transparent
-+		// models follow into the drawable; the 2D UI stays off until the HUD layer exists.
++		// models follow into the drawable; the 2D UI (HUD, pause menu) is drawn on the UI layer and
++		// placed into the world as quads, the screen wipe on its own layer the same way.
 +		var vr = VisionOSKit.Frame;
 +		if (vr != null)
 +		{
@@ -2832,7 +2833,7 @@ index bdfb740..2b1f0dc 100644
  
  		// create render state
  		RenderState state = new(GraphicsDevice, Time);
-@@ -668,7 +759,11 @@ public class World : Scene
+@@ -668,7 +760,11 @@ public class World : Scene
  			state.ModelMatrix = Matrix.Identity;
  			state.SunDirection = new Vec3(0, -.7f, -1).Normalized();
  			state.Silhouette = false;
@@ -2844,7 +2845,7 @@ index bdfb740..2b1f0dc 100644
  			state.DepthMask = true;
  			state.VerticalFogColor = 0xdceaf0;
  		}
-@@ -698,9 +793,17 @@ public class World : Scene
+@@ -698,9 +794,17 @@ public class World : Scene
  			}
  
  			// sort models by distance (for transparency)
@@ -2862,7 +2863,7 @@ index bdfb740..2b1f0dc 100644
  
  			// perp all models
  			foreach (var it in models)
-@@ -709,13 +812,23 @@ public class World : Scene
+@@ -709,13 +813,23 @@ public class World : Scene
  
  		// draw the skybox first
  		{
@@ -2887,7 +2888,7 @@ index bdfb740..2b1f0dc 100644
  			}
  		}
  
-@@ -725,7 +838,11 @@ public class World : Scene
+@@ -725,7 +839,11 @@ public class World : Scene
  		// render silhouettes
  		{
  			var it = state;
@@ -2899,7 +2900,7 @@ index bdfb740..2b1f0dc 100644
  			it.DepthMask = false;
  			it.Silhouette = true;
  			RenderModels(ref it, models, ModelFlags.Silhouette);
-@@ -735,8 +852,45 @@ public class World : Scene
+@@ -735,8 +853,45 @@ public class World : Scene
  
  		// render main models
  		RenderModels(ref state, models, ModelFlags.Default);
@@ -2946,7 +2947,7 @@ index bdfb740..2b1f0dc 100644
  		ApplyPostEffects();
  
  		// render alpha threshold transparent stuff
-@@ -760,23 +914,94 @@ public class World : Scene
+@@ -760,23 +915,94 @@ public class World : Scene
  		}
  
  		// strawberry collect effect
@@ -3005,7 +3006,7 @@ index bdfb740..2b1f0dc 100644
 +		if (vr != null)
 +		{
 +			// stereo frame: sprites and transparent models submitted with the frame's final flush;
-+			// no 2D UI
++			// the 2D UI follows as quads in the world
 +			// pause panel: the UI layer as a quad in the world, after the sprites, always on top
 +			if (uiLayerActive)
 +				DrawUiDim(vr);
@@ -3055,7 +3056,7 @@ index bdfb740..2b1f0dc 100644
  
  		// ui
  		{
-@@ -872,9 +1097,30 @@ public class World : Scene
+@@ -872,9 +1098,30 @@ public class World : Scene
  			// apply post fx
  			postMaterial.CopyFrom(Assets.Materials["Edge"]);
  			postMaterial.Fragment.Samplers[1] = new(target.Attachments[1], new(TextureFilter.Nearest, TextureWrap.Clamp, TextureWrap.Clamp));
@@ -3087,7 +3088,7 @@ index bdfb740..2b1f0dc 100644
  				Edge = new Color(0x110d33).ToVector4()
  			});
  			batch.PushMaterial(postMaterial);
-@@ -889,6 +1135,521 @@ public class World : Scene
+@@ -889,6 +1136,521 @@ public class World : Scene
  		}
  	}
  
@@ -3624,7 +3625,7 @@ index 650a35e..68b1c05 100644
  	private const float EaseClosePercent = 0.3f; // how long (in percent) it eases the entire screen
 diff --git a/Source/VisionOSKit.cs b/Source/VisionOSKit.cs
 new file mode 100644
-index 0000000..b56dc90
+index 0000000..363e844
 --- /dev/null
 +++ b/Source/VisionOSKit.cs
 @@ -0,0 +1,1497 @@
@@ -3682,7 +3683,7 @@ index 0000000..b56dc90
 +
 +		if (!GraphicsDevice.IsKitSDLLoaded())
 +		{
-+			Log.Info("[c64-gpu] Kit fehlt, Callback nicht gesetzt (SDL ohne visionOS-Kit-Exporte)");
++			Log.Info("[c64-gpu] kit missing, callback not set (SDL without the visionOS kit exports)");
 +			return 0;
 +		}
 +
@@ -3691,7 +3692,7 @@ index 0000000..b56dc90
 +		SDL_SetPointerProperty(props, SDL_PROP_GPU_DEVICE_CREATE_METAL_COMMAND_BUFFER_COMPLETED_CALLBACK_POINTER, (nint)callback);
 +		SDL_SetPointerProperty(props, SDL_PROP_GPU_DEVICE_CREATE_METAL_COMMAND_BUFFER_COMPLETED_USERDATA_POINTER, nint.Zero);
 +		timing = true;
-+		Log.Info("[c64-gpu] Callback gesetzt, Zählung der fertigen Command Buffer einmal pro Sekunde");
++		Log.Info("[c64-gpu] callback set, counting the completed command buffers once per second");
 +		return props;
 +	}
 +
@@ -3733,7 +3734,7 @@ index 0000000..b56dc90
 +
 +	/// <summary>
 +	/// World target (colour and depth) with the anti-aliasing from C64_MSAA. Celeste renders
-+	/// several passes into this target and samples its depth in the edge pass (World.cs:874).
++	/// several passes into this target and samples its depth in the edge pass (World.ApplyPostEffects).
 +	/// Reverse-Z path: Depth32 (float) instead of Depth16, because near / distance needs the
 +	/// float range (the sky at 3 km is 3e-5, two steps of a 16-bit depth) and the device
 +	/// drawables are depth32Float as well.
@@ -3742,7 +3743,7 @@ index 0000000..b56dc90
 +	{
 +		var samples = TargetSampleCount;
 +		if (samples != SampleCount.One)
-+			Log.Info($"[c64-msaa] Welt-Ziel {width}x{height} mit {samples} ({device.Capabilities})");
++			Log.Info($"[c64-msaa] world target {width}x{height} with {samples} ({device.Capabilities})");
 +		// Celeste renders in standard Z (near = small): depth resolve with Min so that edge pixels
 +		// stick to the foreground; the samples stay stored (MultiSampleStore) because later
 +		// passes (copy back, sprites, strawberry) load the target. Reverse-Z: near = large, so Max.
@@ -4150,15 +4151,15 @@ index 0000000..b56dc90
 +		}
 +	}
 +
++	/// <summary>Set by the player while a strawberry is collected: the game camera's whole rotation carries the head (the world is dimmed to 10 %, the tilted horizon hardly shows), so Madeline and the berry stay framed as in the original.</summary>
++	public static bool CameraFullRotationOverride { get; set; }
++
 +	/// <summary>
 +	/// Base rotation that carries the head pose (row-vector layout, rows = images of X, Y, Z):
 +	/// Yaw mode: rotation about Z by the game camera's yaw; Full mode: right, forward and up of
 +	/// the game camera (forward = LookAt - Position, up from the world's Z), falls back to the
 +	/// yaw when the camera looks straight up or down.
 +	/// </summary>
-+	/// <summary>Set by the player while a strawberry is collected: the game camera's whole rotation carries the head (the world is dimmed to 10 %, the tilted horizon hardly shows), so Madeline and the berry stay framed as in the original.</summary>
-+	public static bool CameraFullRotationOverride { get; set; }
-+
 +	public static Matrix BaseRotation(Vec3 position, Vec3 lookAt)
 +	{
 +		if (Cam.Mode == CameraBaseMode.Full || CameraFullRotationOverride)
@@ -4359,7 +4360,7 @@ index 0000000..b56dc90
 +			Log.Info($"[c64-ui] C64_UI_DIALOG_Y={(DialogYSet ? DialogYDegrees.ToString("F1", System.Globalization.CultureInfo.InvariantCulture) : "off")} deg above the gaze (centre of the dialog box; off = 100 layer pixels below the top edge)");
 +			Log.Info($"[c64-ui] C64_UI_LETTERBOX={(Letterbox ? 1 : 0)} ({(Letterbox ? "cutscene bars drawn head-locked" : "cutscene bars left out in the stereo world")}) C64_UI_DIALOG_SCALE={DialogScale.ToString("F2", System.Globalization.CultureInfo.InvariantCulture)} (dialog box and portrait about their top-centre anchor)");
 +			if (HudInset)
-+				Log.Info($"[c64-ui] C64_UI_HUD_X={HudXDegrees.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)} C64_UI_HUD_Y={HudYDegrees.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)} deg left/above the gaze during play, estimated density {EstimateDensity(HudXDegrees, HudYDegrees):F2} (model from M4a.4b: centre 1.0, 25 deg 0.33, up 14.7 deg 0.82); pause keeps the original corner");
++				Log.Info($"[c64-ui] C64_UI_HUD_X={HudXDegrees.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)} C64_UI_HUD_Y={HudYDegrees.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)} deg left/above the gaze during play, estimated density {EstimateDensity(HudXDegrees, HudYDegrees):F2} (model from the device measurements: centre 1.0, 25 deg 0.33, up 14.7 deg 0.82); pause keeps the original corner");
 +			else
 +				Log.Info("[c64-ui] C64_UI_HUD_X/Y=off: timer and counter at the layer's original corner during play (24.7 deg left, 14.4 deg up, density about 0.35)");
 +			Log.Info($"[c64-ui] C64_UI={(Enabled ? 1 : 0)} ({(Enabled ? "the 2D menu as a panel in the stereo world" : "no 2D in the stereo world")})");
@@ -5112,7 +5113,7 @@ index 0000000..b56dc90
 +	/// <summary>FMOD mixer suspend or resume for a backgrounded app (see Audio.SuspendMixer).</summary>
 +	public static FMOD.RESULT SuspendAudio(bool suspend) => Audio.SuspendMixer(suspend);
 +
-+	/// <summary>Call once per second from Game.Update.</summary>
++	/// <summary>Called every frame from Game.Update; logs the completed command buffers once per second.</summary>
 +	public static void Tick()
 +	{
 +		if (!timing || timer.Elapsed.TotalSeconds < 1.0)
