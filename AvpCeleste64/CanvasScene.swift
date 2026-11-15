@@ -2,18 +2,18 @@
 //  CanvasScene.swift
 //  AvpCeleste64
 //
-//  M4a.2: die Leinwand, auf der später Celestes Bild liegt (M4a.3), hier mit einer vom Host
-//  gefüllten Textur. Ein Quad in 500 m (far away, so that the plane adds no stereo
-//  disparity), Breite nach Winkel (C64_CANVAS_FOV, Standard 50°, 16:9), in der
-//  Welt verankert wie die Testszene (Pose der ersten 90 Frames, dann eingefroren), beide Augen
-//  in einem Draw per Vertex Amplification mit der Matrix pro View aus computeProjection, Rate
-//  Map des Compositors am Pass, Tiefentest greater mit Schreiben (Reverse-Z: die Leinwand
-//  schreibt near/D = 0,0002, der Grund-Clear des Renderers liegt mit 0,0001 dahinter).
+//  The canvas that carries Celeste's 2D image: a texture the host fills at start (prepareCanvas)
+//  and Celeste writes afterwards (celeste_set_canvas). A quad at 500 m (far away, so that the
+//  plane adds no stereo disparity), width by angle (C64_CANVAS_FOV, default 50°, 16:9),
+//  anchored in the world like the test scene (pose of the first 90 frames, then frozen), both
+//  eyes in one draw through vertex amplification with the matrix per view from
+//  computeProjection, the compositor's rate map on the pass, depth test greater with writes
+//  (reverse-Z: the canvas writes near/D = 0.0002, the renderer's base clear lies behind it at 0.0001).
 //
-//  Abtastung über eine sRGB-Ansicht der RGBA8Unorm-Textur (PixelFormatView): die Hardware
-//  rechnet vor dem Filtern nach linear, das Drawable (bgra8Unorm_srgb) kodiert beim Schreiben
-//  zurück; die Bytes der Leinwand kommen so unverändert an. Filter linear, C64_CANVAS_FILTER=nearest
-//  für den Pixel-Look. Vertex-Shader und Uniforms sind die der Testszene (gleiches Quad).
+//  Sampling through an sRGB view of the RGBA8Unorm texture (PixelFormatView): the hardware
+//  converts to linear before filtering, the drawable (bgra8Unorm_srgb) encodes back when
+//  writing; the bytes of the canvas thus arrive unchanged. Filter linear, C64_CANVAS_FILTER=nearest
+//  for the pixel look. Vertex shader and uniforms are those of the test scene (same quad).
 //
 
 import CompositorServices
@@ -28,8 +28,8 @@ nonisolated final class CanvasScene {
     private let pipeline: MTLRenderPipelineState
     private let depthState: MTLDepthStencilState
     private let sampler: MTLSamplerState
-    private let texture: MTLTexture          // RGBA8Unorm, vom Host gefüllt (M4a.2) oder von Celeste beschrieben (M4a.3)
-    private let srgbView: MTLTexture         // Ansicht rgba8Unorm_srgb derselben Textur
+    private let texture: MTLTexture          // RGBA8Unorm, filled by the host at start, then written by Celeste
+    private let srgbView: MTLTexture         // view rgba8Unorm_srgb of the same texture
     let fovDegrees: Float
     private let halfWidth: Float
     private let halfHeight: Float
@@ -40,10 +40,10 @@ nonisolated final class CanvasScene {
     private var placementFrames = 0
     private var frozen = false
     private var eyesLogged = false
-    // Erst nach dem Verankern zeigen (in der Verankerungsphase ginge die Fläche mit dem Kopf
-    // mit, M4a.2), dann über fadeInFrames einblenden; vorher bleibt nur der Grund-Clear.
+    // Show only after anchoring (during the anchoring phase the plane would move with the
+    // head), then fade in over fadeInFrames; before that only the base clear remains.
     private var fadeFrames = 0
-    static let fadeInFrames = 27    // rund 0,3 s bei 90 Hz
+    static let fadeInFrames = 27    // about 0.3 s at 90 Hz
     private var fadeLogged = false
 
     init?(device: MTLDevice, colorFormat: MTLPixelFormat, depthFormat: MTLPixelFormat, viewCount: Int,
@@ -108,11 +108,11 @@ nonisolated final class CanvasScene {
                          descriptor.maxVertexAmplificationCount))
     }
 
-    /// M4b.1b: in den ersten settleFrames jeden Frame setzen, dann einfrieren; die Lage hängt
-    /// nicht mehr an der Blickrichtung, sondern an −Z des Ursprungs (Gieren 0, x = z = 0), nur die
-    /// Höhe kommt aus der Kopfhöhe. Das System-Recenter (Crown lang) legt −Z des Ursprungs auf die
-    /// Blickrichtung; so steht die Leinwand danach wieder vor dem Spieler. Vorher lag sie entlang
-    /// der Blickrichtung im 90. Frame und blieb nach dem Recenter um diesen Winkel seitlich.
+    /// During the first settleFrames set every frame, then freeze; the placement no longer depends
+    /// on the gaze direction but on −Z of the origin (yaw 0, x = z = 0), only the height comes from
+    /// the head height. The system recenter (long Crown press) puts −Z of the origin onto the gaze
+    /// direction, so the canvas stands in front of the player again afterwards. Before, it lay
+    /// along the gaze direction of the 90th frame and stayed off to the side by that angle after a recenter.
     private func place(anchor: simd_float4x4) {
         guard !frozen else { return }
         let position = SIMD3<Float>(anchor.columns.3.x, anchor.columns.3.y, anchor.columns.3.z)
@@ -140,11 +140,11 @@ nonisolated final class CanvasScene {
         }
     }
 
-    /// Einmal: Tangenten beider Augen aus computeProjection (aussermittige Projektion: Spalte 0
-    /// und 1 skalieren, Spalte 2 trägt die Aussermittigkeit; the eye frustum is asymmetric,
-    /// so the four tangents differ; tanR = (1 + m20)/m00, tanL = (1 − m20)/m00, tanT = (1 + m21)/m11,
-    /// tanB = (1 − m21)/m11), daraus das Sichtfeld, dazu Drawable- und Map-Grössen; danach die
-    /// Messung «nativ» (logNativeSpan). cp_view_get_tangents ist seit visionOS 2 veraltet.
+    /// Once: tangents of both eyes from computeProjection (off-centre projection: columns 0 and 1
+    /// scale, column 2 carries the off-centre terms; the eye frustum is asymmetric, so the four
+    /// tangents differ; tanR = (1 + m20)/m00, tanL = (1 − m20)/m00, tanT = (1 + m21)/m11,
+    /// tanB = (1 − m21)/m11), from that the field of view, plus drawable and map sizes; then the
+    /// "native" measurement (logNativeSpan). cp_view_get_tangents is deprecated since visionOS 2.
     func logEyesOnce(drawable: LayerRenderer.Drawable, views: [LayerRenderer.Drawable.View], maps: [MTLRasterizationRateMap]) {
         guard !eyesLogged, let firstView = views.first else { return }
         eyesLogged = true
@@ -170,14 +170,14 @@ nonisolated final class CanvasScene {
         logNativeSpan(tangents: tangents, maps: maps)
     }
 
-    /// Messung «nativ» (M4a.4): wie viele physische Pixel der Rate Map auf eine geradeaus
-    /// zentrierte Leinwand mit fovDegrees fallen, je Auge. Bildschirm-x der Leinwandränder aus
-    /// den Tangenten (x = (tanL ∓ tan(fov/2)) / (tanL + tanR) · screen.width, Tangens, nicht
-    /// Winkel: die Map ist im Tangens linear), dasselbe vertikal mit der 16:9-Höhe
-    /// (y = (tanT ∓ halfV) / (tanT + tanB) · screen.height), dann mapScreenToPhysicalCoordinates
-    /// (Swift: physicalCoordinates(screenCoordinates:layer:)) für beide Ränder und die Mitte ±1 px. Dichte = physische Pixel pro logischem Pixel
-    /// (Mitte etwa 1, Rand darunter). suggested: physische Spanne, 16:9, Breite auf 16 und Höhe
-    /// auf 8 gerundet, begrenzt durch die vertikale Spanne.
+    /// "Native" measurement: how many physical pixels of the rate map fall onto a straight-ahead
+    /// centred canvas with fovDegrees, per eye. Screen x of the canvas edges from the tangents
+    /// (x = (tanL ∓ tan(fov/2)) / (tanL + tanR) · screen.width, tangent, not angle: the map is
+    /// linear in the tangent), the same vertically with the 16:9 height
+    /// (y = (tanT ∓ halfV) / (tanT + tanB) · screen.height), then mapScreenToPhysicalCoordinates
+    /// (Swift: physicalCoordinates(screenCoordinates:layer:)) for both edges and the centre ±1 px. Density = physical pixels per logical pixel
+    /// (centre about 1, edge below). suggested: physical span, 16:9, width rounded to 16 and height
+    /// to 8, limited by the vertical span.
     private func logNativeSpan(tangents: [SIMD4<Float>], maps: [MTLRasterizationRateMap]) {
         guard let map = maps.first else {
             c64Record("[c64-native] no rate map (foveation off): no measurement")
@@ -200,7 +200,7 @@ nonisolated final class CanvasScene {
             let pTop = physical(xCentre, yTop), pBottom = physical(xCentre, yBottom)
             let physicalSpanX = pRight.x - pLeft.x
             let physicalSpanY = pBottom.y - pTop.y
-            // Dichte aus ±1 logischem Pixel
+            // density from ±1 logical pixel
             let centreDensityX = (physical(xCentre + 1, yCentre).x - physical(xCentre - 1, yCentre).x) / 2
             let centreDensityY = (physical(xCentre, yCentre + 1).y - physical(xCentre, yCentre - 1).y) / 2
             let edgeDensityL = (physical(xLeft + 1, yCentre).x - physical(xLeft - 1, yCentre).x) / 2
@@ -218,7 +218,7 @@ nonisolated final class CanvasScene {
         }
     }
 
-    /// Zeichnet die Leinwand in den offenen Encoder; wie TestScene.encode (Weltmodus).
+    /// Draws the canvas into the open encoder; like TestScene.encode (world mode).
     func encode(encoder: MTLRenderCommandEncoder,
                 drawable: LayerRenderer.Drawable,
                 views: [LayerRenderer.Drawable.View],
@@ -227,7 +227,7 @@ nonisolated final class CanvasScene {
         guard let deviceAnchor else { return }
         let anchorTransform = deviceAnchor.originFromAnchorTransform
         place(anchor: anchorTransform)
-        guard let center, frozen else { return }   // vor dem Verankern nichts zeichnen
+        guard let center, frozen else { return }   // draw nothing before anchoring
         var fade = min(1, Float(fadeFrames) / Float(Self.fadeInFrames))
         if fadeFrames <= Self.fadeInFrames { fadeFrames += 1 }
         if !fadeLogged, fade >= 1 {

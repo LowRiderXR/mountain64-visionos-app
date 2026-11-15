@@ -2,12 +2,12 @@
 //  TestScene.swift
 //  AvpCeleste64
 //
-//  Testszene P0b-2 hinter dem Schalter C64_TESTSCENE=1 (nur Debug-Builds): ein Quad mit feinem
-//  Schachbrett, rund 1 m × 1 m, 1,5 m vor der Startposition auf Augenhöhe, in der Welt verankert.
-//  Gezeichnet im bestehenden Clear-Pass über beide Schichten, beide Augen in einem Draw per
-//  Vertex Amplification (Anzahl 2, View-Mapping auf Schicht 0 und 1), Reverse-Z mit
-//  Tiefenschreiben, damit der Compositor gültige Tiefe bekommt. TestUniforms bleibt in jedem
-//  Build: die Leinwand (CanvasScene) nutzt denselben Vertex-Shader.
+//  Test scene behind the switch C64_TESTSCENE=1 (Debug builds only): a quad with a fine
+//  checkerboard, about 1 m × 1 m, 1.5 m in front of the start position at eye height, anchored
+//  in the world. Drawn in the existing clear pass over both layers, both eyes in one draw through
+//  vertex amplification (count 2, view mapping onto layers 0 and 1), reverse-Z with depth writes
+//  so the compositor gets valid depth. TestUniforms stays in every build: the canvas
+//  (CanvasScene) uses the same vertex shader.
 //
 
 import ARKit
@@ -16,9 +16,9 @@ import Foundation
 import Metal
 import simd
 
-/// Muss dem Layout von C64TestUniforms in TestScene.metal entsprechen (float4 statt float3,
-/// damit Swift und MSL dieselbe Ausrichtung haben).
-/// Uniforms des Quad-Vertex-Shaders c64_test_vertex; auch die Leinwand (CanvasScene) nutzt ihn.
+/// Must match the layout of C64TestUniforms in TestScene.metal (float4 instead of float3, so
+/// Swift and MSL have the same alignment).
+/// Uniforms of the quad vertex shader c64_test_vertex; the canvas (CanvasScene) uses it too.
 struct TestUniforms {
     var viewProjection: (simd_float4x4, simd_float4x4)
     var center: SIMD4<Float>
@@ -30,8 +30,8 @@ struct TestUniforms {
 nonisolated final class TestScene: @unchecked Sendable {
     static let environmentKey = "C64_TESTSCENE"
 
-    /// C64_TESTSCENE=1: in der Welt verankert. C64_TESTSCENE=2: kopffest (Gegenprobe ohne
-    /// Weltpose: das Quad muss dann immer vor den Augen liegen).
+    /// C64_TESTSCENE=1: anchored in the world. C64_TESTSCENE=2: head-locked (counter-check without
+    /// a world pose: the quad must then always lie in front of the eyes).
     enum Mode { case world, headLocked }
 
     static let requestedMode: Mode? = {
@@ -48,10 +48,10 @@ nonisolated final class TestScene: @unchecked Sendable {
     private let pipeline: MTLRenderPipelineState
     private let depthState: MTLDepthStencilState
 
-    /// Weltlage des Quads. Wird während der ersten Sekunde (settleFrames) jeden Frame aus der
-    /// aktuellen Pose neu gesetzt und dann eingefroren, weil die Pose der ersten Frames nach
-    /// dem Öffnen des ImmersiveSpace noch nicht eingeschwungen ist (Lauf vom 16.10.: Kopfhöhe
-    /// 0,43 m im ersten Frame).
+    /// World placement of the quad. Set anew from the current pose every frame during the first
+    /// second (settleFrames) and then frozen, because the pose of the first frames after opening
+    /// the ImmersiveSpace has not settled yet (run of 16 October: head height 0.43 m in the
+    /// first frame).
     private var center: SIMD3<Float>?
     private var right = SIMD3<Float>(0.5, 0, 0)
     private var up = SIMD3<Float>(0, 0.5, 0)
@@ -62,7 +62,7 @@ nonisolated final class TestScene: @unchecked Sendable {
     private static let distance: Float = 1.5
     private static let halfSize: Float = 0.5
 
-    /// Erzeugt Pipeline und Tiefenzustand; nil mit Logzeile, wenn etwas fehlt.
+    /// Creates pipeline and depth state; nil with a log line when something is missing.
     init?(mode: Mode, device: MTLDevice, colorFormat: MTLPixelFormat, depthFormat: MTLPixelFormat, viewCount: Int) {
         self.mode = mode
         guard let library = device.makeDefaultLibrary(),
@@ -79,8 +79,8 @@ nonisolated final class TestScene: @unchecked Sendable {
         descriptor.rasterSampleCount = 1
         descriptor.colorAttachments[0].pixelFormat = colorFormat
         descriptor.depthAttachmentPixelFormat = depthFormat
-        // Vertex Amplification: Maximum am Pipeline-Deskriptor (angle-stereo-multiview.md,
-        // Abschnitt 2); Gerätetest supportsVertexAmplificationCount.
+        // Vertex amplification: maximum on the pipeline descriptor; device check
+        // supportsVertexAmplificationCount.
         let amplification = min(viewCount, 2)
         descriptor.maxVertexAmplificationCount = device.supportsVertexAmplificationCount(amplification) ? amplification : 1
 
@@ -91,7 +91,7 @@ nonisolated final class TestScene: @unchecked Sendable {
             return nil
         }
 
-        // Reverse-Z: Clear 0 = fern, näher = grösser, also Vergleich greater, Schreiben an.
+        // Reverse-Z: clear 0 = far, nearer = larger, so compare greater, writes on.
         let depthDescriptor = MTLDepthStencilDescriptor()
         depthDescriptor.depthCompareFunction = .greater
         depthDescriptor.isDepthWriteEnabled = true
@@ -104,19 +104,19 @@ nonisolated final class TestScene: @unchecked Sendable {
         c64Record("[c64-testscene] ready (\(mode == .world ? "world" : "head-locked")): maxVertexAmplificationCount=\(descriptor.maxVertexAmplificationCount) color=\(ProbeContext.name(colorFormat)) depth=\(ProbeContext.name(depthFormat))")
     }
 
-    /// Weltmodus: Quad 1,5 m vor der Pose in horizontaler Blickrichtung, Höhe = Pose, senkrecht
-    /// zur Blickrichtung. Während der ersten settleFrames jeden Frame neu, danach eingefroren;
-    /// die Logzeile kommt beim Einfrieren und nennt auch die Kopfposition.
+    /// World mode: quad 1.5 m in front of the pose in the horizontal gaze direction, height = pose,
+    /// perpendicular to the gaze. Anew every frame during the first settleFrames, then frozen; the
+    /// log line comes when freezing and also names the head position.
     private func place(anchor: simd_float4x4) {
         guard !frozen else { return }
         let position = SIMD3<Float>(anchor.columns.3.x, anchor.columns.3.y, anchor.columns.3.z)
-        // Metal/visionOS: die Kamera blickt entlang −Z der Pose.
+        // Metal/visionOS: the camera looks along −Z of the pose.
         var forward = -SIMD3<Float>(anchor.columns.2.x, anchor.columns.2.y, anchor.columns.2.z)
         forward.y = 0
         if simd_length(forward) < 1e-3 { forward = SIMD3<Float>(0, 0, -1) }
         forward = simd_normalize(forward)
         let worldUp = SIMD3<Float>(0, 1, 0)
-        let rightDir = simd_normalize(simd_cross(forward, worldUp))   // Rechts aus Sicht des Betrachters
+        let rightDir = simd_normalize(simd_cross(forward, worldUp))   // right from the viewer's point of view
 
         center = position + forward * Self.distance
         right = rightDir * Self.halfSize
@@ -135,9 +135,9 @@ nonisolated final class TestScene: @unchecked Sendable {
         }
     }
 
-    /// Zeichnet das Quad in den offenen Encoder. `views` sind die Views des Passes; bei zwei
-    /// Views ein Draw mit Amplification 2 auf Schicht 0 und 1, bei einer View ein Draw ohne
-    /// Amplification mit der Matrix dieser View in Slot 0.
+    /// Draws the quad into the open encoder. `views` are the views of the pass; with two views one
+    /// draw with amplification 2 onto layers 0 and 1, with one view one draw without amplification
+    /// with that view's matrix in slot 0.
     func encode(encoder: MTLRenderCommandEncoder,
                 drawable: LayerRenderer.Drawable,
                 views: [LayerRenderer.Drawable.View],
@@ -150,7 +150,7 @@ nonisolated final class TestScene: @unchecked Sendable {
 
         switch mode {
         case .world:
-            guard let deviceAnchor else { return }   // ohne Pose keine Weltverankerung, nichts zeichnen
+            guard let deviceAnchor else { return }   // without a pose no world anchoring, draw nothing
             let anchorTransform = deviceAnchor.originFromAnchorTransform
             place(anchor: anchorTransform)
             guard let center else { return }
@@ -158,14 +158,14 @@ nonisolated final class TestScene: @unchecked Sendable {
             quadRight = right
             quadUp = up
             for (slot, viewIndex) in viewIndices.prefix(2).enumerated() {
-                // Welt → Auge: inverse(deviceAnchor · view.transform), dann Compositor-Projektion
-                // (Reverse-Z, Infinite-Far, asymmetrisch), wie Renderer.swift:1450-1463 bei Vice City.
+                // world -> eye: inverse(deviceAnchor · view.transform), then the compositor projection
+                // (reverse-Z, infinite far, asymmetric).
                 let viewMatrix = (anchorTransform * views[slot].transform).inverse
                 matrices[slot] = drawable.computeProjection(viewIndex: viewIndex) * viewMatrix
             }
         case .headLocked:
-            // Kopffest: Quad im Kopfraum 1,5 m voraus (−Z), View nur über view.transform
-            // (ohne deviceAnchor), wie Vice Citys Head-Lock-Zweig (Renderer.swift:1461).
+            // head-locked: quad in head space 1.5 m ahead (−Z), view only through view.transform
+            // (without deviceAnchor).
             quadCenter = SIMD3<Float>(0, 0, -Self.distance)
             quadRight = SIMD3<Float>(Self.halfSize, 0, 0)
             quadUp = SIMD3<Float>(0, Self.halfSize, 0)

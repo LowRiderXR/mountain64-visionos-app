@@ -2,33 +2,33 @@
 //  KitProbe.swift
 //  AvpCeleste64
 //
-//  Schalter C64_KIT (Standard aus):
-//    C64_KIT=1          Stufe K0: SDL_GPU-Testszene einmal beim Start im Hauptthread, SDL erzeugt
-//                       Device und Queue selbst, am Ende SDL_Quit. Referenz.
-//    C64_KIT=inject     Stufe K1a (Baustein P1): SDL_Init im Hauptthread beim Fenster (ohne
-//                       SDL_Quit), die Szene läuft dann im Render-Thread des ImmersiveSpace mit dem
-//                       Device des Layer-Renderers und der Queue des Gerüsts, einmal vor dem ersten
-//                       Frame. Danach läuft die Renderschleife normal weiter; SDL bleibt
-//                       initialisiert (SDL_Quit vom Render-Thread wäre auf UIKit nicht sauber).
-//    C64_KIT=import     Stufe K1b (Baustein P3): wie inject beim Fenster; im ImmersiveSpace
-//                       importiert SDL in jedem Frame Farb- und Tiefentextur des Drawables und
-//                       löscht beide Schichten (dunkelblau, Tiefe 0.001); das Gerüst präsentiert.
-//    C64_KIT=multiview  Stufe K2 (Baustein P6): wie import, aber ein Pass mit view_count 2 und
-//                       ein Draw des Schachbretts (1 m, 1,5 m vor der Startpose, weltfest) für
-//                       beide Augen per Vertex Amplification; Shader aus der Kit-Werkzeugkette.
-//                       K3: mit C64_FOVEATION=1 geht die Map des Compositors an den Pass (P4).
-//                       K4a: C64_KIT_MSAA=<Samples> (Standard aus) rendert in MSAA-Texturen und
-//                       löst Farbe und Tiefe in die Drawable-Schichten auf.
-//                       K4c: C64_KIT_DEPTH_STORE=store|dontcare (Standard nicht gesetzt) wählt den
-//                       store_op der MSAA-Tiefe und schaltet die Tiefenprobe ein (step=depth-probe).
+//  Switch C64_KIT (default off):
+//    C64_KIT=1          stage basic: SDL_GPU test scene once at start on the main thread, SDL
+//                       creates device and queue itself, SDL_Quit at the end. Reference.
+//    C64_KIT=inject     stage inject: SDL_Init on the main thread at the window (without
+//                       SDL_Quit), the scene then runs on the render thread of the ImmersiveSpace
+//                       with the layer renderer's device and the host's queue, once before the
+//                       first frame. The render loop then continues normally; SDL stays
+//                       initialised (SDL_Quit from the render thread would not be clean on UIKit).
+//    C64_KIT=import     stage import: like inject at the window; in the ImmersiveSpace SDL imports
+//                       colour and depth texture of the drawable in every frame and clears both
+//                       layers (dark blue, depth 0.001); the host presents.
+//    C64_KIT=multiview  stage multiview: like import, but one pass with view_count 2 and one draw
+//                       of the checkerboard (1 m, 1.5 m in front of the start pose, world-fixed)
+//                       for both eyes through vertex amplification; shaders from the kit toolchain.
+//                       With C64_FOVEATION=1 the compositor's map goes to the pass.
+//                       C64_KIT_MSAA=<samples> (default off) renders into MSAA textures and
+//                       resolves colour and depth into the drawable layers.
+//                       C64_KIT_DEPTH_STORE=store|dontcare (default unset) selects the store_op of
+//                       the MSAA depth and turns on the depth probe (step=depth-probe).
 //
 //  Checks the SDL GPU kit inside a foreign process: device ownership, texture import and
-//  multiview rendering. Jede Zeile der Szene geht in die Probe.
-//  Nur in Debug-Builds übersetzt (Release und Diagnostics kennen keinen Kit-Modus).
+//  multiview rendering. Every line of the scene goes into the probe.
+//  Compiled in Debug builds only (Release and Diagnostics know no kit mode).
 //
-//  Thread-Belege (SDL main 4cfdb71ee): SDL_Init(VIDEO) läuft über UIKit_VideoInit
-//  (SDL_uikitvideo.m:153) und gehört auf den Hauptthread; SDL_CreateGPUDevice und
-//  SDL_DestroyGPUDevice prüfen keinen Thread (SDL_gpu.c, SDL_gpu_metal.m ohne SDL_IsMainThread).
+//  Thread evidence (SDL main 4cfdb71ee): SDL_Init(VIDEO) runs through UIKit_VideoInit
+//  (SDL_uikitvideo.m:153) and belongs on the main thread; SDL_CreateGPUDevice and
+//  SDL_DestroyGPUDevice check no thread (SDL_gpu.c, SDL_gpu_metal.m without SDL_IsMainThread).
 //
 
 import Foundation
@@ -53,18 +53,18 @@ nonisolated enum KitProbe {
 
     private static let debugRequested: Bool = HostEnvironment.string("C64_KIT_DEBUG") == "1"
 
-    /// C-Callback ohne Kontext: schreibt jede Zeile der Szene ins Log und in die Datei.
+    /// C callback without context: writes every line of the scene into the probe.
     static let logLine: kit_log_fn = { line, _ in
         guard let line else { return }
         c64Record(String(cString: line))
     }
 
-    /// Unretained Zeiger auf ein Metal-Objekt für die C-Seite; der Host bleibt Besitzer.
+    /// Unretained pointer to a Metal object for the C side; the host stays the owner.
     static func pointer(_ object: AnyObject) -> UnsafeMutableRawPointer {
         Unmanaged.passUnretained(object).toOpaque()
     }
 
-    /// K0: alles im Hauptthread, SDL erzeugt Device und Queue selbst.
+    /// Basic: everything on the main thread, SDL creates device and queue itself.
     @MainActor
     @discardableResult
     static func runBasic() -> Int32 {
@@ -82,7 +82,7 @@ nonisolated enum KitProbe {
         return result
     }
 
-    /// K1a/K1b/K2, Teil 1 (Hauptthread, beim Fenster): nur SDL_SetMainReady + SDL_Init(VIDEO).
+    /// inject/import/multiview, part 1 (main thread, at the window): only SDL_SetMainReady + SDL_Init(VIDEO).
     @MainActor
     @discardableResult
     static func initSDL(for mode: Mode) -> Bool {
@@ -90,9 +90,9 @@ nonisolated enum KitProbe {
         return kit_testscene_init_sdl(logLine, nil)
     }
 
-    /// K1a, Teil 2 (Render-Thread, vor dem ersten Frame): Szene mit Device und Queue des Hosts.
-    /// Die Zeiger gehen unretained an C; SDL hält während der Szene eine eigene Referenz und gibt
-    /// sie in SDL_DestroyGPUDevice ab. Der Host bleibt Besitzer.
+    /// Inject, part 2 (render thread, before the first frame): scene with the host's device and queue.
+    /// The pointers go to C unretained; SDL holds its own reference during the scene and releases
+    /// it in SDL_DestroyGPUDevice. The host stays the owner.
     @discardableResult
     static func runInject(device: MTLDevice, queue: MTLCommandQueue) -> Int32 {
         let devicePointer = pointer(device as AnyObject)
@@ -113,11 +113,11 @@ nonisolated enum KitProbe {
         return result
     }
 
-    // MARK: K1b Import
+    // MARK: Import
 
-    /// K1b: Import-Sitzung auf Device und Queue des Hosts (SDL_GPU-Device lebt bis `endImport`).
-    /// Diagnose-Schalter: C64_KIT_WAIT=1 (auf SDLs Fence warten, bevor das Gerüst committet),
-    /// C64_KIT_VERIFY=1 (alle 90 Frames den Mittelpixel der importierten Farbtextur zurücklesen).
+    /// Import session on the host's device and queue (the SDL_GPU device lives until `endImport`).
+    /// Diagnostic switches: C64_KIT_WAIT=1 (wait for SDL's fence before the host commits),
+    /// C64_KIT_VERIFY=1 (every 90 frames read the centre pixel of the imported colour texture back).
     static func beginImport(device: MTLDevice, queue: MTLCommandQueue) -> OpaquePointer? {
         let wait = HostEnvironment.string("C64_KIT_WAIT") == "1"
         let verify = HostEnvironment.string("C64_KIT_VERIFY") == "1"
@@ -131,7 +131,7 @@ nonisolated enum KitProbe {
         return session
     }
 
-    /// K1b: Farb- und Tiefentextur eines Frames importieren und alle Schichten löschen.
+    /// Import the colour and depth texture of a frame and clear all layers.
     static func importClear(session: OpaquePointer, color: MTLTexture, depth: MTLTexture,
                             rgba: (Float, Float, Float, Float), depthValue: Float) -> Bool {
         var components: [Float] = [rgba.0, rgba.1, rgba.2, rgba.3]
@@ -139,7 +139,7 @@ nonisolated enum KitProbe {
                                       &components, depthValue)
     }
 
-    /// K1b-Diagnose: Pixel, den SDL in diesem Frame nach seinem Clear zurückgelesen hat (b,g,r,a).
+    /// Import diagnostics: pixel SDL read back in this frame after its clear (b,g,r,a).
     static func lastVerify(session: OpaquePointer) -> [UInt8]? {
         var bytes: [UInt8] = [0, 0, 0, 0]
         let present = bytes.withUnsafeMutableBufferPointer { kit_import_last_verify(session, $0.baseAddress) }
@@ -156,18 +156,18 @@ nonisolated enum KitProbe {
         kit_import_end(session)
     }
 
-    // MARK: K2 Multiview
+    // MARK: Multiview
 
-    /// K2: Sitzung mit Shadern und Pipeline (view_count 2) auf Device und Queue des Hosts.
-    /// K4a: `msaaSamples` > 1 schaltet Kantenglättung ein (C64_KIT_MSAA); die Sitzung rendert dann
-    /// in eigene MSAA-Texturen in Drawable-Grösse und löst Farbe und Tiefe (Filter max, Reverse-Z:
-    /// nächste Fläche) in die Drawable-Schichten auf. 0 = Stand K3.
-    /// K4b: `memoryless` legt die MSAA-Ziele (und die MSAA-Textur des Messbilds) ohne Speicher an
-    /// (C64_KIT_MEMORYLESS=1); Farbe und Tiefe werden nur aufgelöst, nie geladen oder gespeichert.
-    /// K4c: `depthStore` "store" oder "dontcare" (C64_KIT_DEPTH_STORE) wählt den store_op der
-    /// MSAA-Tiefe (STORE: StoreAndMultisampleResolve) und schaltet die Tiefenprobe ein; nil lässt
-    /// den Stand K4a/K4b (DONT_CARE, keine Probe). Die Sitzung lehnt die Kombination ohne MSAA
-    /// oder store mit memoryless ab (FAIL step=multiview-options).
+    /// Multiview session with shaders and pipeline (view_count 2) on the host's device and queue.
+    /// `msaaSamples` > 1 turns anti-aliasing on (C64_KIT_MSAA); the session then renders into its
+    /// own MSAA textures of drawable size and resolves colour and depth (filter max, reverse-Z:
+    /// nearest surface) into the drawable layers. 0 = no MSAA.
+    /// `memoryless` creates the MSAA targets (and the MSAA texture of the measurement image) without
+    /// memory (C64_KIT_MEMORYLESS=1); colour and depth are only resolved, never loaded or stored.
+    /// `depthStore` "store" or "dontcare" (C64_KIT_DEPTH_STORE) selects the store_op of the MSAA
+    /// depth (STORE: StoreAndMultisampleResolve) and turns on the depth probe; nil keeps the
+    /// default (DONT_CARE, no probe). The session rejects the combination without MSAA or store
+    /// with memoryless (FAIL step=multiview-options).
     static func beginMultiview(device: MTLDevice, queue: MTLCommandQueue, msaaSamples: Int = 0, memoryless: Bool = false,
                                depthStore: String? = nil) -> OpaquePointer? {
         c64Record("[c64-kit] start mode=multiview thread=\(Thread.current.name ?? "?") device=\"\(device.name)\" queue=\"\(queue.label ?? "-")\" msaa=\(msaaSamples) memoryless=\(memoryless) depthStore=\(depthStore ?? "-")")
@@ -190,9 +190,9 @@ nonisolated enum KitProbe {
         return kit_multiview_begin_ex(pointer(device as AnyObject), pointer(queue as AnyObject), &options, logLine, nil)
     }
 
-    /// K2: ein Frame; `viewProjection` pro View (Projektion · inverse(deviceAnchor · view.transform)),
-    /// Quad aus center/right/up in Metern. Ohne Quad nur der Clear im Zwei-View-Pass.
-    /// K3: `rateMap` ist die Map des Compositors (Foveation an) oder nil.
+    /// One frame; `viewProjection` per view (projection · inverse(deviceAnchor · view.transform)),
+    /// quad from center/right/up in metres. Without a quad only the clear in the two-view pass.
+    /// `rateMap` is the compositor's map (foveation on) or nil.
     static func multiviewFrame(session: OpaquePointer, color: MTLTexture, depth: MTLTexture,
                                rgba: (Float, Float, Float, Float), depthClear: Float,
                                quad: (center: SIMD3<Float>, right: SIMD3<Float>, up: SIMD3<Float>)?,
@@ -220,7 +220,7 @@ nonisolated enum KitProbe {
                                    &clear, depthClear, quad != nil, &matrices, &center, &right, &up, mapPointer)
     }
 
-    /// K3: Messbild gegen die Map des Compositors (eigene Float-Textur in physischer Grösse).
+    /// Measurement image against the compositor's map (own float texture of physical size).
     static func multiviewMeasure(session: OpaquePointer, rateMap: MTLRasterizationRateMap, verbose: Bool) -> kit_multiview_measure? {
         var result = kit_multiview_measure()
         guard kit_multiview_measure_map(session, pointer(rateMap as AnyObject), verbose, &result) else { return nil }
@@ -238,10 +238,10 @@ nonisolated enum KitProbe {
     }
 }
 
-/// Weltlage des Schachbretts für K2, wie TestScene.place (P0b-2): 1,5 m vor der Pose in
-/// horizontaler Blickrichtung, Höhe = Pose, Kante 1 m; während der ersten 90 Frames jeden Frame
-/// neu aus der Pose, dann eingefroren, weil die ersten Posen nach dem Öffnen nicht eingeschwungen
-/// sind (Kopfhöhe 0,43 m im ersten Frame, Lauf vom 16.10.).
+/// World placement of the checkerboard for the multiview stage, like TestScene.place: 1.5 m in
+/// front of the pose in the horizontal gaze direction, height = pose, edge 1 m; anew from the
+/// pose every frame during the first 90 frames, then frozen, because the first poses after
+/// opening have not settled (head height 0.43 m in the first frame, run of 16 October).
 nonisolated struct KitQuadPlacement {
     private(set) var center: SIMD3<Float>?
     private(set) var right = SIMD3<Float>(0.5, 0, 0)

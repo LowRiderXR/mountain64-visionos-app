@@ -2,20 +2,19 @@
 //  TestScene.metal
 //  AvpCeleste64
 //
-//  Testszene P0b-2: ein Quad mit feinem Schachbrett, in der Welt verankert, beide Augen in
-//  einem Draw per Vertex Amplification. Die Matrix pro View kommt aus dem Uniform-Array,
-//  Index über die Amplification-ID. Nur Dreiecke (Metal verlangt das unter einer Rate Map).
-//  Vorbild: Compositor-Pass von Vice City (vc_quad_vertex).
+//  Test scene: a quad with a fine checkerboard, anchored in the world, both eyes in one draw
+//  through vertex amplification. The matrix per view comes from the uniform array, indexed by
+//  the amplification ID. Triangles only (Metal requires that under a rate map).
 //
 
 #include <metal_stdlib>
 using namespace metal;
 
 struct C64TestUniforms {
-    float4x4 viewProjection[2];   // pro View: Projektion * inverse(deviceAnchor * view.transform)
-    float4   center;              // Mittelpunkt des Quads in Weltkoordinaten (m)
-    float4   right;               // Rechtsvektor * halbe Breite (m)
-    float4   up;                  // Hochvektor * halbe Höhe (m)
+    float4x4 viewProjection[2];   // per view: projection * inverse(deviceAnchor * view.transform)
+    float4   center;              // centre of the quad in world coordinates (m)
+    float4   right;               // right vector * half width (m)
+    float4   up;                  // up vector * half height (m)
 };
 
 struct C64TestInOut {
@@ -23,7 +22,7 @@ struct C64TestInOut {
     float2 uv;
 };
 
-// Sechs Vertices, zwei Dreiecke, Ecken aus der Vertex-ID; kein Vertex-Puffer nötig.
+// Six vertices, two triangles, corners from the vertex ID; no vertex buffer needed.
 vertex C64TestInOut c64_test_vertex(uint vertexID [[vertex_id]],
                                     ushort amplificationID [[amplification_id]],
                                     constant C64TestUniforms &uniforms [[buffer(0)]])
@@ -43,7 +42,7 @@ vertex C64TestInOut c64_test_vertex(uint vertexID [[vertex_id]],
     return out;
 }
 
-// Schachbrett 64 × 64 Felder, dazu ein dünnes rotes Fadenkreuz in der Mitte als Fixpunkt.
+// Checkerboard of 64 × 64 fields, plus a thin red crosshair in the centre as a fixation point.
 fragment float4 c64_test_fragment(C64TestInOut in [[stage_in]])
 {
     const float fields = 64.0;
@@ -58,12 +57,12 @@ fragment float4 c64_test_fragment(C64TestInOut in [[stage_in]])
     return float4(color, 1.0);
 }
 
-// M4a.2: Leinwand. Dasselbe Quad wie die Testszene, der Fragment-Shader tastet die Leinwand ab.
-// Die Textur kommt als sRGB-Ansicht (linear nach dem Abtasten), das Drawable kodiert beim
-// Schreiben zurück. uv (0,0) liegt an der Ecke unten links des Quads, Texturzeile 0 ist oben,
-// deshalb v gespiegelt: die Markierung oben links der Textur erscheint oben links in der Welt.
-// fade (0 bis 1) blendet nach dem Verankern ein; die Leinwand bleibt opak (Alpha 1), nur die
-// Farbe wird aus dem Schwarz des Grund-Clears hochgezogen.
+// Canvas: the same quad as the test scene, the fragment shader samples the canvas. The texture
+// arrives as an sRGB view (linear after sampling), the drawable encodes back when writing.
+// uv (0,0) is the bottom-left corner of the quad, texture row 0 is at the top, so v is
+// mirrored: the mark at the top left of the texture appears at the top left in the world.
+// fade (0 to 1) fades in after anchoring; the canvas stays opaque (alpha 1), only the colour
+// is pulled up from the black of the base clear.
 fragment float4 c64_canvas_fragment(C64TestInOut in [[stage_in]],
                                     texture2d<float> canvas [[texture(0)]],
                                     sampler canvasSampler [[sampler(0)]],

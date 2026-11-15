@@ -2,31 +2,30 @@
 //  AvpCeleste64App.swift
 //  AvpCeleste64
 //
-//  Startfenster und ImmersiveSpace (volle Immersion) mit CompositorLayer, M4a.5b-5: Die App
-//  startet wie Xcodes Vorlagen und Vice City mit einem Fenster (Info.plist: bevorzugte Rolle
-//  UIWindowSceneSessionRoleApplication, Anfangsstil Full unter der UI-Rolle). Das Fenster ist
-//  unsichtbar (.plain, Color.clear, klein) und öffnet in seinem .task sofort den Raum; bei
-//  .opened schliesst es sich (dismissWindow). Der direkte Start in eine CP-Szene liess den Raum
-//  auf der M5 im gemischten Stil (Passthrough) und das World Tracking in paused.
-//  Reihenfolge (M4a.5b-6): im Startfenster zuerst Leinwand, Queue,
-//  Audio-Session, celeste_init mit den Ladeticks und celeste_set_canvas, solange nur die
-//  Fensterszene verbunden ist (SDLs verstecktes UIWindow hängt sich an sie); dann
-//  openImmersiveSpace, im Layer-Closure Renderer und ARKit, bei .opened dismissWindow. Der
-//  Versuch, Celeste erst nach dem Schliessen zu starten (SDL-Fenster an der CPImmersiveScene),
-//  liess den WorldTrackingProvider auf der M5 in paused fallen. Konfiguration des Layers: Layout
-//  .layered, Foveation an, Render Quality 1,0, Farb- und Tiefenformat aus den Capabilities
-//  (Tiefe depth32Float, falls angeboten).
+//  Start window and ImmersiveSpace (full immersion) with CompositorLayer. The app starts like
+//  Xcode's templates with a window (Info.plist: preferred role
+//  UIWindowSceneSessionRoleApplication, initial style Full under the UI role). The window is
+//  invisible (.plain, Color.clear, small) and opens the space at once in its .task; on .opened it
+//  closes itself (dismissWindow). Launching straight into a CP scene left the space on the M5 in
+//  the mixed style (passthrough) and the world tracking paused.
+//  Order: in the start window first canvas, queue, audio session, celeste_init with the loading
+//  ticks and celeste_set_canvas, while only the window scene is connected (SDL's hidden UIWindow
+//  attaches to it); then openImmersiveSpace, renderer and ARKit in the layer closure,
+//  dismissWindow on .opened. Starting Celeste only after the window closed (SDL window on the
+//  CPImmersiveScene) let the WorldTrackingProvider on the M5 fall to paused. Layer
+//  configuration: layout .layered, foveation on, render quality 1.0, colour and depth format from
+//  the capabilities (depth depth32Float if offered).
 //
 
 import CompositorServices
 import os
 import SwiftUI
 
-/// Uhr seit dem Prozessstart für die Startzeilen (tMs), von jedem Thread lesbar.
+/// Clock since process start for the start lines (tMs), readable from any thread.
 nonisolated enum LaunchClock {
     static let reference = DispatchTime.now()
-    /// Millisekunden seit dem Start (mach-Zeit: läuft während einer Prozess-Suspendierung weiter,
-    /// steht im Geräteschlaf).
+    /// Milliseconds since the start (mach time: keeps running while the process is suspended,
+    /// stands still while the device sleeps).
     static var elapsedMs: Double {
         Double(DispatchTime.now().uptimeNanoseconds - reference.uptimeNanoseconds) / 1_000_000
     }
@@ -42,7 +41,7 @@ struct AvpCeleste64App: App {
 
     init() {
         _ = LaunchClock.reference
-        // Probe-Datei anlegen und rotieren (oder nur die alte Documents-Datei löschen, ohne Probe).
+        // Create and rotate the probe file (or, without the probe, only delete the old Documents file).
         _ = ProgressFile.shared
     }
 
@@ -60,11 +59,11 @@ struct AvpCeleste64App: App {
         }
         .immersionStyle(selection: .constant(.full), in: .full)
         .onChange(of: scenePhase, initial: true) { _, phase in
-            // Nur Logzeilen: Phase der Szenen aus Sicht von SwiftUI, dazu der App-Zustand aus
-            // UIKit, um ARKit-Pausen einzuordnen.
+            // Log lines only: phase of the scenes as SwiftUI sees it, plus the app state from
+            // UIKit, to classify ARKit pauses.
             c64Record("[c64-scene] tMs=\(LaunchClock.tMs) scenePhase=\(phase) \(CelesteProbe.lifecycleLine)")
-            // M4a.5c-2: zweiter Weg, das Hintergrund-Flag zu löschen (falls didBecomeActive vor
-            // dem Szenenwechsel kam); löscht nur, wenn UIKit die App als active meldet.
+            // second way to clear the background flag (in case didBecomeActive came before the
+            // scene change); clears only when UIKit reports the app as active.
             if phase == .active, CelesteProbe.pauseState.isBackground {
                 CelesteProbe.pauseState.clearBackgroundIfForeground(reason: "scenePhase active")
             }
@@ -72,10 +71,10 @@ struct AvpCeleste64App: App {
     }
 }
 
-/// Unsichtbares Startfenster: kein Glas (.plain), kein Inhalt. Sein .task startet Celeste
-/// (prepareHost und run, solange nur die Fensterszene verbunden ist), öffnet den Raum und
-/// schliesst das Fenster; die Messzeilen nach dem Schliessen laufen in einem eigenen Task
-/// (GameStartup.logAfterLauncherClosed), weil .task mit dem Fenster endet.
+/// Invisible start window: no glass (.plain), no content. Its .task starts Celeste (prepareHost
+/// and run, while only the window scene is connected), opens the space and closes the window;
+/// the measurement lines after closing run in their own task (GameStartup.logAfterLauncherClosed),
+/// because .task ends with the window.
 struct LauncherView: View {
     @Environment(AppModel.self) private var appModel
     @Environment(\.openImmersiveSpace) private var openImmersiveSpace
@@ -88,8 +87,8 @@ struct LauncherView: View {
                 c64Record("[c64-launch] tMs=\(LaunchClock.tMs) launcher task; \(CelesteProbe.lifecycleLine)")
                 guard appModel.immersiveState == .closed else { return }
                 GameStartup.prepareHost()
-                // Audio-Session vor celeste_init (FMOD startet darin), ohne den Hauptthread zu
-                // blockieren: der Task wartet, der Hauptthread bleibt frei.
+                // Audio session before celeste_init (FMOD starts in there), without blocking the
+                // main thread: the task waits, the main thread stays free.
                 if CelesteProbe.gameEnabled {
                     await CelesteProbe.configureAudioSession()
                 }
@@ -127,15 +126,14 @@ struct ImmersiveContent: CompositorContent {
 
     var body: some CompositorContent {
         CompositorLayer(configuration: ProbeLayerConfiguration()) { @MainActor layerRenderer in
-            // Nur die Renderschleife; Celeste ist schon geladen (Startfenster), sie übernimmt
-            // die Queue des Hosts und tickt ab dem ersten Frame; ARKit startet hier wie im
-            // Knopf-Pfad.
+            // Only the render loop; Celeste is already loaded (start window), it takes over the
+            // host's queue and ticks from the first frame; ARKit starts here.
             c64Record("[c64-launch] tMs=\(LaunchClock.tMs) layer closure; \(CelesteProbe.lifecycleLine)")
             Renderer.start(layerRenderer: layerRenderer, appModel: appModel)
         }
-        // M4b.1b: System-Recenter (Crown lang) protokollieren, mit der letzten Kopfpose vor dem
-        // Ereignis. M4b.4: bei ended den Bezugspunkt O neu setzen lassen, einige Frames später
-        // (bei ended zeigt die Pose noch die alten Werte, Probe 2026-10-27).
+        // Log the system recenter (long Crown press) with the last head pose before the event. On
+        // ended let the reference O be set anew a few frames later (at ended the pose still shows
+        // the old values, probe of 2026-10-27).
         .onWorldRecenter { phase in
             let name: String
             switch phase {
@@ -150,17 +148,17 @@ struct ImmersiveContent: CompositorContent {
     }
 }
 
-/// Start des Spiels auf dem Hauptthread im Startfenster (M4a.5b-6), vor dem Öffnen des Raums:
-/// prepareHost (Device, Queue, Leinwand), run (Audio-Session, celeste_init, Ladeticks,
-/// celeste_set_canvas, Freigabe). Die Statuszeilen gehen in die Probe ([c64-start]). In
-/// Debug-Builds schaltet ein Kit-Modus (C64_KIT) das Spiel aus und startet die Kit-Testszene.
+/// Start of the game on the main thread in the start window, before the space opens: prepareHost
+/// (device, queue, canvas), run (audio session, celeste_init, loading ticks, celeste_set_canvas,
+/// release). The status lines go into the probe ([c64-start]). In Debug builds a kit mode
+/// (C64_KIT) switches the game off and starts the kit test scene.
 @MainActor
 enum GameStartup {
     static let launcherWindowID = "c64-launcher"
     private static var startTask: Task<Void, Never>?
 
-    /// Vor dem Öffnen des Raums: Device und Queue (der Renderer übernimmt sie im Layer-Closure)
-    /// und die Leinwandtextur. Kein SDL, kein Celeste.
+    /// Before the space opens: device and queue (the renderer takes them over in the layer closure)
+    /// and the canvas texture. No SDL, no Celeste.
     static func prepareHost() {
         c64Record("[c64-start] prepareHost game=\(CelesteProbe.gameEnabled ? 1 : 0)")
         guard CelesteProbe.gameEnabled else { return }
@@ -169,10 +167,10 @@ enum GameStartup {
         }
     }
 
-    /// Nach dismissWindow: warten, bis keine Fensterszene mit Rolle windowApplication mehr
-    /// verbunden ist (höchstens 3 s, Abfrage alle 50 ms), dann die Messzeilen: Szenen, SDLs
-    /// Fenster (hat es seine Szene verloren?), Lebenszyklus. Eigener Task, damit das Ende des
-    /// Startfensters ihn nicht abbricht. Nur Log, keine Änderung am Verhalten.
+    /// After dismissWindow: wait until no window scene with role windowApplication is connected any
+    /// more (at most 3 s, polling every 50 ms), then the measurement lines: scenes, SDL's window
+    /// (has it lost its scene?), lifecycle. Own task, so the end of the start window does not
+    /// cancel it. Log only, no change in behaviour.
     static func logAfterLauncherClosed() {
         guard startTask == nil else { return }
         startTask = Task { @MainActor in
@@ -198,12 +196,12 @@ enum GameStartup {
         let start = DispatchTime.now()
         c64Record("[c64-start] tMs=\(LaunchClock.tMs) game=\(CelesteProbe.gameEnabled ? 1 : 0) thread=\(Thread.isMainThread ? "main" : "other")")
         if CelesteProbe.gameEnabled {
-            // Die Audio-Session ist konfiguriert und aktiv (LauncherView wartet darauf, bevor run
-            // läuft); FMOD startet in celeste_init.
-            // Lebenszyklus- und Audio-Signale ins Log (M4a.5c).
+            // The audio session is configured and active (LauncherView waits for it before run
+            // runs); FMOD starts in celeste_init.
+            // Lifecycle and audio signals into the log.
             CelesteProbe.LifecycleMonitor.shared.start()
-            // M4a.3: Celeste laden, Endbild in die Leinwand (ohne laufenden Tick), Freigabe; die
-            // Leinwand kommt aus prepareHost.
+            // Load Celeste, final image into the canvas (without a running tick), release; the
+            // canvas comes from prepareHost.
             if CelesteProbe.canvasTexture == nil {
                 c64Error("[c64-start] canvas missing (prepareHost), Celeste not started")
             } else {
@@ -211,8 +209,8 @@ enum GameStartup {
                 if result.ok, CelesteProbe.attachCanvasToGame() {
                     CelesteProbe.tickState.markReady()
                     #if DEBUG
-                    // M4b L6: der Leinwand-Schnappschuss nach 600 Ticks (Blit, waitUntilCompleted,
-                    // PNG in Documents, rund 100 ms auf dem Render-Thread) nur mit C64_SNAPSHOT=1.
+                    // the canvas snapshot after 600 ticks (blit, waitUntilCompleted, PNG in
+                    // Documents, about 100 ms on the render thread) only with C64_SNAPSHOT=1.
                     if HostEnvironment.string("C64_SNAPSHOT") == "1", let queue = CelesteProbe.commandQueue, let texture = CelesteProbe.canvasTexture {
                         CelesteProbe.tickState.enableSnapshot(queue: queue, texture: texture)
                     }
@@ -227,10 +225,10 @@ enum GameStartup {
         }
 
         #if DEBUG
-        // Kit-Testszenen hinter C64_KIT (Standard aus), auf dem Hauptthread vor der Schleife:
-        //   =1       K0: ganze Szene hier, SDL erzeugt Device und Queue selbst, SDL_Quit am Ende.
-        //   =inject  K1a: hier nur SDL_Init; die Szene läuft im Render-Thread vor dem ersten Frame.
-        //   =import  K1b, =multiview K2: hier nur SDL_Init; der Rest im Render-Thread.
+        // Kit test scenes behind C64_KIT (default off), on the main thread before the loop:
+        //   =1       basic: whole scene here, SDL creates device and queue itself, SDL_Quit at the end.
+        //   =inject  only SDL_Init here; the scene runs on the render thread before the first frame.
+        //   =import, =multiview: only SDL_Init here; the rest on the render thread.
         if let kitMode = KitProbe.mode {
             switch kitMode {
             case .basic:
@@ -248,19 +246,19 @@ enum GameStartup {
     }
 }
 
-/// Layer-Konfiguration. Gewählte Werte liest der Renderer über layerRenderer.configuration
-/// zurück und druckt sie in die Startzeile [c64-ctx].
+/// Layer configuration. The renderer reads the chosen values back through
+/// layerRenderer.configuration and prints them into the start line [c64-ctx].
 nonisolated struct ProbeLayerConfiguration: CompositorLayerConfiguration {
     func makeConfiguration(capabilities: LayerRenderer.Capabilities,
                            configuration: inout LayerRenderer.Configuration) {
         let environment = HostEnvironment.values
 
-        // Foveation an (Standard des Produkts, M4a.5b); C64_FOVEATION=0 schaltet sie aus.
+        // Foveation on (default of the product); C64_FOVEATION=0 turns it off.
         let foveation = environment["C64_FOVEATION"] != "0" && capabilities.supportsFoveation
         configuration.isFoveationEnabled = foveation
 
-        // Layout: Standard .layered (eine 2D-Array-Textur, Auge = Slice; Zielformat des Ports,
-        // weil Multiview eingeplant ist). Schalter C64_LAYOUT=dedicated für den Vergleich.
+        // Layout: default .layered (one 2D array texture, eye = slice; the format the stereo world
+        // pass requires, both views in one pass). Switch C64_LAYOUT=dedicated for comparison.
         let layoutOptions: LayerRenderer.Capabilities.SupportedLayoutsOptions = foveation ? [.foveationEnabled] : []
         let layouts = capabilities.supportedLayouts(options: layoutOptions)
         let wantDedicated = environment["C64_LAYOUT"] == "dedicated"
@@ -274,21 +272,22 @@ nonisolated struct ProbeLayerConfiguration: CompositorLayerConfiguration {
             configuration.layout = first
         }
 
-        // Render Quality: Obergrenze nur mit Foveation sinnvoll (Apple-Doku zu maxRenderQuality;
-        // both the limit here and the runtime value must be set). Standard 1,0, Schalter C64_RENDERQUALITY
-        // mit Wert 0..1; der Laufzeitwert wird im Renderer gesetzt (layer_renderer.h:230-232).
+        // Render quality: the upper limit is only meaningful with foveation (Apple documentation on
+        // maxRenderQuality; both the limit here and the runtime value must be set). Default 1.0,
+        // switch C64_RENDERQUALITY with a value 0..1; the runtime value is set in the renderer
+        // (layer_renderer.h:230-232).
         if foveation {
             let wanted = environment["C64_RENDERQUALITY"].flatMap({ Float($0) }) ?? Renderer.defaultRenderQuality
             configuration.maxRenderQuality = LayerRenderer.RenderQuality(max(0.0, min(1.0, wanted)))
         }
 
-        // Farbformat: 8 Bit sRGB, falls angeboten (geplantes Format des Ports), sonst Vorgabe.
+        // Colour format: 8-bit sRGB if offered (the port's format), otherwise the default.
         let colorFormats = capabilities.supportedColorFormats(options: [])
         if colorFormats.contains(.bgra8Unorm_srgb) {
             configuration.colorFormat = .bgra8Unorm_srgb
         }
 
-        // Tiefenformat: depth32Float, falls angeboten, sonst Vorgabe.
+        // Depth format: depth32Float if offered, otherwise the default.
         let depthFormats = capabilities.supportedDepthFormats
         if depthFormats.contains(.depth32Float) {
             configuration.depthFormat = .depth32Float

@@ -2,21 +2,21 @@
 //  ProbeLog.swift
 //  AvpCeleste64
 //
-//  Probe-Datei und die wenigen Fehlerzeilen für das Unified Log.
+//  Probe file and the few error lines for the unified log.
 //
-//  Schalten: Mit der Konfiguration Diagnostics (DIAGNOSTICS) ist die Probe an, sonst aus;
-//  C64_PROBE=on|off übersteuert beides. Mit Probe geht jede c64Record-Zeile in die Datei
-//  Library/Application Support/c64-probe.txt (der aktuelle Lauf); bei jedem Start rücken die
-//  vorigen Läufe zu c64-probe-1.txt bis c64-probe-4.txt, ältere werden gelöscht. Ohne Probe wird
-//  keine Datei angelegt und c64Record tut nichts. c64Error geht immer ins Unified Log (und mit
-//  Probe in die Datei); sonst schreibt nichts mehr ins Unified Log (In Console.app nach "c64-"
-//  filtern zeigt nur Fehler).
+//  Switching: with the configuration Diagnostics (DIAGNOSTICS) the probe is on, otherwise off;
+//  C64_PROBE=on|off overrides both. With the probe every c64Record line goes into the file
+//  Library/Application Support/c64-probe.txt (the current run); at every start the previous runs
+//  move to c64-probe-1.txt through c64-probe-4.txt, older ones are deleted. Without the probe no
+//  file is created and c64Record does nothing. c64Error always goes into the unified log (and
+//  with the probe into the file); nothing else writes to the unified log any more (filtering for
+//  "c64-" in Console.app shows only errors).
 //
-//  Jede Zeile geht mit einem ungepufferten write() direkt an den Kernel; damit überlebt sie
-//  einen SIGKILL (die Daten liegen im Seitencache und werden vom Kernel geschrieben), ohne dass
-//  der schreibende Thread auf den Datenträger wartet. M4b L4: das frühere fsync je Zeile lief
-//  auf dem Render-Thread und konnte dort Millisekunden kosten; ein verlorener Rest bliebe nur
-//  bei einem Kernel-Absturz oder Stromausfall, nicht beim Beenden durch das System.
+//  Every line goes straight to the kernel with an unbuffered write(); that way it survives a
+//  SIGKILL (the data sits in the page cache and is written by the kernel) without the writing
+//  thread waiting for the disk. The earlier fsync per line ran on the render thread and could
+//  cost milliseconds there; a lost remainder would only occur on a kernel panic or power loss,
+//  not when the system terminates the app.
 //
 
 import Darwin
@@ -24,8 +24,8 @@ import Foundation
 import Metal
 import os
 
-/// Umgebung des Prozesses, einmal gelesen: ProcessInfo.environment kopiert bei jedem Zugriff das
-/// ganze Wörterbuch; die Schalter des Hosts lesen deshalb alle aus dieser Kopie.
+/// Environment of the process, read once: ProcessInfo.environment copies the whole dictionary on
+/// every access; the host's switches therefore all read from this copy.
 nonisolated enum HostEnvironment {
     static let values: [String: String] = ProcessInfo.processInfo.environment
 
@@ -33,24 +33,24 @@ nonisolated enum HostEnvironment {
         values[key]
     }
 
-    /// Für die Startzeile: der Wert oder "-".
+    /// For the start line: the value or "-".
     static func text(_ key: String) -> String {
         values[key] ?? "-"
     }
 }
 
-/// Unified Log, Subsystem der App; nur noch Fehler (c64Error und c64Log.error).
+/// Unified log, subsystem of the app; errors only (c64Error and c64Log.error).
 nonisolated let c64Log = Logger(subsystem: "com.lowriderxr.Mountain64", category: "probe")
 
-/// Probe-Datei unter Library/Application Support (nicht in der Files-App sichtbar).
+/// Probe file under Library/Application Support (not visible in the Files app).
 nonisolated final class ProgressFile: @unchecked Sendable {
     static let shared = ProgressFile()
 
     static let fileName = "c64-probe.txt"
-    /// Vorige Läufe, die beim Start behalten werden (c64-probe-1.txt bis c64-probe-4.txt).
+    /// Previous runs kept at start (c64-probe-1.txt through c64-probe-4.txt).
     static let keptRuns = 4
 
-    /// Probe an: C64_PROBE=on|off entscheidet; ohne den Schalter die Konfiguration Diagnostics.
+    /// Probe on: C64_PROBE=on|off decides; without the switch the configuration Diagnostics.
     static let enabled: Bool = {
         switch HostEnvironment.string("C64_PROBE") {
         case "on": return true
@@ -78,12 +78,12 @@ nonisolated final class ProgressFile: @unchecked Sendable {
 
     private let lock = NSLock()
     private var fd: Int32 = -1
-    /// Dateien, die beim Start um eine Stelle gerückt sind (0 beim ersten Lauf).
+    /// Files that moved up one place at start (0 on the first run).
     private(set) var rotatedRuns = 0
 
     private init() {
         let fileManager = FileManager.default
-        // Alter Ablageort (Documents, in der Files-App sichtbar): beim Start löschen.
+        // Old location (Documents, visible in the Files app): delete at start.
         let legacy = fileManager.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent(Self.fileName)
         if fileManager.fileExists(atPath: legacy.path) {
             try? fileManager.removeItem(at: legacy)
@@ -91,7 +91,7 @@ nonisolated final class ProgressFile: @unchecked Sendable {
         guard Self.enabled else { return }
 
         try? fileManager.createDirectory(at: Self.directory, withIntermediateDirectories: true)
-        // Rotation: 4 löschen, 3 -> 4, 2 -> 3, 1 -> 2, aktuell -> 1.
+        // Rotation: delete 4, 3 -> 4, 2 -> 3, 1 -> 2, current -> 1.
         let oldest = Self.rotatedURL(Self.keptRuns)
         if fileManager.fileExists(atPath: oldest.path) {
             try? fileManager.removeItem(at: oldest)
@@ -113,12 +113,12 @@ nonisolated final class ProgressFile: @unchecked Sendable {
         if fd < 0 {
             c64Log.error("[c64-file] probe file not opened: \(path, privacy: .public) errno=\(errno)")
         }
-        // debugger= zeigt, ob der Lauf aus Xcode kam (der Debugger hält den Prozess im Hintergrund
-        // wach, Quinn, Apple DTS, Forum 796528).
+        // debugger= shows whether the run came from Xcode (the debugger keeps the process awake in
+        // the background, Quinn, Apple DTS, forum 796528).
         write("---- Start \(ISO8601DateFormatter().string(from: Date())) pid=\(getpid()) debugger=\(ProbeContext.debuggerAttached ? 1 : 0) rotated=\(rotatedRuns)")
     }
 
-    /// Schreibt eine Zeile ungepuffert an den Kernel (kein fsync, siehe Kopf der Datei).
+    /// Writes one line unbuffered to the kernel (no fsync, see the file header).
     func write(_ line: String) {
         lock.lock()
         defer { lock.unlock() }
@@ -135,20 +135,19 @@ nonisolated final class ProgressFile: @unchecked Sendable {
     }
 }
 
-/// Eine Zeile in die Probe-Datei; ohne Probe nichts.
+/// One line into the probe file; nothing without the probe.
 nonisolated func c64Record(_ line: String) {
     guard ProgressFile.enabled else { return }
     ProgressFile.shared.write(line)
 }
 
-/// Ein Fehler: immer ins Unified Log, mit Probe auch in die Datei.
+/// An error: always into the unified log, with the probe also into the file.
 nonisolated func c64Error(_ line: String) {
     c64Log.error("\(line, privacy: .public)")
     c64Record(line)
 }
 
-/// Kontext des Prozesses für die Startzeile: der Zustand wird gelesen, nicht angenommen
-/// (Arbeitsweise, Fehlerklasse 2b).
+/// Context of the process for the start line: the state is read, not assumed.
 nonisolated enum ProbeContext {
     static var buildConfiguration: String {
         #if DEBUG
@@ -164,7 +163,7 @@ nonisolated enum ProbeContext {
         HostEnvironment.text(key)
     }
 
-    /// Gerätemodell über sysctl hw.machine (etwa "RealityDevice14,1").
+    /// Device model via sysctl hw.machine (such as "RealityDevice14,1").
     static var hardwareMachine: String {
         var size = 0
         guard sysctlbyname("hw.machine", nil, &size, nil, 0) == 0, size > 0 else { return "?" }
@@ -177,9 +176,9 @@ nonisolated enum ProbeContext {
         ProcessInfo.processInfo.operatingSystemVersionString
     }
 
-    /// Hängt ein Debugger am Prozess? sysctl kern.proc.pid, Flag P_TRACED (Apple TN QA1361).
-    /// Gelesen, nicht angenommen: beim M2-Lauf von M4a.5c-4 war nicht erkennbar, ob er aus Xcode
-    /// oder vom Home-Bildschirm kam.
+    /// Is a debugger attached to the process? sysctl kern.proc.pid, flag P_TRACED (Apple TN QA1361).
+    /// Read, not assumed: in one run on the M2 it was not clear whether it came from Xcode or from
+    /// the home screen.
     static var debuggerAttached: Bool {
         var info = kinfo_proc()
         var size = MemoryLayout<kinfo_proc>.stride
@@ -198,8 +197,8 @@ nonisolated enum ProbeContext {
         case .rgba8Unorm: return "rgba8Unorm"
         case .rgba8Unorm_srgb: return "rgba8Unorm_srgb"
         case .rgba16Float: return "rgba16Float"
-        case .bgr10a2Unorm: return "bgr10a2Unorm"       // Rohwert 94 (MTLPixelFormat.h:114)
-        case .rgba16Unorm: return "rgba16Unorm"         // Rohwert 110 (MTLPixelFormat.h:172)
+        case .bgr10a2Unorm: return "bgr10a2Unorm"       // raw value 94 (MTLPixelFormat.h:114)
+        case .rgba16Unorm: return "rgba16Unorm"         // raw value 110 (MTLPixelFormat.h:172)
         case .depth32Float: return "depth32Float"
         case .depth16Unorm: return "depth16Unorm"
         case .depth32Float_stencil8: return "depth32Float_stencil8"
@@ -208,15 +207,15 @@ nonisolated enum ProbeContext {
         }
     }
 
-    /// Noch verfügbarer Speicher des Prozesses in MB (os_proc_available_memory: Abstand zur
-    /// Jetsam-Grenze der App). Referenz: Vice City stürzte auf der M5 bei 5,4 GB phys_footprint ab,
-    /// das Entwicklerforum nennt 5 GB pro App.
+    /// Memory still available to the process in MB (os_proc_available_memory: distance to the app's
+    /// jetsam limit). Reference: a comparable app crashed on the M5 at a phys_footprint of 5.4 GB,
+    /// the developer forum names 5 GB per app.
     static var availableMemoryMB: Double {
         Double(os_proc_available_memory()) / (1024 * 1024)
     }
 
-    /// Physischer Speicherbedarf des Prozesses in MB (task_info TASK_VM_INFO, phys_footprint),
-    /// dieselbe Grösse wie in Xcodes Speicheranzeige. 0 bei Fehler.
+    /// Physical memory footprint of the process in MB (task_info TASK_VM_INFO, phys_footprint), the
+    /// same quantity as Xcode's memory gauge. 0 on error.
     static var physFootprintMB: Double {
         var info = task_vm_info_data_t()
         var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<natural_t>.size)
@@ -241,12 +240,12 @@ nonisolated enum ProbeContext {
 }
 
 #if DEBUG
-/// Stall-Sequenz aus der Umgebungsvariablen C64_STALL_SEQ, Millisekunden mit Komma getrennt,
-/// Beispiel "500,1000,2000,5000". Nicht gesetzt oder leer: keine Stall-Probe. Nur in Debug-Builds.
+/// Stall sequence from the environment variable C64_STALL_SEQ, milliseconds separated by commas,
+/// example "500,1000,2000,5000". Unset or empty: no stall probe. Debug builds only.
 nonisolated enum StallPlan {
     static let environmentKey = "C64_STALL_SEQ"
 
-    /// Dauern in Sekunden.
+    /// Durations in seconds.
     static func fromEnvironment() -> [TimeInterval] {
         guard let raw = HostEnvironment.string(environmentKey), !raw.isEmpty else { return [] }
         return raw.split(separator: ",").compactMap { part in
