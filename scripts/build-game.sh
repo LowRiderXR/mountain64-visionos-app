@@ -192,7 +192,7 @@ if [[ "$MODE" == "mac-check" ]]; then
 
     # The frames through celeste_render_frame_vr with a host drawable (stereo world pass): the title
     # screen must still render into the canvas (return 0 every frame) with Celeste's own projection,
-    # so the dump must equal the --reverse-z run exactly (M4b.3a-N1).
+    # so the dump must equal the --reverse-z run exactly.
     VRF_LOG="$BUILD_DIR/mac-check-run-vrframe.log"
     echo "-- run with --vr-frame (celeste_render_frame_vr with a host drawable, log: $VRF_LOG)"
     DYLD_LIBRARY_PATH="$STAGE" "$BUILD_DIR/mac-check" "$DYLIB" "$STAGE" --vr-frame --dump "$BUILD_DIR/mac-check-canvas-vrframe" > "$VRF_LOG" 2>&1 || { echo "error: mac check vr-frame run failed (exit $?)" >&2; tail -30 "$VRF_LOG" >&2; exit 1; }

@@ -344,7 +344,7 @@ int main(int argc, char **argv)
         return 0;
     }
 
-    /* Host device and queue, as the visionOS host hands them to celeste_init (M1a.4). The canvas
+    /* Host device and queue, as the visionOS host hands them to celeste_init. The canvas
        is created on the same device, and the read-back runs on the same queue. */
     void *device = k6d_metal_device();
     void *queue = device ? k6d_metal_queue(device) : NULL;
@@ -404,7 +404,7 @@ int main(int argc, char **argv)
         vr_projection(g_frame.projection, 1.732f, 1.0f, 1.0f, 1.192f);
         vr_projection(g_frame.projection + 16, 1.0f, 1.732f, 1.0f, 1.192f);
         g_frame.near_meters = 0.1;
-        /* head pose (M4b.4): head at O, eyes 0.064 m apart, binocular culling from the union */
+        /* head pose: head at O, eyes 0.064 m apart, binocular culling from the union */
         for (int v = 0; v < 2; v++) {
             float *m = g_frame.view_transform + v * 16;
             m[0] = m[5] = m[10] = m[15] = 1.0f;

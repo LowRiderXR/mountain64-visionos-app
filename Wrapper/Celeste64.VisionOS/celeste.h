@@ -137,7 +137,7 @@ int32_t celeste_request_pause(void);
  * warning line. Call on the ticking thread, before the first update when possible. 0 or -1. */
 int32_t celeste_set_depth_near(double near_meters);
 
-/* Stereo world pass (M4b.3a): the frame data for celeste_render_frame_vr. Zero the struct, set
+/* Stereo world pass: the frame data for celeste_render_frame_vr. Zero the struct, set
  * size, then the fields. The textures are the host's drawable (compositor), 2D arrays with one
  * layer per view, colour BGRA8Unorm_sRGB (color_srgb 1) or RGBA8Unorm (0), depth Depth32Float;
  * usage must include RenderTarget. The host keeps them alive until the call returns and the
@@ -166,9 +166,9 @@ typedef struct celeste_vr_frame {
     int32_t physical_width;
     int32_t physical_height;
     float projection[32];             /* view 0: 0..15, view 1: 16..31 */
-    float view_transform[32];         /* O-from-eye per view (M4b.4): inverse(O) * anchor * views[i].transform */
+    float view_transform[32];         /* O-from-eye per view: inverse(O) * anchor * views[i].transform */
     double near_meters;               /* near plane of the layer in metres (as celeste_set_depth_near) */
-    /* Head pose (M4b.4), visionOS space (Y up, -Z forward, metres), relative to the host's
+    /* Head pose, visionOS space (Y up, -Z forward, metres), relative to the host's
      * reference O (position and yaw of the device anchor when the reference was set): */
     float head_transform[16];         /* O-from-anchor */
     float culling_projection[16];     /* binocular culling matrix (device space to clip, reverse-Z, widened tangents) */
@@ -185,7 +185,7 @@ typedef struct celeste_vr_frame {
  * frame after celeste_update, on the same thread. Needs reverse_z = 1 at celeste_init. */
 int32_t celeste_render_frame_vr(celeste_vr_frame *frame);
 
-/* Canvas (M4a, variant a): the game renders its final image into a texture the host owns
+/* Canvas: the game renders its final image into a texture the host owns
  * instead of the hidden window. mtl_texture is an id<MTLTexture> on the device the game's
  * SDL_GPU device uses: type 2D, pixel format RGBA8Unorm (the game's output is not sRGB-encoded
  * by Metal; sample it through an sRGB view if you need that), usage RenderTarget | ShaderRead,

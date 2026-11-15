@@ -6,7 +6,7 @@ visionOS solid image stack, and writes three layers per variant (Back, Middle, F
 circular composite preview. Pure Python (zlib PNG writer), no dependencies.
 
 usage: python3 scripts/icon/make-icons.py [outdir]   (default build/icon; the final variant is
-"nacht-schnee", whose three layers live in Assets.xcassets/AppIcon.solidimagestack)
+"night-snow", whose three layers live in Assets.xcassets/AppIcon.solidimagestack)
 """
 import math
 import os
@@ -155,8 +155,8 @@ def write_variant(name, back, middle, front):
     print("wrote", name)
 
 
-# ---------------------------------------------------------------- variant 1: Abend (dusk)
-def abend():
+# ---------------------------------------------------------------- variant 1: dusk
+def dusk():
     back = Grid()
     back.vgradient([(0, (36, 30, 78)), (24, (92, 60, 120)), (40, (214, 118, 96)), (52, (246, 190, 110)), (63, (246, 190, 110))])
     stars(back, [(10, 6, False), (22, 11, False), (40, 4, True), (52, 13, False), (31, 17, False), (57, 7, False), (6, 20, False)], (230, 226, 255), (255, 255, 255))
@@ -179,10 +179,10 @@ def abend():
     front.rect(0, 56, 63, 63, (40, 46, 84))
     front.rect(0, 56, 63, 56, (58, 66, 112))
     front.outline((20, 16, 48))
-    write_variant("abend", back, middle, front)
+    write_variant("dusk", back, middle, front)
 
 
-# ---------------------------------------------------------------- variant 1b: abend_schnee (dusk with snowfall)
+# ---------------------------------------------------------------- variant 1b: dusk_snow (dusk with snowfall)
 def flakes(g, seeds, c, big=False):
     """Snowflakes: single pixels, or a 2x2 block with a plus for the near layer."""
     for x, y in seeds:
@@ -195,9 +195,9 @@ def flakes(g, seeds, c, big=False):
             g.set(x, y, c)
 
 
-def abend_schnee():
+def dusk_snow():
     back = Grid()
-    # a shade cooler and paler than "abend": overcast dusk
+    # a shade cooler and paler than "dusk": overcast dusk
     back.vgradient([(0, (44, 38, 92)), (24, (100, 70, 132)), (40, (206, 124, 110)), (52, (240, 190, 130)), (63, (240, 190, 130))])
     stars(back, [(10, 6, False), (40, 4, True), (57, 7, False)], (230, 226, 255), (255, 255, 255))
     back.disc(51, 27, 6, (255, 226, 150))
@@ -227,10 +227,10 @@ def abend_schnee():
     front.outline((22, 18, 52))
     # near flakes: large, in front of everything (the layer with the strongest parallax)
     flakes(front, [(5, 6), (16, 14), (26, 4), (44, 8), (56, 18), (9, 30), (37, 24), (60, 40), (22, 44), (48, 48), (3, 46)], (255, 255, 255, 255), big=True)
-    write_variant("abend-schnee", back, middle, front)
+    write_variant("dusk-snow", back, middle, front)
 
-# ---------------------------------------------------------------- variant 2: Nacht (night)
-def nacht():
+# ---------------------------------------------------------------- variant 2: night
+def night():
     back = Grid()
     back.vgradient([(0, (8, 10, 32)), (32, (18, 24, 64)), (63, (34, 44, 96))])
     stars(back, [(8, 8, False), (18, 14, True), (28, 6, False), (37, 12, False), (46, 5, False), (55, 16, True),
@@ -254,7 +254,7 @@ def nacht():
     front.rect(16, 53, 17, 54, (255, 200, 90))
     front.rect(0, 56, 63, 63, (24, 30, 64))
     front.outline((8, 8, 28))
-    write_variant("nacht", back, middle, front)
+    write_variant("night", back, middle, front)
 
 
 # ---------------------------------------------------------------- variant 3: Celeste palette (teal and pink)
@@ -293,11 +293,11 @@ def minimal():
     write_variant("minimal", back, middle, front)
 
 
-# ---------------------------------------------------------------- final: nacht_schnee (night with snowfall)
+# ---------------------------------------------------------------- final: night_snow (night with snowfall)
 # Layers as agreed: Back = sky, moon, far ridge (opaque, edge to edge); Middle = the main peak with
 # its snow cap and outline; Front = the side peak on the right, the snowy ground and the flakes
 # (they float in front of everything). No glow around the moon (the system adds shine and shadow).
-def nacht_schnee():
+def night_snow():
     back = Grid()
     back.vgradient([(0, (8, 10, 34)), (28, (16, 22, 60)), (48, (30, 40, 92)), (63, (38, 50, 106))])
     stars(back, [(8, 8, False), (18, 14, True), (28, 6, False), (37, 12, False), (46, 5, False), (58, 22, False),
@@ -333,12 +333,12 @@ def nacht_schnee():
     front.outline((8, 8, 30))
     # flakes: 2x2 with pixel arms, nine of them, spread so the circle stays calm
     flakes(front, [(6, 10), (20, 6), (44, 7), (57, 16), (10, 30), (38, 24), (60, 38), (24, 46), (48, 50)], (255, 255, 255, 255), big=True)
-    write_variant("nacht-schnee", back, middle, front)
+    write_variant("night-snow", back, middle, front)
 
-# ---------------------------------------------------------------- abend_schnee_ohne (dusk with snow, without sun and moon)
-# Same layer split as nacht_schnee (Back sky and far ridge, Middle main peak, Front side peak,
+# ---------------------------------------------------------------- dusk_snow_no_sun_moon (dusk with snow, without sun and moon)
+# Same layer split as night_snow (Back sky and far ridge, Middle main peak, Front side peak,
 # ground and flakes), dusk palette, no sun and no moon: the sky gradient alone carries the light.
-def abend_schnee_ohne():
+def dusk_snow_no_sun_moon():
     back = Grid()
     back.vgradient([(0, (40, 34, 88)), (20, (96, 64, 130)), (36, (196, 118, 118)), (48, (240, 186, 132)), (63, (246, 204, 150))])
     stars(back, [(10, 6, False), (40, 4, True), (57, 7, False), (24, 12, False), (50, 15, False), (6, 18, False)], (230, 226, 255), (255, 255, 255))
@@ -366,12 +366,12 @@ def abend_schnee_ohne():
     front.rect(0, 56, 63, 56, (244, 246, 255))
     front.outline((22, 18, 52))
     flakes(front, [(6, 10), (20, 6), (44, 7), (57, 16), (10, 30), (38, 24), (60, 38), (24, 46), (48, 50)], (255, 255, 255, 255), big=True)
-    write_variant("abend-schnee-ohne", back, middle, front)
+    write_variant("dusk-snow-no-sun-moon", back, middle, front)
 
-# ---------------------------------------------------------------- abend_schnee_v2 (dusk with snow, after the reference picture)
-# Like abend_schnee_ohne, but after the reference picture: a large snow cap with a darker right
+# ---------------------------------------------------------------- dusk_snow_v2 (dusk with snow, after the reference picture)
+# Like dusk_snow_no_sun_moon, but after the reference picture: a large snow cap with a darker right
 # half, a higher lavender far ridge with its own snow, a pale ground and twelve flakes.
-def abend_schnee_v2():
+def dusk_snow_v2():
     back = Grid()
     back.vgradient([(0, (54, 42, 102)), (16, (84, 58, 126)), (30, (138, 78, 138)), (40, (196, 104, 130)), (48, (236, 140, 116)), (63, (246, 176, 128))])
     stars(back, [(10, 6, False), (40, 4, True), (24, 12, False), (50, 15, False), (6, 18, False), (58, 24, False), (34, 20, False), (16, 28, False)],
@@ -411,15 +411,15 @@ def abend_schnee_v2():
     front.outline((24, 18, 56))
     flakes(front, [(6, 10), (20, 6), (36, 4), (46, 8), (57, 16), (10, 30), (33, 22), (52, 30), (60, 40), (24, 46), (46, 50), (4, 48)],
            (255, 255, 255, 255), big=True)
-    write_variant("abend-schnee-v2", back, middle, front)
+    write_variant("dusk-snow-v2", back, middle, front)
 
 if __name__ == "__main__":
     os.makedirs(OUT, exist_ok=True)
-    abend()
-    abend_schnee()
-    nacht()
+    dusk()
+    dusk_snow()
+    night()
     teal()
     minimal()
-    nacht_schnee()
-    abend_schnee_ohne()
-    abend_schnee_v2()
+    night_snow()
+    dusk_snow_no_sun_moon()
+    dusk_snow_v2()
