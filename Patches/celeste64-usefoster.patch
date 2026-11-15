@@ -1,12 +1,12 @@
 diff --git a/Celeste64.csproj b/Celeste64.csproj
-index d210edd..a606f34 100644
+index d210edd..addee19 100644
 --- a/Celeste64.csproj
 +++ b/Celeste64.csproj
 @@ -12,12 +12,43 @@
      <SelfContained>true</SelfContained>
    </PropertyGroup>
  
-+  <!-- visionOS kit (K6b): UseLocalFoster=true references the fork foster-visionos as a project
++  <!-- visionOS kit: UseLocalFoster=true references the fork foster-visionos as a project
 +       instead of the NuGet package; UseKitSDL=true additionally ships the SDL built by
 +       scripts/build-sdl3.sh instead of the SDL inside Foster. Both default to off, so the
 +       reference build is unchanged. Paths come from properties or environment variables
@@ -1543,7 +1543,7 @@ index dd52d78..5560c9d 100644
  		Model.Flags = ModelFlags.Default | ModelFlags.Silhouette;
  		Hair.Flags = ModelFlags.Default | ModelFlags.Silhouette;
 diff --git a/Source/Actors/Snow.cs b/Source/Actors/Snow.cs
-index 623a700..2b52833 100644
+index 623a700..cdaac15 100644
 --- a/Source/Actors/Snow.cs
 +++ b/Source/Actors/Snow.cs
 @@ -20,16 +20,31 @@ public class Snow : Actor, IHaveSprites
@@ -1551,7 +1551,7 @@ index 623a700..2b52833 100644
  	public void CollectSprites(List<Sprite> populate)
  	{
 +#if VISIONOS_KIT
-+		// visionOS port (M4b.4): snow around the viewer (the head in a stereo frame)
++		// visionOS port: snow around the viewer (the head in a stereo frame)
 +		var cameraPosition = World.Camera.ViewPosition;
 +		var cameraFrustum = World.Camera.Frustum;
 +		var cammeraNormal = World.Camera.ViewForward;
@@ -1563,7 +1563,7 @@ index 623a700..2b52833 100644
 +		var area = 100;
  		var box = cameraFrustum.GetBoundingBox();
 +#if VISIONOS_KIT
-+		// visionOS port (M4b.4-N1): without a far plane the frustum's box spans the whole world and
++		// visionOS port: without a far plane the frustum's box spans the whole world and
 +		// the cell loop below would run for ever (8e12 cells at far 1e6). The snow itself reaches
 +		// 300 units around the viewer and 200 units below it (the distance checks in the loop),
 +		// so the box is clamped to that range; cells outside it never produce a sprite anyway.
@@ -1580,7 +1580,7 @@ index 623a700..2b52833 100644
  		var time = World.GeneralTimer;
  
 diff --git a/Source/Audio/Audio.cs b/Source/Audio/Audio.cs
-index bbbc4b0..595e068 100644
+index bbbc4b0..f13ee2c 100644
 --- a/Source/Audio/Audio.cs
 +++ b/Source/Audio/Audio.cs
 @@ -65,6 +65,10 @@ public static class Audio
@@ -1608,7 +1608,7 @@ index bbbc4b0..595e068 100644
 -		attr.position.y = camera.Position.Y;
 -		attr.position.z = camera.Position.Z;
 +#if VISIONOS_KIT
-+		// visionOS port (M4b.4): the listener is the viewer (the head in a stereo frame)
++		// visionOS port: the listener is the viewer (the head in a stereo frame)
 +		var forward = camera.ViewForward;
 +		var up = camera.ViewUp;
 +		var position = camera.ViewPosition;
@@ -1749,7 +1749,7 @@ index f2ba5d0..9814c98 100644
  		Audio.SetVCAVolume("vca:/sfx", Calc.Clamp(SfxVolume / 10.0f, 0, 1));
  	}
 diff --git a/Source/Game.cs b/Source/Game.cs
-index 312df59..dce1ed3 100644
+index 312df59..962e25b 100644
 --- a/Source/Game.cs
 +++ b/Source/Game.cs
 @@ -22,6 +22,11 @@ public struct Transition
@@ -1799,7 +1799,7 @@ index 312df59..dce1ed3 100644
  	public Game(AppConfig config) : base(config)
  	{
 +#if VISIONOS_KIT
-+		// visionOS-Port (K6d.2): Kantenglättung des Welt-Ziels per Schalter C64_MSAA (1, 2, 4, 8)
++		// visionOS port: anti-aliasing of the world target through the switch C64_MSAA (1, 2, 4, 8)
 +		target = VisionOSKit.CreateMainTarget(GraphicsDevice, Width, Height);
 +#else
  		target = new(GraphicsDevice, Width, Height, [TextureFormat.Color, TextureFormat.Depth16]);
@@ -1870,14 +1870,14 @@ index 312df59..dce1ed3 100644
 -		Window.Clear(Color.Black);
 -
 -		if (transitionStep != TransitionStep.Perform && transitionStep != TransitionStep.Hold)
-+		// visionOS-Port (K6d): das Endbild geht in die Ausgabeziele des Hosts statt ins Fenster,
-+		// ein Durchgang pro Ziel (eine Schicht pro Ziel); ohne Host bleibt es das Fenster
++		// visionOS port: the final image goes to the host's output targets instead of the window,
++		// one pass per target (one layer per target); without a host it stays the window
 +#if VISIONOS_KIT
 +		var outputs = VisionOSKit.Outputs ?? [Window];
 +#else
 +		IDrawableTarget[] outputs = [Window];
 +#endif
-+		// Ausserhalb der Zeichenphase nur leeren; sonst leert jedes Ziel sein eigener Pass unten
++		// Outside the draw phase only clear; otherwise each target is cleared by its own pass below
 +		if (transitionStep == TransitionStep.Perform || transitionStep == TransitionStep.Hold)
 +		{
 +			foreach (var output in outputs)
@@ -1915,7 +1915,7 @@ index 312df59..dce1ed3 100644
 +			if (VisionOSKit.FrameRendered)
  			{
 -				var scale = Math.Min(Window.WidthInPixels / (float)target.Width, Window.HeightInPixels / (float)target.Height);
-+				// stereo frame (M4b.3a): World wrote the host's drawable; the host shows it, not the
++				// stereo frame: World wrote the host's drawable; the host shows it, not the
 +				// canvas, so the output pass is skipped (the wipe over the 2D target is not shown)
 +				VisionOSKit.AfterRender?.Invoke();
 +				return;
@@ -1924,7 +1924,7 @@ index 312df59..dce1ed3 100644
 +
 +			// draw the target to the window (or to each output of the host): one pass per
 +			// output, clear of color and depth and the final image in the same pass, so that
-+			// memoryless targets (K6d.3) never have to load
++			// memoryless targets never have to load
 +			foreach (var output in outputs)
 +			{
 +#if VISIONOS_KIT
@@ -1953,7 +1953,7 @@ index 312df59..dce1ed3 100644
  
  	private FMOD.RESULT MusicTimelineCallback(FMOD.Studio.EVENT_CALLBACK_TYPE type, IntPtr _event, IntPtr parameters)
 diff --git a/Source/Graphics/Camera.cs b/Source/Graphics/Camera.cs
-index e184bbf..41a8d39 100644
+index e184bbf..fd67a49 100644
 --- a/Source/Graphics/Camera.cs
 +++ b/Source/Graphics/Camera.cs
 @@ -14,6 +14,13 @@ public struct Camera()
@@ -1962,7 +1962,7 @@ index e184bbf..41a8d39 100644
  	private Matrix? viewProjection;
 +#if VISIONOS_KIT
 +	private Matrix? viewProjectionEye1;
-+	// stereo (M4b.4): matrices from the head pose, dropped when the pose version changes
++	// stereo: matrices from the head pose, dropped when the pose version changes
 +	private int stereoVersion = -1;
 +	private Matrix? stereoView0, stereoView1, stereoWorldFromHead;
 +	private BoundingFrustum? stereoFrustum;
@@ -2013,7 +2013,7 @@ index e184bbf..41a8d39 100644
  		get
  		{
 +#if VISIONOS_KIT
-+			// visionOS port (M4b.4): the stereo world renders with the left eye's view, the game
++			// visionOS port: the stereo world renders with the left eye's view, the game
 +			// camera gives only position and yaw
 +			if (StereoActive)
 +				return ViewProjectionFor(0);
@@ -2039,7 +2039,7 @@ index e184bbf..41a8d39 100644
 +	}
 +
 +	/// <summary>
-+	/// visionOS port (M4b.4): the head pose applies to this camera: a pose exists, the target is
++	/// visionOS port: the head pose applies to this camera: a pose exists, the target is
 +	/// the stereo world's (A or a drawable) and the selftest does not pin the game camera.
 +	/// </summary>
 +	private readonly bool StereoActive
@@ -2070,7 +2070,7 @@ index e184bbf..41a8d39 100644
 +	}
 +
 +	/// <summary>
-+	/// visionOS port (M4b.4): view of one eye. With the head pose: inverse of world-from-eye
++	/// visionOS port: view of one eye. With the head pose: inverse of world-from-eye
 +	/// (eye relative to O, converted on this camera's base); otherwise the game camera's view.
 +	/// </summary>
 +	public Matrix ViewFor(int eye)
@@ -2120,7 +2120,7 @@ index e184bbf..41a8d39 100644
 +	}
 +
 +	/// <summary>
-+	/// visionOS port (M4b.4): where the viewer is: the head in Celeste's world with the head
++	/// visionOS port: where the viewer is: the head in Celeste's world with the head
 +	/// pose, else the game camera. For sorting, the sky dome, snow, particles and the listener;
 +	/// the player's input stays relative to <see cref="Position"/>.
 +	/// </summary>
@@ -2135,7 +2135,7 @@ index e184bbf..41a8d39 100644
 +		}
 +	}
 +
-+	/// <summary>visionOS port (M4b.4): the viewer's forward (head with the head pose, else the game camera).</summary>
++	/// <summary>visionOS port: the viewer's forward (head with the head pose, else the game camera).</summary>
 +	public Vec3 ViewForward
 +	{
 +		get
@@ -2147,7 +2147,7 @@ index e184bbf..41a8d39 100644
 +		}
 +	}
 +
-+	/// <summary>visionOS port (M4b.4): the viewer's up (head with the head pose, else the game camera).</summary>
++	/// <summary>visionOS port: the viewer's up (head with the head pose, else the game camera).</summary>
 +	public Vec3 ViewUp
 +	{
 +		get
@@ -2174,7 +2174,7 @@ index e184bbf..41a8d39 100644
 +				// the camera of the stereo world the shape is the union of both eyes (this camera's view).
 +				if (StereoActive)
 +				{
-+					// M4b.4: the head's view times the host's binocular culling matrix (both eyes,
++					// with the head pose: the head's view times the host's binocular culling matrix (both eyes,
 +					// widened tangents), with a finite far plane; also used by the update of the
 +					// next frame (the pose of the previous frame on the current camera base)
 +					EnsureStereoCache();
@@ -2236,7 +2236,7 @@ index 8a0a397..038d2c5 100644
  			// don't let the hair cross the forward boundary (intersects face)
  			var dist = Utils.DistanceToPlane(nodes[i], plane);
 diff --git a/Source/Graphics/ParticleSystem.cs b/Source/Graphics/ParticleSystem.cs
-index f67add2..2ae99a8 100644
+index f67add2..ebf5156 100644
 --- a/Source/Graphics/ParticleSystem.cs
 +++ b/Source/Graphics/ParticleSystem.cs
 @@ -75,7 +75,12 @@ public class ParticleSystem
@@ -2244,7 +2244,7 @@ index f67add2..2ae99a8 100644
  	public void CollectSprites(Vec3 source, World world, List<Sprite> populate)
  	{
 +#if VISIONOS_KIT
-+		// visionOS port (M4b.4): distance from the viewer (the head in a stereo frame)
++		// visionOS port: distance from the viewer (the head in a stereo frame)
 +		if ((world.Camera.ViewPosition - source).LengthSquared() > MaximumDistance * MaximumDistance)
 +#else
  		if ((world.Camera.Position - source).LengthSquared() > MaximumDistance * MaximumDistance)
@@ -2522,7 +2522,7 @@ index 7a5517e..da0c59f 100644
  	public static void Text(Batcher batch, string text, in Vec2 at, in Vec2 justify, in Color color)
  	{
 diff --git a/Source/Program.cs b/Source/Program.cs
-index b06f359..73ff61f 100644
+index b06f359..a17bffa 100644
 --- a/Source/Program.cs
 +++ b/Source/Program.cs
 @@ -24,6 +24,23 @@ class Program
@@ -2530,7 +2530,7 @@ index b06f359..73ff61f 100644
  		// try
  		{
 +#if VISIONOS_KIT
-+			// visionOS-Port (K6b): Schalter C64_DEPTH_CLIP und C64_GPU_TIMING, siehe VisionOSKit.cs
++			// visionOS port: switches C64_DEPTH_CLIP and C64_GPU_TIMING, see VisionOSKit.cs
 +			var kitProperties = VisionOSKit.CreateDeviceProperties();
 +			using var game = new Game(new(
 +				ApplicationName: Game.GamePath,
@@ -2665,7 +2665,7 @@ index 33da870..788a543 100644
  
  			if (easing < 1)
 diff --git a/Source/Scenes/World.cs b/Source/Scenes/World.cs
-index bdfb740..218dcf4 100644
+index bdfb740..2b1f0dc 100644
 --- a/Source/Scenes/World.cs
 +++ b/Source/Scenes/World.cs
 @@ -70,9 +70,20 @@ public class World : Scene
@@ -2811,7 +2811,7 @@ index bdfb740..218dcf4 100644
  		debugRndTimer.Restart();
 +#if VISIONOS_KIT
 +		// visionOS port: depth clear and compares follow the depth convention (reverse-Z: 0, Greater).
-+		// Stereo frame (M4b.3a): the 3D passes render into the intermediate array A (both views in
++		// Stereo frame: the 3D passes render into the intermediate array A (both views in
 +		// one pass), the edge pass copies it into the host's drawable, sprites and transparent
 +		// models follow into the drawable; the 2D UI stays off until the HUD layer exists.
 +		var vr = VisionOSKit.Frame;
@@ -2849,7 +2849,7 @@ index bdfb740..218dcf4 100644
  
  			// sort models by distance (for transparency)
 +#if VISIONOS_KIT
-+			// visionOS port (M4b.4): sort by the viewer's position (the head in a stereo frame)
++			// visionOS port: sort by the viewer's position (the head in a stereo frame)
 +			var viewPosition = Camera.ViewPosition;
 +			models.Sort((a, b) =>
 +				(int)((b.Actor.Position - viewPosition).LengthSquared() -
@@ -2867,7 +2867,7 @@ index bdfb740..218dcf4 100644
  		// draw the skybox first
  		{
 +#if VISIONOS_KIT
-+			// visionOS port (M4b.4): the sky dome is centred on the viewer (the head in a stereo frame)
++			// visionOS port: the sky dome is centred on the viewer (the head in a stereo frame)
 +			var shift = Camera.ViewPosition;
 +#else
  			var shift = new Vec3(Camera.Position.X, Camera.Position.Y, Camera.Position.Z);
@@ -3005,7 +3005,7 @@ index bdfb740..218dcf4 100644
 +		if (vr != null)
 +		{
 +			// stereo frame: sprites and transparent models submitted with the frame's final flush;
-+			// no 2D UI (M4b.3b)
++			// no 2D UI
 +			// pause panel: the UI layer as a quad in the world, after the sprites, always on top
 +			if (uiLayerActive)
 +				DrawUiDim(vr);
@@ -3624,17 +3624,17 @@ index 650a35e..68b1c05 100644
  	private const float EaseClosePercent = 0.3f; // how long (in percent) it eases the entire screen
 diff --git a/Source/VisionOSKit.cs b/Source/VisionOSKit.cs
 new file mode 100644
-index 0000000..48b970b
+index 0000000..b56dc90
 --- /dev/null
 +++ b/Source/VisionOSKit.cs
 @@ -0,0 +1,1497 @@
 +#if VISIONOS_KIT
-+// VisionOSKit.cs — Schalter des visionOS-Ports für Mac-Läufe (K6b, nur mit UseLocalFoster gebaut).
++// VisionOSKit.cs — switches of the visionOS port for Mac runs (only built with UseLocalFoster).
 +//
-+//   C64_GPU_TIMING=1  Celeste gibt Foster den Completion-Rückruf des SDL_GPU-Kits mit (K4a) und
-+//                     loggt einmal pro Sekunde die Zahl der fertigen Command Buffer. Nur, wenn das
-+//                     Kit-SDL geladen ist (statische Prüfung); sonst eine Logzeile «Kit fehlt».
-+//   C64_DEPTH_CLIP=1  schaltet Fosters Depth-Clip-Schalter ein (F7).
++//   C64_GPU_TIMING=1  Celeste passes the completion callback of the SDL_GPU kit to Foster and
++//                     logs the number of completed command buffers once per second. Only when the
++//                     kit SDL is loaded (static check); otherwise one log line that the kit is missing.
++//   C64_DEPTH_CLIP=1  turns on Foster's depth clip flag.
 +
 +using System.Diagnostics;
 +using System.Runtime.CompilerServices;
@@ -3667,13 +3667,13 @@ index 0000000..48b970b
 +	/// </summary>
 +	public static int EdgeLineWidth { get; set; } = 1;
 +
-+	/// <summary>Zusatz-Flags für die AppConfig aus den Umgebungsvariablen.</summary>
++	/// <summary>Additional flags for the AppConfig from the environment variables.</summary>
 +	public static AppFlags Flags
 +		=> Environment.GetEnvironmentVariable("C64_DEPTH_CLIP") == "1" ? AppFlags.DepthClip : AppFlags.None;
 +
 +	/// <summary>
-+	/// Properties für die Device-Erzeugung (0 = keine). Der Rückruf ist ein unmanaged
-+	/// Funktionszeiger ohne Delegate, deshalb AOT-fähig und ohne Lebensdauerfrage.
++	/// Properties for the device creation (0 = none). The callback is an unmanaged function
++	/// pointer without a delegate, so it is AOT-capable and raises no lifetime question.
 +	/// </summary>
 +	public static uint CreateDeviceProperties()
 +	{
@@ -3701,28 +3701,28 @@ index 0000000..48b970b
 +		Interlocked.Increment(ref completedTotal);
 +	}
 +
-+	/// <summary>Anzahl der bisher fertigen Command Buffer (für Hosts wie Celeste64.MacHost).</summary>
++	/// <summary>Number of command buffers completed so far (for hosts like Celeste64.MacHost).</summary>
 +	public static long CompletedTotal => Interlocked.Read(ref completedTotal);
 +
 +	/// <summary>
-+	/// Ausgabeziele für das Endbild statt des Fensters (K6d, F3): ein Durchgang pro Ziel, also
-+	/// zum Beispiel ein Target pro Drawable-Schicht. null = Fenster wie bisher.
++	/// Output targets for the final image instead of the window: one pass per target, for
++	/// example one target per drawable layer. null = the window as before.
 +	/// </summary>
 +	public static IReadOnlyList<IDrawableTarget>? Outputs { get; set; }
 +
-+	/// <summary>Wird am Ende von Game.Render aufgerufen; der Host zeichnet damit eine Vorschau ins Fenster.</summary>
++	/// <summary>Called at the end of Game.Render; the host draws a preview into the window with it.</summary>
 +	public static Action? AfterRender { get; set; }
 +
 +	/// <summary>
-+	/// Wird pro Ausgabeziel nach dem Endbild aufgerufen, solange dessen Pass noch offen ist; der
-+	/// Host kann im selben Pass weiterzeichnen (K6d.3: Test-Viereck in memoryless-Ziele).
++	/// Called per output target after the final image while its pass is still open; the host
++	/// can keep drawing in the same pass (test quad into memoryless targets).
 +	/// </summary>
 +	public static Action<IDrawableTarget>? AfterOutput { get; set; }
 +
-+	/// <summary>Wird nach dem Rendern der Szene ins Welt-Ziel aufgerufen (vor der Ausgabe); der Host liest es zurück.</summary>
++	/// <summary>Called after the scene was rendered into the world target (before the output); the host reads it back.</summary>
 +	public static Action<Target>? AfterSceneRender { get; set; }
 +
-+	/// <summary>Kantenglättung des Welt-Ziels aus C64_MSAA (1, 2, 4, 8; Standard 1).</summary>
++	/// <summary>Anti-aliasing of the world target from C64_MSAA (1, 2, 4, 8; default 1).</summary>
 +	public static SampleCount TargetSampleCount => Environment.GetEnvironmentVariable("C64_MSAA") switch
 +	{
 +		"2" => SampleCount.Two,
@@ -3732,8 +3732,8 @@ index 0000000..48b970b
 +	};
 +
 +	/// <summary>
-+	/// Welt-Ziel (Farbe und Tiefe) mit der Kantenglättung aus C64_MSAA. Celeste rendert
-+	/// mehrere Pässe in dieses Ziel und sampelt seine Tiefe im Kantenpass (World.cs:874).
++	/// World target (colour and depth) with the anti-aliasing from C64_MSAA. Celeste renders
++	/// several passes into this target and samples its depth in the edge pass (World.cs:874).
 +	/// Reverse-Z path: Depth32 (float) instead of Depth16, because near / distance needs the
 +	/// float range (the sky at 3 km is 3e-5, two steps of a 16-bit depth) and the device
 +	/// drawables are depth32Float as well.
@@ -3743,9 +3743,9 @@ index 0000000..48b970b
 +		var samples = TargetSampleCount;
 +		if (samples != SampleCount.One)
 +			Log.Info($"[c64-msaa] Welt-Ziel {width}x{height} mit {samples} ({device.Capabilities})");
-+		// Celeste rendert in Standard-Z (nah = klein): Tiefenauflösung mit Min, damit Kantenpixel am
-+		// Vordergrund hängen; die Samples bleiben gespeichert (MultiSampleStore), weil spätere
-+		// Pässe (Rückkopie, Sprites, Erdbeere) das Ziel laden. Reverse-Z: nah = gross, also Max.
++		// Celeste renders in standard Z (near = small): depth resolve with Min so that edge pixels
++		// stick to the foreground; the samples stay stored (MultiSampleStore) because later
++		// passes (copy back, sprites, strawberry) load the target. Reverse-Z: near = large, so Max.
 +		var depthFormat = ReverseZ ? TextureFormat.Depth32 : TextureFormat.Depth16;
 +		var depthResolve = ReverseZ ? DepthResolveFilter.Max : DepthResolveFilter.Min;
 +		MainTarget = new Target(device, width, height, [(TextureFormat.Color, TextureFlags.None, samples), (depthFormat, TextureFlags.None, samples)],
@@ -3772,7 +3772,7 @@ index 0000000..48b970b
 +	/// </summary>
 +	public static bool ReverseZ { get; set; }
 +
-+	/// <summary>World units per metre (M4b decision: 10). C64_WORLD_SCALE overrides it for experiments.</summary>
++	/// <summary>World units per metre (10). C64_WORLD_SCALE overrides it for experiments.</summary>
 +	public static float WorldScale { get; } =
 +		float.TryParse(Environment.GetEnvironmentVariable("C64_WORLD_SCALE"), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var scale) && scale > 0 ? scale : 10f;
 +
@@ -3943,7 +3943,7 @@ index 0000000..48b970b
 +	public static long WorldCommitTicks { get; private set; }
 +
 +	/// <summary>
-+	/// No far limit on the reverse-Z path (the default since M4b.4-N1: no fade, no discard,
++	/// No far limit on the reverse-Z path (the default: no fade, no discard,
 +	/// culling without a far plane; the game's far plane only decided by view depth, so distant
 +	/// objects popped in when the head turned). C64_FAR=800 restores the reference limit.
 +	/// </summary>
@@ -4017,7 +4017,7 @@ index 0000000..48b970b
 +	private static Texture[] worldTextures = [];
 +	private static readonly List<(nint Color, nint Depth)> expiredImports = [];
 +
-+	// ---- Stereo world pass into the host's drawable (M4b.3a) ----
++	// ---- Stereo world pass into the host's drawable ----
 +	//
 +	// The host hands over its drawable (colour and depth as 2D arrays with one layer per eye),
 +	// the compositor's rasterization rate map and one reverse-Z projection per eye. World renders
@@ -4040,7 +4040,7 @@ index 0000000..48b970b
 +		public nint RateMap;
 +	}
 +
-+	// ---- Head pose (M4b.4) ----
++	// ---- Head pose ----
 +	//
 +	// The host hands over the eye and head transforms relative to its reference O (position and
 +	// yaw of the device anchor at the reference time) in visionOS space (Y up, -Z forward,
@@ -4066,7 +4066,7 @@ index 0000000..48b970b
 +	/// <summary>The head pose of the last stereo frame (null before the first); the camera of the world uses it.</summary>
 +	public static StereoPose? StereoSession { get; private set; }
 +
-+	/// <summary>Diagnostics C64_MATRIX_SELFTEST: identity (game camera for both eyes, the M4b.3a image), shift (head 0.5 m to the right), none.</summary>
++	/// <summary>Diagnostics C64_MATRIX_SELFTEST: identity (game camera for both eyes, the image without a head pose), shift (head 0.5 m to the right), none.</summary>
 +	public static string MatrixSelftest { get; } = Environment.GetEnvironmentVariable("C64_MATRIX_SELFTEST") switch
 +	{
 +		"identity" => "identity",
@@ -4296,7 +4296,7 @@ index 0000000..48b970b
 +	/// UI switches, read once from the environment; the static constructor logs the values.
 +	/// C64_UI: 1 (default) or 0 (no 2D in the stereo world, the fallback). C64_UI_DIST: distance
 +	/// of the panel in metres (default 2). C64_UI_FOV: angular width of the UI layer in degrees
-+	/// (default 50, like the canvas of M4a; the height follows the layer's aspect ratio).
++	/// (default 50, like the 2D canvas; the height follows the layer's aspect ratio).
 +	/// </summary>
 +	public static class Ui
 +	{
@@ -4310,7 +4310,7 @@ index 0000000..48b970b
 +		/// left of and above the gaze (defaults 16 and 11, chosen on the device: the layer's corner at
 +		/// 24.7 degrees was blurred, 12 and 9 lay too far into the picture). The foveation is fixed to
 +		/// the head, so a head-locked element at the corner sits for good in the zone with a third of
-+		/// the pixel density (M4a.4b: 0.33 at 25 degrees, 1.0 in the centre). `off` keeps the original
++		/// the pixel density (measured on the device: 0.33 at 25 degrees, 1.0 in the centre). `off` keeps the original
 +		/// corner. The pause keeps the original positions.
 +		/// </summary>
 +		public static readonly bool HudInset;
@@ -4379,7 +4379,7 @@ index 0000000..48b970b
 +
 +		/// <summary>
 +		/// Rough pixel density of the device's rate map at an angle left of and above the gaze, from
-+		/// the measurements of M4a.4b (M5, quality 1.0): horizontal 1.0 up to about 14 degrees (the
++		/// the measurements on the device (M5, quality 1.0): horizontal 1.0 up to about 14 degrees (the
 +		/// mean density over the 50-degree canvas was 0.85), linear to 0.33 at 25 degrees; upwards 1.0
 +		/// to about 12 degrees, linear to 0.82 at 14.7 degrees; the two factors multiplied. An estimate.
 +		/// </summary>
@@ -4941,7 +4941,7 @@ index 0000000..48b970b
 +			Log.Info($"[c64-stereo] projections eye0 tangents l={l0:F3} r={r0:F3} t={t0:F3} b={b0:F3} eye1 l={l1:F3} r={r1:F3} t={t1:F3} b={b1:F3} M33={projection0.M33:F3}/{projection1.M33:F3} (0 = infinite far) near={NearUnits:F2} units");
 +		}
 +
-+		// head pose relative to O (M4b.4); the shift selftest moves head and eyes 0.5 m to the right
++		// head pose relative to O; the shift selftest moves head and eyes 0.5 m to the right
 +		if (MatrixSelftest == "shift")
 +		{
 +			var shift = Matrix.CreateTranslation(0.5f, 0, 0);
@@ -5112,7 +5112,7 @@ index 0000000..48b970b
 +	/// <summary>FMOD mixer suspend or resume for a backgrounded app (see Audio.SuspendMixer).</summary>
 +	public static FMOD.RESULT SuspendAudio(bool suspend) => Audio.SuspendMixer(suspend);
 +
-+	/// <summary>Einmal pro Sekunde aus Game.Update aufrufen.</summary>
++	/// <summary>Call once per second from Game.Update.</summary>
 +	public static void Tick()
 +	{
 +		if (!timing || timer.Elapsed.TotalSeconds < 1.0)

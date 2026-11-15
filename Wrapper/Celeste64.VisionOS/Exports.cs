@@ -112,7 +112,7 @@ public static unsafe class Exports
 	private static IntPtr initMetalDevice;
 	private static readonly bool[] controllerConnected = new bool[InputState.MaxControllers];
 
-	// Canvas (M4a): Foster texture over the host's MTLTexture and the target that the game's
+	// Canvas: Foster texture over the host's MTLTexture and the target that the game's
 	// output pass renders into (VisionOSKit.Outputs); null while the game renders to its window.
 	private static Texture? canvasTexture;
 	private static Target? canvasTarget;
@@ -566,7 +566,7 @@ public static unsafe class Exports
 	}
 
 	/// <summary>
-	/// The render half of a frame with the stereo world pass (M4b.3a): imports the host's
+	/// The render half of a frame with the stereo world pass: imports the host's
 	/// drawable (cached by identity), renders, and reports whether the world went into the
 	/// drawable (1) or the canvas (0). See celeste_vr_frame in celeste.h.
 	/// </summary>
