@@ -1,14 +1,14 @@
-// k6d_metal.m — kleiner Metal-Helfer für Celeste64.MacHost (K6d.1, F3; K6e.2, F5). Stellt dem Host
-// das, was auf der Brille CompositorServices liefert: ein Metal-Device und eine Queue (P1), eine
-// vorhandene 2D-Array-Textur, die Foster über die SDL-Property
-// SDL_PROP_GPU_TEXTURE_CREATE_METAL_TEXTURE_POINTER importiert (P3), und eine Rasterization Rate
-// Map mit zwei Schichten samt Koordinatenabbildung für das Messbild (P4). Kein SDL-Bezug; Foster
-// kennt kein Metal. Besitz: Der Host hält die Metal-Objekte und gibt sie mit k6d_metal_release
-// frei; SDL hält nur seine eigene Referenz (K1b). Vorlage: Kit/sdl-gpu-kit/kit_testscene_metal.m
-// (kit_metal_create_array_texture_ex), hier mit den Pixelformaten, die Fosters TextureFormat.Color
-// (RGBA8Unorm) und Depth16 (Depth16Unorm) entsprechen.
+// k6d_metal.m — small Metal helper for Celeste64.MacHost. Provides the host with what
+// CompositorServices delivers on the headset: a Metal device and a queue, an existing 2D array
+// texture that Foster imports through the SDL property
+// SDL_PROP_GPU_TEXTURE_CREATE_METAL_TEXTURE_POINTER, and a rasterization rate map with two
+// layers including the coordinate mapping for the measurement image. No SDL involvement; Foster
+// knows no Metal. Ownership: the host holds the Metal objects and releases them with
+// k6d_metal_release; SDL holds only its own reference. Model: Kit/sdl-gpu-kit/kit_testscene_metal.m
+// (kit_metal_create_array_texture_ex), here with the pixel formats that match Foster's
+// TextureFormat.Color (RGBA8Unorm) and Depth16 (Depth16Unorm).
 //
-// Bau (scripts/celeste-mac.sh machost):
+// Build (scripts/celeste-mac.sh machost):
 //   clang -fobjc-arc -dynamiclib -framework Metal -framework Foundation k6d_metal.m -o libk6dmetal.dylib
 
 #import <Metal/Metal.h>
@@ -34,8 +34,8 @@ void *k6d_metal_queue(void *device)
     }
 }
 
-/* kind 0: RGBA8Unorm, Render-Target und Shader-Read (damit SDL die Schicht blitten kann);
-   kind 1: Depth16Unorm, kind 2: Depth32Float (wie die Drawable-Tiefe der Brille), nur Render-Target. */
+/* kind 0: RGBA8Unorm, render target and shader read (so that SDL can blit the layer);
+   kind 1: Depth16Unorm, kind 2: Depth32Float (like the headset's drawable depth), render target only. */
 void *k6d_metal_array_texture(void *device, unsigned width, unsigned height, unsigned layers, int kind)
 {
     @autoreleasepool {
@@ -70,7 +70,7 @@ void k6d_metal_release(void *object)
     }
 }
 
-/* ---- K6e.2 (F5): Rasterization Rate Map des Hosts, Vorbild kit_metal_create_rate_map ---- */
+/* ---- Rasterization rate map of the host, modelled on kit_metal_create_rate_map ---- */
 
 int k6d_metal_supports_rate_map(void *device, unsigned layers)
 {
@@ -81,10 +81,10 @@ int k6d_metal_supports_rate_map(void *device, unsigned layers)
     return [d supportsRasterizationRateMapWithLayerCount:layers] ? 1 : 0;
 }
 
-/* Zweischicht-Map (oder mehr) mit demselben Profil in jeder Schicht und in beiden Achsen:
-   1,0 im ersten Drittel, edge_quality danach, samples Stützstellen pro Achse (Metal
-   interpoliert). Gleiche vertikale Kurve in allen Schichten ist Pflicht (Metal silently drops
-   the vertical profile when the layers differ); die Compositor-Map hat ebenfalls gleich grosse Schichten. */
+/* Two-layer map (or more) with the same profile in every layer and in both axes: 1.0 in the
+   first third, edge_quality after that, samples sample points per axis (Metal interpolates).
+   The same vertical curve in all layers is mandatory (Metal silently drops the vertical profile
+   when the layers differ); the compositor's map has layers of equal size as well. */
 void *k6d_metal_rate_map(void *device, unsigned screen_width, unsigned screen_height, unsigned layers,
                          unsigned samples, float edge_quality)
 {
@@ -113,7 +113,7 @@ void *k6d_metal_rate_map(void *device, unsigned screen_width, unsigned screen_he
     }
 }
 
-/* Logische Grösse, physische Grösse einer Schicht und Schichtzahl der Map. */
+/* Logical size, physical size of one layer and layer count of the map. */
 int k6d_metal_rate_map_info(void *map, unsigned layer, unsigned *screen_width, unsigned *screen_height,
                             unsigned *physical_width, unsigned *physical_height, unsigned *layer_count)
 {
@@ -133,7 +133,7 @@ int k6d_metal_rate_map_info(void *map, unsigned layer, unsigned *screen_width, u
     return 1;
 }
 
-/* Logische Bildschirmkoordinate → physische Texturkoordinate einer Schicht (Soll für das Messbild). */
+/* Logical screen coordinate -> physical texture coordinate of a layer (expected value for the measurement image). */
 void k6d_metal_rate_map_screen_to_physical(void *map, unsigned layer, float sx, float sy, float *px, float *py)
 {
     id<MTLRasterizationRateMap> m = (__bridge id<MTLRasterizationRateMap>)map;
@@ -150,10 +150,10 @@ void k6d_metal_rate_map_physical_to_screen(void *map, unsigned layer, float px, 
     if (sy) *sy = s.y;
 }
 
-/* ---- M4a.1: canvas texture and read-back for the wrapper's mac-check ---- */
+/* ---- Canvas texture and read-back for the wrapper's mac-check ---- */
 
 /* 2D RGBA8Unorm texture as the host app creates it for the canvas: render target and shader
-   read, optionally with PixelFormatView so an sRGB view can be created later (M4a.3). Private
+   read, optionally with PixelFormatView so an sRGB view can be created later. Private
    storage, default (tracked) hazard tracking. */
 void *k6d_metal_texture_2d(void *device, unsigned width, unsigned height, int pixel_format_view)
 {
@@ -207,7 +207,7 @@ int k6d_metal_read_pixel(void *queue, void *texture, unsigned x, unsigned y, uns
     }
 }
 
-/* ---- M4a.3: canvas dump for the colour comparison between Mac and device ---- */
+/* ---- Canvas dump for the colour comparison between Mac and device ---- */
 
 #import <ImageIO/ImageIO.h>
 
@@ -269,7 +269,7 @@ int k6d_metal_write_canvas(void *queue, void *texture, const char *png_path, con
     }
 }
 
-/* ---- M4b performance analysis: command buffer GPU times and a Metal capture ---- */
+/* ---- Performance analysis: command buffer GPU times and a Metal capture ---- */
 
 /* GPU start and end time of a completed command buffer (seconds, Metal GPU clock). */
 int k6d_metal_command_buffer_times(void *command_buffer, double *start, double *end)

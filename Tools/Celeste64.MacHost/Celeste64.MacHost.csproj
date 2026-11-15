@@ -1,12 +1,12 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <!-- Celeste64.MacHost (K6c): treibt Celeste 64 von aussen wie der spätere Swift-Host auf
-       visionOS: Game erzeugen, Begin, Tick mit festem Delta im Echtzeit-Takt, End. Baut immer gegen
-       den Foster-Fork (UseLocalFoster) und standardmässig mit der Kit-dylib (UseKitSDL=true;
-       -p:UseKitSDL=false nimmt die SDL 3.4.12 aus dem Fork). Die Ausgabe liegt unter
-       Source/Celeste64/bin/k6c-machost, damit Celeste seinen Content-Ordner findet (Suche bis
-       fünf Ebenen aufwärts von AppContext.BaseDirectory). Celeste bleibt unverändert; der
-       Patch Patches/celeste64-usefoster.patch muss angewendet sein. -->
+  <!-- Celeste64.MacHost: drives Celeste 64 from the outside like the later Swift host on
+       visionOS: create the Game, Begin, Tick with a fixed delta at a real-time rate, End. Always
+       builds against the Foster fork (UseLocalFoster) and by default with the kit dylib
+       (UseKitSDL=true; -p:UseKitSDL=false takes the SDL 3.4.12 from the fork). The output goes
+       to Source/Celeste64/bin/k6c-machost, so that Celeste finds its Content folder (search up
+       to five levels upwards from AppContext.BaseDirectory). Celeste stays unchanged; the patch
+       Patches/celeste64-usefoster.patch must be applied. -->
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
@@ -24,21 +24,21 @@
     <OutDir>$(MSBuildProjectDirectory)/../../Source/Celeste64/bin/k6c-machost/</OutDir>
   </PropertyGroup>
 
-  <!-- UseLocalFoster und UseKitSDL müssen auch beim Restore von Celeste gelten; deshalb beim Bau
-       als globale Properties übergeben (scripts/celeste-machost.sh macht das):
+  <!-- UseLocalFoster and UseKitSDL must also apply to Celeste's restore; therefore pass them as
+       global properties when building (scripts/celeste-machost.sh does that):
        dotnet build Tools/Celeste64.MacHost -c Release -p:UseLocalFoster=true -p:UseKitSDL=true -->
-  <!-- native/k6d_metal.m (K6d.1) baut scripts/celeste-mac.sh mit clang zu libk6dmetal.dylib
-       neben das Programm; MSBuild kennt die Datei nicht. -->
+  <!-- native/k6d_metal.m is built by scripts/celeste-mac.sh with clang to libk6dmetal.dylib
+       next to the program; MSBuild does not know the file. -->
   <ItemGroup>
     <ProjectReference Include="../../Source/Celeste64/Celeste64.csproj" AdditionalProperties="UseLocalFoster=true;UseKitSDL=$(UseKitSDL)" />
   </ItemGroup>
 
-  <!-- Die Kit-dylib als Content mit Kopie in Ausgabe und Publish-Ordner (M0c: ein Build-Ziel
-       deckt den Publish nicht ab, dort landete Fosters SDL). Fosters eigene SDL-Kopie wird nur
-       unterdrückt, wenn FosterUseExternalSDL=true als globale Property gesetzt ist (die
-       AdditionalProperty der ProjectReference erreicht die Kopierziele über zwei Stufen nicht);
-       scripts/celeste-mac.sh übergibt sie. Die ausdrückliche Kopie nach dem Build bleibt als
-       Sicherheitsnetz. -->
+  <!-- The kit dylib as Content with a copy into the output and publish folders (a build target
+       alone does not cover the publish, Foster's SDL ended up there). Foster's own SDL copy is
+       only suppressed when FosterUseExternalSDL=true is set as a global property (the
+       AdditionalProperty of the ProjectReference does not reach the copy targets over two
+       levels); scripts/celeste-mac.sh passes it. The explicit copy after the build stays as a
+       safety net. -->
   <ItemGroup Condition="'$(UseKitSDL)' == 'true'">
     <Content Include="$(KitSDLDylib)" Link="libSDL3.dylib" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" Visible="false" />
   </ItemGroup>

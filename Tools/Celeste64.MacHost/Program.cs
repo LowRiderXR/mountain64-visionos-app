@@ -1,131 +1,132 @@
-// Celeste64.MacHost — Celeste 64 von aussen takten (K6c, F1) und in Ausgabeziele des Hosts
-// rendern (K6d.1, F3). Vorbild für den Swift-Host auf visionOS: Game erzeugen, Begin(), dann
-// Tick(delta) pro Frame der eigenen Uhr, End().
+// Celeste64.MacHost — drives Celeste 64 from the outside and renders into output targets of the
+// host. Model for the Swift host on visionOS: create the Game, Begin(), then Tick(delta) per
+// frame of the host's own clock, End().
 //
-//   --hz N              Takt und Delta (90, 100, 120; Standard 90), delta = 1/N s
-//   --jitter-ms J       M4b.4-N2: vor jedem Tick zufällig bis J ms schlafen (unruhige Wanduhr wie
-//                       auf der Brille); das Delta bleibt das Raster 1/N, fosterDelta konstant
-//   --seconds S         Laufzeit (Standard 30); 0 = bis Escape im Spiel
-//   --gap-ms M          einmalige Lücke von M ms nach 5 s (Pause, kein Nachholen)
-//   --no-present        Fenster versteckt, Tick ohne Present (Kommandos werden trotzdem abgeschickt)
-//   --gpu-timing        Completion-Rückruf des Kits setzen (C64_GPU_TIMING=1), Callbacks zählen
+//   --hz N              rate and delta (90, 100, 120; default 90), delta = 1/N s
+//   --jitter-ms J       sleep randomly up to J ms before every tick (an uneven wall clock like on
+//                       the headset); the delta stays the grid 1/N, fosterDelta constant
+//   --seconds S         run time (default 30); 0 = until Escape in the game
+//   --gap-ms M          one gap of M ms after 5 s (pause, no catching up)
+//   --no-present        window hidden, tick without present (commands are still submitted)
+//   --gpu-timing        set the kit's completion callback (C64_GPU_TIMING=1), count the callbacks
 //   --layers none|foster|external
-//                       K6d.1: Endbild statt ins Fenster in ein Ziel mit zwei Schichten rendern,
-//                       ein Pass pro Schicht. foster = Foster legt die 2D-Array-Textur an;
-//                       external = eine vorhandene MTLTexture (type2DArray) aus dem nativen Helfer
-//                       libk6dmetal.dylib, importiert über die SDL-Property (P3), Device und Queue
-//                       des Hosts über P1. Beide Schichten werden nebeneinander im Fenster gezeigt.
-//   --layer-check N     alle N Ticks beide Schichten zurücklesen und vergleichen (Standard 300)
-//   --no-layer-depth    ohne Tiefen-Array (Standard: Farbe und Tiefe mit je zwei Schichten)
-//   --layer-selftest    einmal die verbotenen 2D-Operationen auf dem Array versuchen (Download,
-//                       Blit und Sampling ohne Schicht) und die Ausnahmen loggen
-//   --windowed          Vollbild aus dem Spielstand wieder aufheben (Test im Fenster)
-//   --tap-confirm T,T   an diesen Ticks die Bestätigungstaste (C) kurz drücken (SDL_PushEvent),
-//                       zum Beispiel 120,240,360 für Titel, Overworld, Level 1
-//   --target-check N    alle N Ticks Celestes 640x360-Welt-Ziel zurücklesen (Farbe und Tiefe):
-//                       Magenta, nicht-schwarz, Tiefenstatistik (K6d.2)
-//   --target-dump PFX   dabei die Farbe als PFX-<frame>.ppm schreiben (Vergleich MSAA an/aus)
-//   --blit-selftest     zwei Blits nebeneinander in dieselbe Textur, zurücklesen, beide Hälften
-//                       müssen stehen (K6d.2, Blit in ein Teilrechteck)
-//   --msaa N            K6d.3: die Schichtziele mit N Samples; Foster legt die MSAA-Texturen an und
-//                       löst in die vorhandenen Schichten auf (Farbe über resolve_texture, Tiefe
-//                       über die Kit-Properties)
-//   --memoryless M      none | color | color+depth: MSAA-Farbe (und Tiefe) nur im Kachelspeicher
+//                       render the final image into a target with two layers instead of the
+//                       window, one pass per layer. foster = Foster creates the 2D array texture;
+//                       external = an existing MTLTexture (type2DArray) from the native helper
+//                       libk6dmetal.dylib, imported through the SDL texture property, device and
+//                       queue of the host through the device properties. Both layers are shown
+//                       side by side in the window.
+//   --layer-check N     every N ticks read both layers back and compare them (default 300)
+//   --no-layer-depth    without a depth array (default: colour and depth with two layers each)
+//   --layer-selftest    once try the forbidden 2D operations on the array (download, blit and
+//                       sampling without a layer) and log the exceptions
+//   --windowed          lift the fullscreen from the save game again (test in the window)
+//   --tap-confirm T,T   at these ticks press the confirm key (C) briefly (SDL_PushEvent), for
+//                       example 120,240,360 for title, overworld, level 1
+//   --target-check N    every N ticks read Celeste's 640x360 world target back (colour and depth):
+//                       magenta, non-black, depth statistics
+//   --target-dump PFX   also write the colour as PFX-<frame>.ppm (comparison MSAA on/off)
+//   --blit-selftest     two blits side by side into the same texture, read back, both halves
+//                       must stand (blit into a sub-rectangle)
+//   --msaa N            the layer targets with N samples; Foster creates the MSAA textures and
+//                       resolves into the existing layers (colour through resolve_texture, depth
+//                       through the kit properties)
+//   --memoryless M      none | color | color+depth: MSAA colour (and depth) only in tile memory
 //   --no-multisample-store
-//                       Samples der Farbe nach dem Pass nicht behalten (nur RESOLVE); Pflicht für
-//                       memoryless Farbe. Standard ist behalten (Entscheid 3): eine vergessene
-//                       Einstellung kostet Leistung, nicht das Bild. memoryless Farbe ohne diesen
-//                       Schalter ist der Negativtest (abgelehnt)
-//   --depth-format F    d16 | d32 (Standard d32, wie die Drawable-Tiefe der Brille)
-//   --views N           K6e.1: 1 = ein Pass pro Schicht (zwei Ziele), 2 = ein Pass auf beide
-//                       Schichten (ein Ziel mit Target.ViewCount 2, Vertex Amplification)
-//   --test-quad         der Host zeichnet im selben Pass ein schwarzes Feld mit schrägem grünem
-//                       Viereck; der Schichtvergleich zählt dort Kantenpixel mit Zwischenwerten
-//   --rate-map          K6e.2 (F5): eigene Zweischicht-Rate-Map des Hosts (gleiches Profil in allen
-//                       Schichten und Achsen, 1,0 im ersten Drittel, 0,5 danach) jeden Frame ans
-//                       Ziel (Target.SetRasterizationRateMap); Viewport, Scissor und Batcher laufen
-//                       dann im logischen Raum der Map. Nur mit --layers external (Host-Device).
-//                       Messbild in jedem (layer-check/2)-ten Tick: schwarzes Bild mit Balken an
-//                       bekannten logischen Positionen, beide Schichten zurücklesen, Soll aus
-//                       mapScreenToPhysicalCoordinates, Toleranz 1 px
-//   --rate-map-scale F  logische Grösse der Map = F × Texturgrösse (Standard 1,4; physisch rund
-//                       0,67 × logisch, passt in 1280×720). 2,0 ist der Negativtest: physisch
-//                       grösser als die Textur, SDL lehnt den Pass ab, Foster wirft
-//   --pass-selftest     K6f.3: Device im Debug-Modus (SDL_ASSERT=ignore), ein gewöhnlicher Pass,
-//                       den SDL ablehnt (Tiefentextur mit 256 Schichten), muss eine Ausnahme mit
-//                       Meldung geben; Gegenprobe mit gültigem Ziel
-//   --minimize-at T,T   K6f.3: am ersten Tick das Fenster minimieren, am zweiten zurückholen;
-//                       der Lauf muss ohne Ausnahme weitergehen
-//   --tap-pause T,T     M4c.1: an diesen Ticks die Pausentaste (Escape) kurz drücken (SDL_PushEvent)
-//   --tap-down T,T      M4c.1c: an diesen Ticks die Menütaste Abwärts kurz drücken
-//   --layer-dump-ticks T,T  M4c.1c: zusätzlich an diesen Ticks Schichtvergleich und -dump
-//   --hold-key K:T0:T1  M4c.3: Taste K von Tick T0 bis T1 halten: left right up down (Bewegung), w a s d
-//                       (Kamera), c (Sprung), x (Dash), z (Klettern)
-//   --gamepad-sim T0:T1 simuliertes Gamepad (VisionOSKit.GamepadPrompt.SimulatedConnected): ab Start
-//                       verbunden, von Tick T0 bis T1 getrennt; ohne die Option zählt der echte Zustand
-//                       (der Mac ohne Gamepad zeigt die Zeile «Connect a game controller to play»)
-//   --key-probe N       K6f.4: vor Tick N ein F7-Tastenereignis einspeisen (SDL_PushEvent), zwei
-//                       Ticks später loslassen; meldet, nach welchem Tick Foster die Taste als
-//                       gedrückt bzw. losgelassen sieht (vor da3b23a N+1, nachher N)
-//   --vr-depth          M4b.2: Reverse-Z-Pfad (VisionOSKit.ReverseZ, Near 0,1 m wie der Layer der
-//                       Brille): Shader-Varianten ohne SV_Depth, Welt-Ziel Depth32, Clear 0,
-//                       Vergleiche getauscht, Himmel 3 km
-//   --test-projection   dazu die Testprojektion nach computeProjection (Metal RH, unendliche
-//                       Far-Ebene, Tangenten links 1,732, rechts 1,0, oben 1,0, unten 1,192)
-//   --vr-world          M4b.3a: Stereo-Weltpass. Celeste bekommt vor jedem Tick die externen
-//                       Schichten als «Drawable» (VisionOSKit.BeginVRFrame: Farbe und Tiefe als
-//                       2D-Array, Rate Map des Hosts falls --rate-map, Testprojektion je Auge:
-//                       Auge 0 Tangenten 1,732/1,0/1,0/1,192, Auge 1 gespiegelt), ein Level
-//                       schreibt seine Welt direkt hinein; Titel und Overworld laufen weiter über
-//                       Outputs (K6e). Braucht --layers external --views 2; impliziert --vr-depth.
-//                       Der Schichtvergleich verlangt dann keine gleichen Schichten mehr
-//   --res WxH           interne Auflösung (VisionOSKit.InternalWidth/Height) und Umrissbreite auto
-//   --layer-dump PFX    bei jedem Schichtvergleich beide Schichten (physischer Bereich) als
-//                       PFX-L0-<frame>.rgba und PFX-L1-<frame>.rgba schreiben
-//   --vr-check          bei jedem Schichtvergleich im Weltpass die Drawable-Schicht 0 gegen das
-//                       Weltziel A (VisionOSKit.Intermediate) prüfen wie M4b.3a (nur Umrisspixel
-//                       verschieden) und die Umrissbreite messen als häufigste Lauflänge waagrechter
-//                       Umrissläufe in der Bildmitte und am Rand gegen die Erwartung
-//                       Winkel·(1+x²+y²)·k/Rate in physischen Pixeln; mit C64_STEREO_NEGATIVE=no-angle
-//                       und --rate-map muss der Rand abweichen. Dazu liest er die Tiefe von A und
-//                       zählt Umrisspixel nach Zonen (nah z < 5 m, fern z > 15 m) und auf ebenen
-//                       Pixeln (Laplace der rohen Tiefe unter einem Zehntel der Schwelle): 0 auf Ebenen
-//   --pixel-msaa N      Pixel-Look: 0 oder 4 Samples im Welt-Pass nach A (memoryless, nur
-//                       aufgelöst, Tiefe mit max; VisionOSKit.PixelMsaa, Standard 4)
-//   --edge-deg D        Umrissbreite in Grad (VisionOSKit.EdgeAngleDegrees, Standard 0,12)
-//   --coarse-dump PFX   beim vr-check die aufgelöste Farbe von A, Schicht 0, als
-//                       PFX-A-L0-<frame>.rgba schreiben (MSAA-Kanten: Lauf mit 4 gegen Lauf
-//                       mit 0 vergleichen, der Anteil abweichender Pixel muss > 0 sein; zwei
-//                       Läufe mit 0 müssen identisch sein)
-//   --stereo-selftest   M4b.4: Rechenprobe ohne Bild (VisionOSKit.DebugProject): Spielkamera im
-//                       Ursprung nach +Y, Augen ±0,032 m, symmetrische Projektion (Tangenten 1),
-//                       1000 px: Punkt in 2 m ergibt Disparität 16 px (±10 %), Achsmarken vorne
-//                       (mittig), rechts (x ≈ 750) und oben (y ≈ 250); linkes Auge sieht den
-//                       Punkt rechts der Mitte
-//   --layer-size WxH    Grösse der externen Schichten (Standard 1280x720; 2624x2560 wie das
-//                       Drawable der M5 bei Qualität 1,0)
-//   --gpu-passes        M4b Leistung: eigener Completion-Rückruf; je Command Buffer GPU-Start und
-//                       -Ende, je Sekunde inklusive und exklusive Zeit je Pass (world, edge,
-//                       sprites, rest, canvas) und die Summe pro Welt-Frame
+//                       do not keep the colour samples after the pass (RESOLVE only); required for
+//                       memoryless colour. Default is to keep them: a forgotten setting costs
+//                       performance, not the image. memoryless colour without this switch is the
+//                       negative test (rejected)
+//   --depth-format F    d16 | d32 (default d32, like the headset's drawable depth)
+//   --views N           1 = one pass per layer (two targets), 2 = one pass onto both layers (one
+//                       target with Target.ViewCount 2, vertex amplification)
+//   --test-quad         the host draws a black field with a slanted green quad in the same pass;
+//                       the layer comparison counts edge pixels with intermediate values there
+//   --rate-map          the host's own two-layer rate map (same profile in all layers and axes,
+//                       1.0 in the first third, 0.5 after that) set on the target every frame
+//                       (Target.SetRasterizationRateMap); viewport, scissor and batcher then work
+//                       in the logical space of the map. Only with --layers external (host device).
+//                       Measurement image in every (layer-check/2)-th tick: black image with bars
+//                       at known logical positions, read both layers back, expected values from
+//                       mapScreenToPhysicalCoordinates, tolerance 1 px
+//   --rate-map-scale F  logical size of the map = F x texture size (default 1.4; physical about
+//                       0.67 x logical, fits into 1280x720). 2.0 is the negative test: physically
+//                       larger than the texture, SDL rejects the pass, Foster throws
+//   --pass-selftest     device in debug mode (SDL_ASSERT=ignore), an ordinary pass that SDL
+//                       rejects (depth texture with 256 layers) must give an exception with a
+//                       message; counter-check with a valid target
+//   --minimize-at T,T   minimize the window at the first tick, restore it at the second; the run
+//                       must continue without an exception
+//   --tap-pause T,T     at these ticks press the pause key (Escape) briefly (SDL_PushEvent)
+//   --tap-down T,T      at these ticks press the menu key Down briefly
+//   --layer-dump-ticks T,T  additionally at these ticks a layer comparison and dump
+//   --hold-key K:T0:T1  hold key K from tick T0 to T1: left right up down (movement), w a s d
+//                       (camera), c (jump), x (dash), z (climb)
+//   --gamepad-sim T0:T1 simulated gamepad (VisionOSKit.GamepadPrompt.SimulatedConnected): connected
+//                       from the start, lost from tick T0 to T1; without the option the real state
+//                       counts (the Mac without a gamepad shows the line "Connect a game controller to play")
+//   --key-probe N       inject an F7 key event before tick N (SDL_PushEvent), release it two
+//                       ticks later; reports after which tick Foster sees the key as pressed and
+//                       as released (before da3b23a N+1, afterwards N)
+//   --vr-depth          reverse-Z path (VisionOSKit.ReverseZ, near 0.1 m like the headset's
+//                       layer): shader variants without SV_Depth, world target Depth32, clear 0,
+//                       compares swapped, sky 3 km
+//   --test-projection   additionally the test projection shaped like computeProjection (Metal RH,
+//                       infinite far plane, tangents left 1.732, right 1.0, top 1.0, bottom 1.192)
+//   --vr-world          stereo world pass. Before every tick Celeste gets the external layers as
+//                       its "drawable" (VisionOSKit.BeginVRFrame: colour and depth as 2D array,
+//                       the host's rate map if --rate-map, test projection per eye: eye 0 tangents
+//                       1.732/1.0/1.0/1.192, eye 1 mirrored), a level writes its world straight
+//                       into it; title and overworld keep running through Outputs. Needs --layers
+//                       external --views 2; implies --vr-depth. The layer comparison then no
+//                       longer requires equal layers
+//   --res WxH           internal resolution (VisionOSKit.InternalWidth/Height) and outline width auto
+//   --layer-dump PFX    at every layer comparison write both layers (physical region) as
+//                       PFX-L0-<frame>.rgba and PFX-L1-<frame>.rgba
+//   --vr-check          at every layer comparison in the world pass check drawable layer 0 against
+//                       the world target A (VisionOSKit.Intermediate): only outline pixels may
+//                       differ; measure the outline width as the most frequent run length of
+//                       horizontal outline runs in the image centre and at the border against the
+//                       expectation angle·(1+x²+y²)·k/rate in physical pixels; with
+//                       C64_STEREO_NEGATIVE=no-angle and --rate-map the border must deviate. It
+//                       also reads the depth of A and counts outline pixels by zones (near z < 5 m,
+//                       far z > 15 m) and on flat pixels (Laplacian of the raw depth below a tenth
+//                       of the threshold): 0 on flat surfaces
+//   --pixel-msaa N      pixel look: 0 or 4 samples in the world pass into A (memoryless, resolved
+//                       only, depth with max; VisionOSKit.PixelMsaa, default 4)
+//   --edge-deg D        outline width in degrees (VisionOSKit.EdgeAngleDegrees, default 0.12)
+//   --coarse-dump PFX   in the vr-check write the resolved colour of A, layer 0, as
+//                       PFX-A-L0-<frame>.rgba (MSAA edges: compare a run with 4 against a run
+//                       with 0, the share of differing pixels must be > 0; two runs with 0 must
+//                       be identical)
+//   --stereo-selftest   arithmetic check without an image (VisionOSKit.DebugProject): game camera
+//                       at the origin looking +Y, eyes ±0.032 m, symmetric projection (tangents 1),
+//                       1000 px: a point at 2 m gives a disparity of 16 px (±10 %), axis marks
+//                       ahead (centred), right (x ≈ 750) and up (y ≈ 250); the left eye sees the
+//                       point right of the centre
+//   --layer-size WxH    size of the external layers (default 1280x720; 2624x2560 like the drawable
+//                       of the M5 at quality 1.0)
+//   --gpu-passes        performance: own completion callback; GPU start and end per command
+//                       buffer, per second the inclusive and exclusive time per pass (world, edge,
+//                       sprites, rest, canvas) and the sum per world frame
 //   --metal-capture PATH:TICK
-//                       Metal-Aufnahme des Ticks TICK als .gputrace nach PATH (Prozess braucht
-//                       METAL_CAPTURE_ENABLED=1), in Xcode öffnen
-//   --depth-check N     alle N Ticks drei Testquads in 1, 5 und 30 m vor der Kamera (im Blickraum)
-//                       in das Welt-Ziel zeichnen, die Tiefe zurücklesen: near/d muss den Abstand
-//                       auf 1 % treffen; dazu die kleinste Tiefe des Bildes (Himmel: > 0, im
-//                       Kuppelbereich) und die Zahl der Pixel auf dem Clear-Wert 0; der Himmel
-//                       wird nur im Level bewertet (nach der letzten --tap-confirm-Taste plus
-//                       300 Ticks), Frames einer Blende werden übersprungen
+//                       Metal capture of tick TICK as .gputrace to PATH (the process needs
+//                       METAL_CAPTURE_ENABLED=1), open in Xcode
+//   --depth-check N     every N ticks draw three test quads at 1, 5 and 30 m in front of the camera
+//                       (in view space) into the world target, read the depth back: near/d must
+//                       hit the distance to 1 %; also the smallest depth of the image (sky: > 0, in
+//                       the dome range) and the number of pixels at the clear value 0; the sky is
+//                       only judged in the level (after the last --tap-confirm key plus 300
+//                       ticks), frames of a wipe are skipped
 //
-// Vorschau (K6d.1-Korrektur): Das Fenster wird in jedem Frame zuerst schwarz gecleart; jede
-// Schicht wird in eine eigene 2D-Textur geblittet (ein Blit deckt sein Ziel ganz ab, denn
-// Fosters Blit ist ein Pass mit DONT_CARE und cycle über die ganze Zieltextur) und beide
-// Texturen werden in einem Batcher-Pass nebeneinander gezeichnet. Der Schichtvergleich
-// baut dieselbe Komposition zusätzlich in ein Offscreen-Ziel in Fenstergrösse und liest sie
-// zurück: kein Magenta, Hälften gleich, Ränder schwarz.
+// Preview: the window is cleared to black first in every frame; each layer is blitted into its
+// own 2D texture (one blit covers its target completely, because Foster's blit is a pass with
+// DONT_CARE and cycle over the whole target texture) and both textures are drawn side by side in
+// one batcher pass. The layer comparison additionally builds the same composition into an
+// offscreen target of window size and reads it back: no magenta, halves equal, borders black.
 //
-// Pro Sekunde eine Zeile: Ticks, Updates, Updates pro Tick, Delta (gefordert und von Foster
-// gemeldet), Callbacks.
+// One line per second: ticks, updates, updates per tick, delta (requested and reported by
+// Foster), callbacks.
 
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
@@ -165,16 +166,16 @@ float rateMapScale = 1.4f;
 bool passSelftest = false;
 var minimizeAt = new List<long>();
 long keyProbeAt = -1;
-var tapPause = new List<long>();     // M4c.1: Escape (pause) at these ticks, released two ticks later
-var tapDown = new List<long>();      // M4c.1c: menu Down key at these ticks
+var tapPause = new List<long>();     // Escape (pause) at these ticks, released two ticks later
+var tapDown = new List<long>();      // menu Down key at these ticks
 (long from, long to)? gamepadSim = null; // simulated gamepad: connected from the start, lost between these ticks
-var layerDumpTicks = new List<long>(); // M4c.1c: additional layer dumps at these ticks
-var holdKeys = new List<(SDL_Scancode key, long from, long to)>(); // M4c.3: hold a movement key between two ticks
+var layerDumpTicks = new List<long>(); // additional layer dumps at these ticks
+var holdKeys = new List<(SDL_Scancode key, long from, long to)>(); // hold a movement key between two ticks
 long keyProbeSeenDown = -1, keyProbeSeenUp = -1;
-// M4b.2: Reverse-Z-Pfad, Testprojektion, Tiefenprüfung
+// reverse-Z path, test projection, depth check
 bool vrDepth = false, testProjection = false;
 int depthCheck = 0;
-// M4b.3a: Stereo-Weltpass, interne Auflösung, Schicht-Dumps, Vergleich Drawable gegen A
+// stereo world pass, internal resolution, layer dumps, comparison drawable against A
 bool vrWorld = false, vrCheck = false, stereoSelftest = false;
 int pixelMsaa = -1;
 string? coarseDump = null;
@@ -190,7 +191,7 @@ int vrChecks = 0, vrChecksFailed = 0;
 bool depthCheckThisFrame = false, sceneRenderedThisFrame = false;
 int depthChecks = 0, depthChecksFailed = 0;
 long afterOutputCalls = 0;
-// K6e.2: Map des Hosts, ihre logische und physische Grösse, Messbild-Frame
+// the host's map, its logical and physical size, measurement frame
 nint rateMapPtr = 0;
 int logicalW = 0, logicalH = 0;
 uint physW = 0, physH = 0;
@@ -303,7 +304,7 @@ if (resW > 0 && resH > 0)
 }
 if (vrDepth)
 {
-	// vor dem Spiel: Welt-Ziel und Shader-Auswahl lesen den Schalter beim Erzeugen bzw. Laden
+	// before the game: world target and shader selection read the switch when created or loaded
 	VisionOSKit.ReverseZ = true;
 	VisionOSKit.SetNearMeters(0.1);
 	if (testProjection)
@@ -321,8 +322,8 @@ if (gpuTiming)
 
 Log.Info($"[machost] hz={hz} seconds={seconds} gapMs={gapMs} present={!noPresent} gpuTiming={gpuTiming} layers={layers} layerDepth={layerDepth} kitSDL={GraphicsDevice.IsKitSDLLoaded()} vrDepth={vrDepth} testProjection={testProjection} depthCheck={depthCheck}");
 
-// Device-Properties: Completion-Rückruf (K6b.2) und, für den externen Weg, Device und Queue
-// des Hosts (P1), wie sie auf der Brille der Layer-Renderer liefert.
+// Device properties: completion callback and, for the external path, device and queue of
+// the host, as the layer renderer provides them on the headset.
 var kitProperties = VisionOSKit.CreateDeviceProperties();
 nint hostDevice = 0, hostQueue = 0;
 if (layers == "external")
@@ -344,7 +345,7 @@ unsafe
 {
 	if (gpuPasses)
 	{
-		// M4b Leistung: eigener Rückruf statt des Zählers aus VisionOSKit (überschreibt ihn)
+		// performance: own callback instead of the counter from VisionOSKit (overrides it)
 		if (kitProperties == 0)
 			kitProperties = SDL_CreateProperties();
 		delegate* unmanaged[Cdecl]<nint, nint, void> cb = &GpuPassTimer.OnCompleted;
@@ -357,11 +358,10 @@ unsafe
 var flags = VisionOSKit.Flags | (noPresent ? AppFlags.HiddenWindow : AppFlags.None);
 if (passSelftest)
 {
-	// K6f.3: SDLs Debugprüfungen am Passbeginn melden per SDL_assert_release und geben NULL
-	// zurück; ohne diesen Hint zeigt SDL einen Dialog und der Lauf hängt. Der Hint muss über
-	// SDL_SetHint gesetzt werden: Environment.SetEnvironmentVariable erreicht unter .NET auf
-	// macOS die native Umgebung nicht (erster Versuch hing im Dialog). Debug-Modus des Devices
-	// einschalten.
+	// SDL's debug checks at the start of a pass report through SDL_assert_release and return
+	// NULL; without this hint SDL shows a dialog and the run hangs. The hint has to be set through
+	// SDL_SetHint: Environment.SetEnvironmentVariable does not reach the native environment under
+	// .NET on macOS (the first attempt hung in the dialog). Turn on the device's debug mode.
 	SDL_SetHint("SDL_ASSERT", "ignore");
 	flags |= AppFlags.GraphicsDebugging;
 }
@@ -372,7 +372,7 @@ using var game = new Game(new(
 	Height: 720,
 	Fullscreen: false,
 	Resizable: true,
-	UpdateMode: UpdateMode.FixedStep(60),   // wird im Host-Modus nicht benutzt, der Host hat die Uhr
+	UpdateMode: UpdateMode.FixedStep(60),   // unused in host mode, the host owns the clock
 	Flags: flags,
 	GraphicsDeviceProperties: kitProperties
 ));
@@ -381,7 +381,7 @@ if (kitProperties != 0)
 
 if (stereoSelftest)
 {
-	// M4b.4: Umrechnung Kopfpose → Celeste ohne Bild prüfen
+	// check the conversion head pose -> Celeste without an image
 	var cam = Vec3.Zero; var look = new Vec3(0, 1, 0);
 	var proj = VisionOSKit.CreateProjectionFromTangents(1f, 1f, 1f, 1f);
 	var left = Matrix.CreateTranslation(-StereoIpd / 2, 0, 0);
@@ -412,10 +412,10 @@ var delta = TimeSpan.FromSeconds(1.0 / hz);
 game.Begin();
 Log.Info($"[machost] Begin done, window {(noPresent ? "hidden" : "visible")}, start time {game.Time.Elapsed.TotalMilliseconds:F1} ms, capabilities {game.GraphicsDevice.Capabilities}");
 
-// K6f.3: ein gewöhnlicher Pass, den SDL ablehnt, muss eine Ausnahme mit Meldung geben statt
-// die Draws still zu verwerfen. Einfachster erreichbarer Fall: SDLs Debugprüfung «Cannot bind a
-// depth texture with more than 255 layers!» (Tiefentextur mit 256 Schichten, 4x4). Gegenprobe:
-// ein gültiges kleines Ziel ohne Ausnahme.
+// An ordinary pass that SDL rejects must give an exception with a message instead of dropping
+// the draws silently. Simplest reachable case: SDL's debug check "Cannot bind a depth texture
+// with more than 255 layers!" (depth texture with 256 layers, 4x4). Counter-check: a valid
+// small target without an exception.
 if (passSelftest)
 {
 	var gd = game.GraphicsDevice;
@@ -452,7 +452,7 @@ if (passSelftest)
 	}
 }
 
-// ---- K6d.1: Ausgabeziel mit zwei Schichten ----
+// ---- Output target with two layers ----
 int LayerW = layerSizeW, LayerH = layerSizeH;
 const int LayerCount = 2;
 Texture? layerColor = null, layerDepthTex = null, previewLeft = null, previewRight = null;
@@ -474,7 +474,7 @@ if (layers != "none")
 		}
 		else
 		{
-			// vorhandene MTLTexture des Hosts: Farbe lesbar (für die Vorschau-Blits), Tiefe nur Ziel
+			// existing MTLTexture of the host: colour readable (for the preview blits), depth target only
 			mtlColor = K6dMetal.k6d_metal_array_texture(hostDevice, (uint)LayerW, (uint)LayerH, LayerCount, 0);
 			extColorProps = SDL_CreateProperties();
 			SDL_SetPointerProperty(extColorProps, SDL_PROP_GPU_TEXTURE_CREATE_METAL_TEXTURE_POINTER, mtlColor);
@@ -489,19 +489,19 @@ if (layers != "none")
 		}
 
 		Texture[] attachments = layerDepthTex != null ? [layerColor, layerDepthTex] : [layerColor];
-		var samples = hostMsaa switch { 1 => SampleCount.One, 2 => SampleCount.Two, 4 => SampleCount.Four, 8 => SampleCount.Eight, _ => throw new ArgumentException("--msaa erwartet 1, 2, 4 oder 8") };
+		var samples = hostMsaa switch { 1 => SampleCount.One, 2 => SampleCount.Two, 4 => SampleCount.Four, 8 => SampleCount.Eight, _ => throw new ArgumentException("--msaa expects 1, 2, 4 or 8") };
 		var colorMemoryless = memoryless is "color" or "color+depth";
 		var depthMemoryless = memoryless == "color+depth";
 		if (views == 2)
 		{
-			// K6e.1: ein Ziel über beiden Schichten, ein Pass rendert beide Views
+			// one target over both layers, one pass renders both views
 			layer0 = new Target(gd, attachments, 0, samples, multiSampleStore, DepthResolveFilter.Min, colorMemoryless, depthMemoryless, viewCount: 2, name: "k6e-views");
 			layer1 = null;
 			Log.Info($"[machost] views=2 msaa={hostMsaa} memoryless={memoryless} multiSampleStore={multiSampleStore} depthFormat={depthFormat}: one target with ViewCount {layer0.ViewCount} (colour {(layer0.ColorMemoryless ? "memoryless" : "private")}, depth {(layer0.DepthMemoryless ? "memoryless" : "private")})");
 		}
 		else if (hostMsaa > 1)
 		{
-			// K6d.3: MSAA-Ziel über den vorhandenen Schichten, Auflösung in die Schichten
+			// MSAA target over the existing layers, resolve into the layers
 			layer0 = new Target(gd, attachments, 0, samples, multiSampleStore, DepthResolveFilter.Min, colorMemoryless, depthMemoryless, name: "k6d-layer0");
 			layer1 = new Target(gd, attachments, 1, samples, multiSampleStore, DepthResolveFilter.Min, colorMemoryless, depthMemoryless, name: "k6d-layer1");
 			Log.Info($"[machost] msaa={hostMsaa} memoryless={memoryless} multiSampleStore={multiSampleStore} depthFormat={depthFormat}: targets created over the layers (colour {(layer0.ColorMemoryless ? "memoryless" : "private")}, depth {(layer0.DepthMemoryless ? "memoryless" : "private")})");
@@ -511,7 +511,7 @@ if (layers != "none")
 			layer0 = new Target(gd, attachments, 0, "k6d-layer0");
 			layer1 = new Target(gd, attachments, 1, "k6d-layer1");
 		}
-		// eine 2D-Textur pro Schicht: jeder Blit deckt sein Ziel vollständig ab
+		// one 2D texture per layer: every blit covers its target completely
 		previewLeft = new Texture(gd, LayerW, LayerH, TextureFormat.Color, 1, TextureFlags.RenderTarget, 0, "k6d-preview-left");
 		previewRight = new Texture(gd, LayerW, LayerH, TextureFormat.Color, 1, TextureFlags.RenderTarget, 0, "k6d-preview-right");
 		batcher = new Batcher(gd, "k6d-preview");
@@ -519,46 +519,46 @@ if (layers != "none")
 		VisionOSKit.AfterRender = () =>
 		{
 			var window = game.Window;
-			// 1. Fenster vollständig schwarz, auch die Ränder neben der Vorschau
+			// 1. window completely black, including the borders next to the preview
 			window.Clear(Color.Black);
-			// 2. Schicht 0 und 1 je in ihre eigene Vorschau-Textur (ein Blit = ganze Textur).
-			//    K6e.2: mit Map schreibt der Pass nur den physischen Bereich der Textur (auch der
-			//    Clear); der Rest bleibt undefiniert und darf nicht in die Vorschau
+			// 2. layers 0 and 1 each into their own preview texture (one blit = whole texture).
+			//    With a map the pass writes only the physical region of the texture (the clear
+			//    too); the rest stays undefined and must not get into the preview
 			var src = rateMapPtr != 0 ? new RectInt(0, 0, (int)physW, (int)physH) : new RectInt(0, 0, LayerW, LayerH);
 			layerColor.Blit(src, 0, previewLeft, new RectInt(0, 0, LayerW, LayerH), 0, TextureFilter.Nearest);
 			layerColor.Blit(src, 1, previewRight, new RectInt(0, 0, LayerW, LayerH), 0, TextureFilter.Nearest);
-			// 3. beide nebeneinander in einem Pass (LOAD nach dem Clear), skaliert auf das Fenster
+			// 3. both side by side in one pass (LOAD after the clear), scaled to the window
 			Compose(batcher, previewLeft, previewRight, window.SizeInPixels());
 			batcher.Render(window);
 			batcher.Clear();
 		};
-		// K6e.2: Rate Map des Hosts mit zwei Schichten; logisch = Skalierung × Texturgrösse
+		// the host's rate map with two layers; logical = scale x texture size
 		Mesh<BatcherVertex>? barsMesh = null;
 		if (rateMap)
 		{
 			if (layers != "external")
-				throw new ArgumentException("--rate-map braucht --layers external (die Map entsteht auf dem Host-Device)");
+				throw new ArgumentException("--rate-map requires --layers external (the map is created on the host device)");
 			if (K6dMetal.k6d_metal_supports_rate_map(hostDevice, LayerCount) == 0)
-				throw new NotSupportedException($"Das Gerät kann keine Rate Maps mit {LayerCount} Schichten");
+				throw new NotSupportedException($"The device does not support rate maps with {LayerCount} layers");
 			logicalW = (int)(LayerW * rateMapScale); logicalH = (int)(LayerH * rateMapScale);
 			rateMapPtr = K6dMetal.k6d_metal_rate_map(hostDevice, (uint)logicalW, (uint)logicalH, LayerCount, 16, 0.5f);
 			if (rateMapPtr == 0)
-				throw new InvalidOperationException("Rate Map nicht erzeugt");
+				throw new InvalidOperationException("Rate map not created");
 			uint sw = 0, sh = 0, lc = 0, pw1 = 0, ph1 = 0;
 			K6dMetal.k6d_metal_rate_map_info(rateMapPtr, 0, out sw, out sh, out physW, out physH, out lc);
 			K6dMetal.k6d_metal_rate_map_info(rateMapPtr, 1, out _, out _, out pw1, out ph1, out _);
 			Log.Info($"[machost] rate map: screen={sw}x{sh} layers={lc} physical layer0={physW}x{physH} layer1={pw1}x{ph1} texture={LayerW}x{LayerH} fits={(physW <= LayerW && physH <= LayerH ? "yes" : "NO (negative test)")} target before setting: logical={layer0.LogicalSize} inPixels={((IDrawableTarget)layer0).WidthInPixels}x{((IDrawableTarget)layer0).HeightInPixels}");
-			// Negativtests der Foster-Prüfungen (die Map selbst bleibt gültig)
-			Selftest2("Map mit logischer Grösse 0", () => layer0.SetRasterizationRateMap(rateMapPtr, 0, 0));
+			// negative tests of Foster's checks (the map itself stays valid)
+			Selftest2("map with logical size 0", () => layer0.SetRasterizationRateMap(rateMapPtr, 0, 0));
 			if (layer1 != null)
-				Selftest2("Map auf Ziel mit Schicht 1", () => layer1.SetRasterizationRateMap(rateMapPtr, logicalW, logicalH));
+				Selftest2("map on a target with layer 1", () => layer1.SetRasterizationRateMap(rateMapPtr, logicalW, logicalH));
 			void Selftest2(string what, Action action)
 			{
 				try { action(); Log.Error($"[machost] selftest '{what}': NO exception (error)"); }
 				catch (Exception e) { Log.Info($"[machost] selftest '{what}': rejected ({e.GetType().Name}: {e.Message})"); }
 			}
-			// Messbild: schwarzes Bild in logischer Grösse, fünf rote senkrechte und drei blaue
-			// waagrechte Balken, je 6 logische Pixel breit, an bekannten logischen Positionen
+			// measurement image: black image in logical size, five red vertical and three blue
+			// horizontal bars, each 6 logical pixels wide, at known logical positions
 			var fillMode = new Color(0, 0, 255, 0);
 			var blackC = new Color(0, 0, 0, 255); var red = new Color(255, 0, 0, 255); var blue = new Color(0, 0, 255, 255);
 			var verts = new List<BatcherVertex>(); var idx = new List<int>();
@@ -580,10 +580,10 @@ if (layers != "none")
 		Mesh<BatcherVertex>? quadMesh = null;
 		if (testQuad)
 		{
-			// im selben Pass wie das Endbild: schwarzes Feld, darin ein schräges grünes Viereck,
-			// als eigener Draw mit Tiefenschreiben (Tiefe 0 statt Clear 1), damit die aufgelöste
-			// Tiefe verschiedene Werte hat; Fosters Batcher schreibt keine Tiefe
-			var fill = new Color(0, 0, 255, 0);   // Batcher-Modus «Fill»: nur die Vertexfarbe
+			// in the same pass as the final image: a black field with a slanted green quad in it,
+			// as its own draw with depth writes (depth 0 instead of clear 1), so that the resolved
+			// depth has different values; Foster's batcher writes no depth
+			var fill = new Color(0, 0, 255, 0);   // batcher mode "fill": vertex colour only
 			var black = new Color(0, 0, 0, 255); var green = new Color(0, 255, 0, 255);
 			float bx = QuadBox.X, by = QuadBox.Y, bw = QuadBox.Width, bh = QuadBox.Height;
 			quadMesh = new Mesh<BatcherVertex>(gd, name: "k6d-quad");
@@ -600,11 +600,11 @@ if (layers != "none")
 				if (++afterOutputCalls == 1)
 					Log.Info($"[machost] AfterOutput first call: output={output.GetType().Name} {output.WidthInPixels}x{output.HeightInPixels} (logical)");
 				var material = gd.Defaults.BatchMaterial;
-				// Projektion aus der Grösse «in Pixeln» des Ziels: mit Map die logische Grösse
+				// projection from the target's size "in pixels": with a map the logical size
 				material.Vertex.SetUniformBuffer(System.Numerics.Matrix4x4.CreateOrthographicOffCenter(0, output.WidthInPixels, output.HeightInPixels, 0, 0, float.MaxValue));
 				if (quadMesh != null)
 					gd.Draw(new DrawCommand(output, quadMesh, material) { DepthTestEnabled = true, DepthWriteEnabled = true, DepthCompare = DepthCompare.Always, CullMode = CullMode.None, BlendMode = BlendMode.Premultiply });
-				// Messbild nur im Messframe, über allem anderen
+				// measurement image only in the measurement frame, over everything else
 				if (barsMesh != null && measureThisFrame)
 					gd.Draw(new DrawCommand(output, barsMesh, material) { DepthTestEnabled = false, DepthWriteEnabled = false, CullMode = CullMode.None, BlendMode = BlendMode.Premultiply });
 			};
@@ -613,25 +613,25 @@ if (layers != "none")
 
 		if (layerSelftest)
 		{
-			// Was auf einem 2D-Array nicht geht, muss klar scheitern statt still falsch zu laufen
+			// what is impossible on a 2D array must fail clearly instead of running silently wrong
 			var probe = new Color[LayerW * LayerH];
-			Selftest("GetData ohne Schicht", () => layerColor.GetData<Color>(probe, new RectInt(0, 0, LayerW, LayerH)));
-			Selftest("SetData ohne Schicht", () => layerColor.SetData<Color>(probe, new RectInt(0, 0, LayerW, LayerH)));
-			Selftest("Blit ohne Schicht", () => layerColor.Blit(previewLeft, TextureFilter.Nearest));
-			Selftest("Sampling als 2D", () => { batcher.Image(layerColor, Color.White); batcher.Render(game.Window); batcher.Clear(); });
-			Selftest("Target mit Schicht 2 von 2", () => new Target(gd, attachments, 2));
+			Selftest("GetData without a layer", () => layerColor.GetData<Color>(probe, new RectInt(0, 0, LayerW, LayerH)));
+			Selftest("SetData without a layer", () => layerColor.SetData<Color>(probe, new RectInt(0, 0, LayerW, LayerH)));
+			Selftest("Blit without a layer", () => layerColor.Blit(previewLeft, TextureFilter.Nearest));
+			Selftest("sampling as 2D", () => { batcher.Image(layerColor, Color.White); batcher.Render(game.Window); batcher.Clear(); });
+			Selftest("target with layer 2 of 2", () => new Target(gd, attachments, 2));
 			void Selftest(string what, Action action)
 			{
 				try { action(); Log.Error($"[machost] selftest '{what}': NO exception (error)"); }
 				catch (Exception e) { Log.Info($"[machost] selftest '{what}': rejected ({e.GetType().Name}: {e.Message})"); }
-				finally { batcher.Clear(); }   // ein abgelehnter Draw lässt den Batch sonst stehen
+				finally { batcher.Clear(); }   // a rejected draw otherwise leaves the batch behind
 			}
 		}
 	}
 	catch (Exception e) when (e is NotSupportedException or ArgumentException or InvalidOperationException)
 	{
-		// erwarteter Weg mit SDL 3.4.12 oder bei einer abgelehnten Kombination: klare Ausnahme,
-		// der Rest läuft im Fenster
+		// expected path with SDL 3.4.12 or with a rejected combination: a clear exception,
+		// the rest runs in the window
 		Log.Warning($"[machost] layers={layers} not possible, continuing with the window: {e.GetType().Name}: {e.Message}");
 		VisionOSKit.Outputs = null; VisionOSKit.AfterRender = null; VisionOSKit.AfterOutput = null;
 		layerColor?.Dispose(); layerDepthTex?.Dispose();
@@ -639,7 +639,7 @@ if (layers != "none")
 	}
 }
 
-// K6d.2: Blit in ein Teilrechteck darf den Rest der Zieltextur nicht verwerfen
+// A blit into a sub-rectangle must not discard the rest of the target texture
 if (blitSelftest)
 {
 	var gd = game.GraphicsDevice;
@@ -666,14 +666,14 @@ if (blitSelftest)
 	Log.Info($"[machost] blit selftest: left red={leftRed}/{W * H} right green={rightGreen}/{W * H} ({(ok ? "ok" : "ERROR")})");
 }
 
-// K6d.2: Celestes Welt-Ziel beobachten (Rücklesen von Farbe und Tiefe).
-// K6e.2: die Map jeden Frame ans Ausgabeziel setzen, bevor Celeste hineinzeichnet (auf der
-// Brille kommt sie pro Drawable neu vom Compositor; hier ist es dieselbe, der Weg ist derselbe)
+// Observe Celeste's world target (read back colour and depth).
+// Set the map on the output target every frame before Celeste draws into it (on the headset
+// it comes anew from the compositor per drawable; here it is the same one, the path is the same)
 Target? mainTarget = null;
 bool rateMapLogged = false;
-// M4b.2: drei Testquads im Blickraum (x rechts, y oben, -z vorwärts) in 1, 5 und 30 m, gezeichnet
-// mit Celestes Sprite-Material (auf dem Reverse-Z-Pfad die Variante ohne SV_Depth) und nur der
-// Projektion als Matrix; Tiefenschreiben mit Always, damit der Messwert sicher von den Quads kommt
+// Three test quads in view space (x right, y up, -z forward) at 1, 5 and 30 m, drawn with
+// Celeste's sprite material (on the reverse-Z path the variant without SV_Depth) and only the
+// projection as matrix; depth writes with Always, so the measured value surely comes from the quads
 float[] depthPointsMeters = [1f, 5f, 30f];
 float[] depthPointTangents = [-0.4f, 0f, 0.4f];
 Mesh<Celeste64.SpriteVertex>? depthMesh = null;
@@ -751,7 +751,7 @@ var pixels1 = layerColor != null ? new Color[LayerW * LayerH] : null;
 
 while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 {
-	// Echtzeit-Takt: bis zum nächsten Tick warten (Sleep grob, dann drehen)
+	// real-time rate: wait for the next tick (sleep coarsely, then spin)
 	var now = clock.Elapsed;
 	if (now < next)
 	{
@@ -762,7 +762,7 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 			Thread.SpinWait(64);
 	}
 
-	// einmalige Lücke: Pause, danach genau ein Tick, kein Nachholen
+	// one gap: pause, then exactly one tick, no catching up
 	if (gapMs > 0 && !gapDone && clock.Elapsed.TotalSeconds >= 5)
 	{
 		gapDone = true;
@@ -771,8 +771,8 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 		Log.Info($"[machost] gap {gapMs:F0} ms at t={clock.Elapsed.TotalSeconds:F2} s, next tick without catching up");
 	}
 
-	// --windowed: Celeste schaltet nach dem Laden gemäss Spielstand ins Vollbild; hier zurück
-	// (höchstens einmal pro Sekunde, der Wechsel dauert auf macOS mehrere Ticks)
+	// --windowed: after loading Celeste switches to fullscreen according to the save game; back here
+	// (at most once per second, the switch takes several ticks on macOS)
 	if (windowed && game.Window.Fullscreen && (clock.Elapsed - lastWindowedFix).TotalSeconds >= 1.0)
 	{
 		game.Window.Fullscreen = false;
@@ -780,25 +780,25 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 		Log.Info("[machost] fullscreen lifted (--windowed)");
 	}
 
-	// Bestätigungstaste an festen Ticks: Druck in diesem Tick, Loslassen im nächsten
+	// confirm key at fixed ticks: press in this tick, release in the next
 	foreach (var t in tapConfirm)
 		if (totalTicks == t) { PushKey(true); pendingTaps.Add((totalTicks + 2, false)); }
 	for (int i = pendingTaps.Count - 1; i >= 0; i--)
 		if (pendingTaps[i].tick == totalTicks) { PushKey(pendingTaps[i].down); pendingTaps.RemoveAt(i); }
-	// K6f.4: Tastensonde F7, Druck vor Tick N, Loslassen vor Tick N+2
+	// key probe F7, press before tick N, release before tick N+2
 	if (keyProbeAt >= 0 && totalTicks == keyProbeAt) PushKey(true, SDL_Scancode.SDL_SCANCODE_F7);
 	if (keyProbeAt >= 0 && totalTicks == keyProbeAt + 2) PushKey(false, SDL_Scancode.SDL_SCANCODE_F7);
-	// M4c.1: pause key (Escape) at a fixed tick, released two ticks later; opens the pause menu in the level
+	// pause key (Escape) at a fixed tick, released two ticks later; opens the pause menu in the level
 	foreach (var t in tapPause) { if (totalTicks == t) PushKey(true, SDL_Scancode.SDL_SCANCODE_ESCAPE); if (totalTicks == t + 2) PushKey(false, SDL_Scancode.SDL_SCANCODE_ESCAPE); }
-	// M4c.3: held keys (movement) between two ticks
+	// held keys (movement) between two ticks
 	foreach (var h in holdKeys) { if (totalTicks == h.from) PushKey(true, h.key); if (totalTicks == h.to) PushKey(false, h.key); }
-	// M4c.1c: menu Down at fixed ticks (released two ticks later), e.g. to reach Retry in the pause menu
+	// menu Down at fixed ticks (released two ticks later), e.g. to reach Retry in the pause menu
 	foreach (var t in tapDown) { if (totalTicks == t) PushKey(true, SDL_Scancode.SDL_SCANCODE_DOWN); if (totalTicks == t + 2) PushKey(false, SDL_Scancode.SDL_SCANCODE_DOWN); }
 	// simulated gamepad: connected from the first tick, lost between the two ticks of --gamepad-sim
 	if (gamepadSim is { } sim)
 		VisionOSKit.GamepadPrompt.SimulatedConnected = totalTicks < sim.from || totalTicks >= sim.to;
 
-	// M4b.4-N2: unruhige Wanduhr simulieren; der Tick bekommt trotzdem das Raster-Delta
+	// simulate an uneven wall clock; the tick still gets the grid delta
 	if (jitterMs > 0)
 		Thread.Sleep(TimeSpan.FromMilliseconds(jitterRng.NextDouble() * jitterMs));
 
@@ -808,8 +808,8 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 		Log.Info($"[machost] metal capture tick={totalTicks} path={metalCapturePath} started={ok}");
 	}
 	var frameBefore = game.Time.Frame;
-	// K6f.3: Fenster minimieren und zurückholen (SDL-Fensterhandle über SDL_GetWindows, Foster
-	// zeigt es nicht); ohne Swapchain-Bild darf kein Pass scheitern
+	// minimize and restore the window (SDL window handle through SDL_GetWindows, Foster does not
+	// expose it); without a swapchain image no pass may fail
 	if (minimizeAt.Count >= 1 && totalTicks == minimizeAt[0])
 	{
 		var windows = SDL_GetWindows();
@@ -820,18 +820,18 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 		var windows = SDL_GetWindows();
 		if (windows.Length > 0) { SDL_RestoreWindow(windows[0]); Log.Info($"[machost] window restored at tick {totalTicks}"); }
 	}
-	// K6e.2: Messframe (Balkenbild statt Celeste) in der Mitte zwischen zwei Schichtvergleichen
+	// measurement frame (bar image instead of Celeste) halfway between two layer comparisons
 	measureThisFrame = rateMapPtr != 0 && layerCheck > 0 && (totalTicks + 1) % layerCheck == layerCheck / 2;
 	depthCheckThisFrame = depthCheck > 0 && totalTicks > 0 && totalTicks % depthCheck == 0;
 	sceneRenderedThisFrame = false;
-	// M4b.3a: vor dem Tick das «Drawable» des Hosts an Celeste; nach dem Tick auswerten
+	// before the tick hand the host's "drawable" to Celeste; evaluate after the tick
 	if (vrWorld && mtlColor != 0 && mtlDepth != 0)
 	{
 		var eye0 = VisionOSKit.CreateProjectionFromTangents(1.732f, 1.0f, 1.0f, 1.192f);
 		var eye1 = VisionOSKit.CreateProjectionFromTangents(1.0f, 1.732f, 1.0f, 1.192f);
 		var hasMap = rateMapPtr != 0;
 		var headRot = Matrix.Identity;
-		// M4b.4: eyes 0.064 m apart (left eye at -x), head at O, culling from the union of both eyes
+		// eyes 0.064 m apart (left eye at -x), head at O, culling from the union of both eyes
 		VisionOSKit.BeginVRFrame(game.GraphicsDevice, mtlColor, mtlDepth, LayerW, LayerH, LayerCount, colorSrgb: false,
 			hasMap ? rateMapPtr : 0, hasMap ? logicalW : LayerW, hasMap ? logicalH : LayerH, hasMap ? (int)physW : LayerW, hasMap ? (int)physH : LayerH,
 			eye0, eye1,
@@ -844,19 +844,19 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 	}
 	catch (InvalidOperationException e)
 	{
-		// ein abgelehnter Pass (zum Beispiel Map physisch grösser als die Textur) kommt als
-		// klare Ausnahme aus Foster; der Lauf endet hier, der Text ist das Ergebnis
+		// a rejected pass (for example a map physically larger than the texture) comes out of
+		// Foster as a clear exception; the run ends here, the text is the result
 		Log.Error($"[machost] tick aborted: {e.GetType().Name}: {e.Message}");
 		layerChecksFailed++;
 		break;
 	}
-	// M4b.3a: Ergebnis des Weltpasses dieses Ticks
+	// result of this tick's world pass
 	if (vrWorld && VisionOSKit.Frame != null)
 	{
 		var (rendered, flushes) = VisionOSKit.EndVRFrame();
 		if (rendered) { if (vrWorldFrames++ == 0) Log.Info($"[machost] vr world: first world frame at tick {totalTicks} (frame {game.Time.Frame}), flushes={flushes}"); }
 		else vrCanvasFrames++;
-		// M4b Leistung: Etiketten der Buffer dieses Ticks (je Abschicken Upload und Render)
+		// performance: labels of this tick's buffers (upload and render per submission)
 		if (gpuPasses)
 		{
 			if (rendered && flushes == 3) GpuPassTimer.Expect(["world", "world", "edge", "edge", "sprites", "sprites", "rest", "rest"], rendered);
@@ -870,7 +870,7 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 		Log.Info($"[machost] metal capture stopped: {metalCapturePath}");
 	}
 
-	// K6e.2: Messbild auswerten, beide Schichten, Soll aus der Map
+	// evaluate the measurement image, both layers, expected values from the map
 	if (measureThisFrame && layerColor != null && pixels0 != null && pixels1 != null)
 	{
 		var rect = new RectInt(0, 0, LayerW, LayerH);
@@ -881,7 +881,7 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 		{
 			var px = layerIndex == 0 ? pixels0 : pixels1;
 			float layerMax = 0;
-			// senkrechte rote Balken: Soll-x aus der Map, Ist aus drei physischen Zeilen
+			// vertical red bars: expected x from the map, actual from three physical rows
 			foreach (var f in RateMapBars.VerticalFractions)
 			{
 				K6dMetal.k6d_metal_rate_map_screen_to_physical(rateMapPtr, (uint)layerIndex, f * logicalW, logicalH / 2f, out var ex, out _);
@@ -898,7 +898,7 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 					Measure(n, n > 0 ? (float)(sum / n) : float.NaN, ex, ref layerMax);
 				}
 			}
-			// waagrechte blaue Balken: Soll-y aus der Map, Ist aus drei physischen Spalten
+			// horizontal blue bars: expected y from the map, actual from three physical columns
 			foreach (var f in RateMapBars.HorizontalFractions)
 			{
 				K6dMetal.k6d_metal_rate_map_screen_to_physical(rateMapPtr, (uint)layerIndex, logicalW / 2f, f * logicalH, out _, out var ey);
@@ -931,14 +931,14 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 		Log.Info($"[machost] ratemap check frame={game.Time.Frame} logical={logicalW}x{logicalH} physical={physW}x{physH} samples={samples} missing={missing} maxDevPx={maxDev:F3} meanDevPx={(found > 0 ? sumDev / found : 0):F3} ({(ok ? "ok" : "ERROR")})");
 	}
 
-	// M4b.2: Tiefe der Testquads zurücklesen (Depth32 des Reverse-Z-Pfads), near/d gegen den Abstand
+	// read the depth of the test quads back (Depth32 of the reverse-Z path), near/d against the distance
 	if (depthCheckThisFrame && mainTarget != null && mainTarget.Attachments.Length > 1)
 	{
 		depthChecks++;
 		if (!sceneRenderedThisFrame)
 		{
-			// Blende (Perform oder Hold): Game.Render zeichnet die Szene nicht, das Welt-Ziel zeigt den
-			// letzten Frame ohne Testquads; nicht bewertet
+			// wipe (Perform or Hold): Game.Render does not draw the scene, the world target shows the
+			// last frame without test quads; not judged
 			Log.Info($"[machost] depth check frame={game.Time.Frame}: no scene render in this frame (wipe), skipped");
 			depthChecks--;
 		}
@@ -966,10 +966,10 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 			}
 			float dmin = float.MaxValue, dmax = 0; long zero = 0;
 			foreach (var v in depth) { if (v <= 0) { zero++; continue; } if (v < dmin) dmin = v; if (v > dmax) dmax = v; }
-			// Himmel: Würfel mit halber Kante R und Z-Faktor 0,5, also Abstände R/2 bis R·1,5: Tiefe near/(1,5 R) bis near/(0,5 R)
+			// sky: cube with half edge R and Z factor 0.5, so distances R/2 to R·1.5: depth near/(1.5 R) to near/(0.5 R)
 			var skyLo = nearM / (VisionOSKit.SkyRadiusMeters * 1.5); var skyHi = nearM / (VisionOSKit.SkyRadiusMeters * 0.5);
-			// im Level (Game hält seine Szenen privat): nach der letzten Bestätigungstaste plus
-			// Ladezeit und Blende (120 Ticks), sonst Titel oder Overworld ohne Himmel
+			// in the level (Game keeps its scenes private): after the last confirm key plus loading
+			// time and wipe (120 ticks), otherwise title or overworld without a sky
 			var inWorld = tapConfirm.Count > 0 && totalTicks > tapConfirm[^1] + 300;
 			var skyOk = !inWorld || (zero == 0 && dmin >= skyLo * 0.99 && dmin <= skyHi * 1.01);
 			ok &= skyOk;
@@ -978,7 +978,7 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 		}
 	}
 
-	// Welt-Ziel zurücklesen: Farbe (Auflösungstextur) und Tiefe (bei MSAA die Auflösungstiefe)
+	// read the world target back: colour (resolve texture) and depth (with MSAA the resolve depth)
 	if (targetCheck > 0 && mainTarget != null && totalTicks % targetCheck == 0)
 	{
 		var tw = mainTarget.Width; var th = mainTarget.Height;
@@ -997,7 +997,7 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 			{
 				if (mainTarget.Attachments[1].Format == TextureFormat.Depth32)
 				{
-					// M4b.2: Reverse-Z-Pfad mit Float-Tiefe
+					// reverse-Z path with float depth
 					var depth = new float[tw * th];
 					mainTarget.Attachments[1].GetData<float>(depth, new RectInt(0, 0, tw, th));
 					float dmin = float.MaxValue, dmax = 0; var distinct = new HashSet<float>(); long zero = 0, full = 0;
@@ -1013,7 +1013,7 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 					depthInfo = $"min={dmin} max={dmax} distinct={distinct.Count} zero={zero} full={full} sampler={(mainTarget.Attachments[1].SampleCount != SampleCount.One ? "resolve" : "1x")}";
 				}
 			}
-			catch (Exception e) { depthInfo = $"Fehler: {e.GetType().Name}: {e.Message}"; }
+			catch (Exception e) { depthInfo = $"error: {e.GetType().Name}: {e.Message}"; }
 		}
 		Log.Info($"[machost] target check frame={game.Time.Frame} size={tw}x{th} samples={mainTarget.Attachments[0].SampleCount} magenta={magenta} nonBlack={nonBlack} of {color.Length} depth[{depthInfo}]");
 		if (targetDump != null)
@@ -1025,7 +1025,7 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 			var bytes = new byte[tw * th * 3];
 			for (int i = 0; i < color.Length; i++) { bytes[i * 3] = color[i].R; bytes[i * 3 + 1] = color[i].G; bytes[i * 3 + 2] = color[i].B; }
 			f.Write(bytes);
-			// M4b.2: dazu RGBA roh (Zeilen von oben) für scripts/compare-canvas.py --width <Breite>
+			// also raw RGBA (rows from the top) for scripts/compare-canvas.py --width <width>
 			var rawPath = $"{targetDump}-{game.Time.Frame}.rgba";
 			var raw = new byte[tw * th * 4];
 			for (int i = 0; i < color.Length; i++) { raw[i * 4] = color[i].R; raw[i * 4 + 1] = color[i].G; raw[i * 4 + 2] = color[i].B; raw[i * 4 + 3] = color[i].A; }
@@ -1033,7 +1033,7 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 			Log.Info($"[machost] target dump {path} and {rawPath} ({tw}x{th})");
 		}
 	}
-	// K6f.4: nach welchem Tick sieht Foster die Sonde? (Zustand nach Tick totalTicks)
+	// after which tick does Foster see the probe? (state after tick totalTicks)
 	if (keyProbeAt >= 0 && totalTicks >= keyProbeAt)
 	{
 		var down = game.Input.Keyboard.Down(Keys.F7);
@@ -1046,7 +1046,7 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 	maxUpdatesPerTick = Math.Max(maxUpdatesPerTick, stepped);
 	lastReportedDelta = game.Time.Delta;
 
-	// Schichtvergleich: beide Schichten zurücklesen, Pixel zählen, die sich unterscheiden
+	// layer comparison: read both layers back, count the pixels that differ
 	if (layerColor != null && pixels0 != null && pixels1 != null && ((layerCheck > 0 && totalTicks % layerCheck == 0) || layerDumpTicks.Contains(totalTicks)))
 	{
 		var rect = new RectInt(0, 0, LayerW, LayerH);
@@ -1060,13 +1060,13 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 			if (pixels1[i].R + pixels1[i].G + pixels1[i].B > 0) nonBlack1++;
 		}
 		layerChecks++;
-		// im Stereo-Weltpass unterscheiden sich die Schichten (Projektion je Auge): nur Inhalt verlangt
+		// in the stereo world pass the layers differ (projection per eye): only content is required
 		var layersOk = vrWorld ? (nonBlack0 > 0 && nonBlack1 > 0) : (diff == 0 && nonBlack0 > 0);
 		if (!layersOk) layerChecksFailed++;
 		Log.Info($"[machost] layers check #{layerChecks} frame={game.Time.Frame} diff={diff} of {pixels0.Length} nonBlack0={nonBlack0} nonBlack1={nonBlack1} ({(layersOk ? "ok" : "ERROR")}{(vrWorld ? ", world pass: layers may differ" : "")})");
 		Log.Info($"[machost] frame stats: views={views} passes/frame={game.GraphicsDevice.RenderPassesLastFrame} draws/frame={game.GraphicsDevice.DrawCallsLastFrame}");
 
-		// M4b.3a: beide Schichten (physischer Bereich) als RGBA roh für compare-canvas.py
+		// both layers (physical region) as raw RGBA for compare-canvas.py
 		if (layerDump != null)
 		{
 			var dumpRect = rateMapPtr != 0 ? new RectInt(0, 0, (int)physW, (int)physH) : rect;
@@ -1082,18 +1082,18 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 			}
 		}
 
-		// Pixel-Look: Drawable-Schicht 0 (physisch) gegen das grobe Ziel B. Der Vergrösserungspass
-		// nimmt je logischem Pixel den groben Texel (nearest), in den seine Position fällt; mit Map
-		// rechnet der Decoder physisch → logisch (die Map ist je Achse separierbar, Annahme wie
-		// MTLRasterizationRateLayerDescriptor: Spaltenwerte aus der Mittelzeile, Zeilenwerte aus der
-		// Mittelspalte). Jeder Drawable-Pixel muss exakt seinen Texel tragen; an Klotzgrenzen darf
-		// die Rundung den Nachbartexel treffen. Dazu die Klotzbreite entlang der Mittelzeile in
-		// logischen Pixeln: über das Bild gleich, Erwartung logische Breite / Breite von B.
-		// Drawable-Schicht 0 gegen A wie in M4b.3a (nur Umrisspixel
-		// verschieden), dazu die Umrissbreite: waagrechte Läufe von Umrisspixeln (Drawable in allen
-		// Kanälen dunkler als A), häufigste Lauflänge in der Bildmitte (±15 % der logischen Breite)
-		// und am Rand (äussere 25 %), Erwartung Winkel·(1+x²+y²)·k_logisch/Rate in physischen Pixeln
-		// (Rate = logische je physischem Pixel aus dem Decoder, ohne Map 1)
+		// Pixel look: drawable layer 0 (physical) against the coarse target B. The magnification pass
+		// takes for every logical pixel the coarse texel (nearest) its position falls into; with a map
+		// the decoder converts physical -> logical (the map is separable per axis, assumption as for
+		// MTLRasterizationRateLayerDescriptor: column values from the middle row, row values from the
+		// middle column). Every drawable pixel must carry exactly its texel; at block borders the
+		// rounding may hit the neighbouring texel. Also the block width along the middle row in
+		// logical pixels: equal across the image, expectation logical width / width of B.
+		// Drawable layer 0 against A (only outline pixels
+		// differ), plus the outline width: horizontal runs of outline pixels (drawable darker than A
+		// in all channels), most frequent run length in the image centre (±15 % of the logical width)
+		// and at the border (outer 25 %), expectation angle·(1+x²+y²)·k_logical/rate in physical pixels
+		// (rate = logical per physical pixel from the decoder, 1 without a map)
 		if (vrCheck && vrWorldFrames > 0 && VisionOSKit.Intermediate is { } worldA)
 		{
 			vrChecks++;
@@ -1105,7 +1105,7 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 			layerColor.GetData<Color>(dPixels, checkRect, 0);
 			if (coarseDump != null)
 			{
-				// A (aufgelöste Farbe, Schicht 0) als RGBA roh, Vergleich zweier Läufe (L3: mit und ohne discard)
+				// A (resolved colour, layer 0) as raw RGBA, comparison of two runs (with and without discard)
 				var raw = new byte[aPixels.Length * 4];
 				for (int i = 0; i < aPixels.Length; i++) { raw[i * 4] = aPixels[i].R; raw[i * 4 + 1] = aPixels[i].G; raw[i * 4 + 2] = aPixels[i].B; raw[i * 4 + 3] = aPixels[i].A; }
 				var dumpPath = $"{coarseDump}-A-L0-{game.Time.Frame}.rgba";
@@ -1121,15 +1121,15 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 			var edgeRad = VisionOSKit.EdgeAngleDegrees * MathF.PI / 180f;
 			var kx = logW / (tanL + tanR);
 			int differing = 0, outlined = 0;
-			// drei Zonen in logischen Koordinaten: links (äussere 25 %), Mitte (±15 %), rechts (äussere
-			// 25 %); je Zone Histogramm der Lauflängen und mittlere Erwartung (die Map des MacHost hat
-			// links Rate 1 und rechts Rate 2, die Zonen dürfen nicht gemischt werden)
+			// three zones in logical coordinates: left (outer 25 %), centre (±15 %), right (outer
+			// 25 %); per zone a histogram of the run lengths and the mean expectation (the MacHost's map
+			// has rate 1 on the left and rate 2 on the right, the zones must not be mixed)
 			var hists = new[] { new int[41], new int[41], new int[41] };
 			var expSum = new double[3]; var expN = new int[3];
 			var zoneNames = new[] { "left", "centre", "right" };
-			// Umrisspixel exakt: Drawable = 0,3·A + 0,7·Umrissfarbe (0x110d33), Toleranz 2 je Kanal (Rundung
-			// des Shaders); so zählen Sprites und Schatten, die nach dem Kantenpass ins Drawable kommen und
-			// A ebenfalls abdunkeln, nicht als Umriss
+			// outline pixels exactly: drawable = 0.3·A + 0.7·outline colour (0x110d33), tolerance 2 per channel
+			// (shader rounding); so sprites and shadows that enter the drawable after the edge pass and
+			// also darken A do not count as outline
 			static bool IsOutline(Color d, Color a)
 			{
 				int er = (int)MathF.Round(0.3f * a.R + 0.7f * 0x11), eg = (int)MathF.Round(0.3f * a.G + 0.7f * 0x0d), eb = (int)MathF.Round(0.3f * a.B + 0.7f * 0x33);
@@ -1162,20 +1162,20 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 					hists[zone][len]++; expSum[zone] += expected; expN[zone]++;
 				}
 			}
-			// M4b L2: Umrisspixel nach Tiefenzonen und auf ebenen Pixeln. Rohe Reverse-Z-Tiefe von A
-			// (n'/z), Zonen nach Sichtweite z = n'/D in Einheiten (10 je Meter): nah unter 50, fern
-			// über 150; «eben» heisst Laplace der rohen Tiefe (4·D − Nachbarn) unter einem Zehntel
-			// der rohen Schwelle. Mit dem Kriterium der Referenz dürfen ebene Pixel keinen Umriss
-			// tragen; das alte Kriterium markiert ferne schräge Flächen
+			// Outline pixels by depth zones and on flat pixels. Raw reverse-Z depth of A (n'/z), zones
+			// by view distance z = n'/D in units (10 per metre): near below 50, far above 150; "flat"
+			// means the Laplacian of the raw depth (4·D − neighbours) below a tenth of the raw threshold.
+			// With the reference's criterion flat pixels may carry no outline; the old criterion marks
+			// distant slanted surfaces
 			{
 				var depthA = new float[w * h];
 				worldA.Attachments[1].GetData<float>(depthA, checkRect, 0);
 				var nearUnits = VisionOSKit.NearUnits;
 				var flatLimit = VisionOSKit.RawEdgeThreshold * 0.1f;
-				// «eben» mit demselben Stern wie der Shader: Nachbarn im Abstand der Winkelbreite in
-				// physischen Pixeln an dieser Stelle (ein Pixel neben einem Tiefensprung liegt selbst
-				// auf einer Ebene, gehört aber zum Umrissband); ein Pixel ist eben, wenn sein Laplace
-				// mit diesem Stern unter einem Zehntel der rohen Schwelle bleibt
+				// "flat" with the same star as the shader: neighbours at the distance of the angular width
+				// in physical pixels at this place (a pixel next to a depth step lies on a plane itself
+				// but belongs to the outline band); a pixel is flat when its Laplacian with this star
+				// stays below a tenth of the raw threshold
 				long nearN = 0, nearOut = 0, farN = 0, farOut = 0, flatN = 0, flatOut = 0, flatFarN = 0, flatFarOut = 0;
 				for (int py = 1; py < h - 1; py++)
 				{
@@ -1187,8 +1187,8 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 						if (dv <= 1e-7f) continue;   // sky far away or nothing drawn
 						var z = nearUnits / dv;
 						var outline = IsOutline(dPixels[i], aPixels[i]);
-						// Stern wie der Shader: Offset in physischen Pixeln je Achse (Winkel · Jacobi · Pixel je
-						// Tangente / Rate), Abtastung nearest an (Pixelmitte ± Offset), also floor(px + 0.5 ± h)
+						// star like the shader: offset in physical pixels per axis (angle · Jacobian · pixels per
+						// tangent / rate), nearest sampling at (pixel centre ± offset), so floor(px + 0.5 ± h)
 						var rateX = Math.Max(sx[px + 1] - sx[px], 1e-3f);
 						var rateY = Math.Max((py + 1 < h ? sy[py + 1] : sy[py] + (sy[py] - sy[py - 1])) - sy[py], 1e-3f);
 						var xtFlat = -tanL + sx[px] / logW * (tanL + tanR);
@@ -1206,13 +1206,13 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 					}
 				}
 				double Pct(long a, long n) => n > 0 ? a * 100.0 / n : 0;
-				// Rundung des Sterns (Shader tastet an nicht ganzzahligen Offsets): unter 0,02 % gilt als 0
+				// rounding of the star (the shader samples at non-integer offsets): below 0.02 % counts as 0
 				var flatOk = Pct(flatFarOut, flatFarN) < 0.02;
 				if (!flatOk) vrChecksFailed++;
 				Log.Info($"[machost] edge zones criterion=raw rawThreshold={VisionOSKit.RawEdgeThreshold:E2} outline near(z<5m)={Pct(nearOut, nearN):F2}% (n={nearN}) far(z>15m)={Pct(farOut, farN):F2}% (n={farN}) flat={Pct(flatOut, flatN):F3}% (n={flatN}) flatFar={Pct(flatFarOut, flatFarN):F3}% (n={flatFarN}, outline={flatFarOut}) ({(flatOk ? "ok" : "ERROR")})");
 			}
-			// Diagnose (C64_STEREO_TESTFILL=rate): die vom Shader gemalte Rate (rot = x/4) gegen die
-			// Rate des Decoders an fünf Spalten der Mittelzeile
+			// diagnostics (C64_STEREO_TESTFILL=rate): the rate painted by the shader (red = x/4) against
+			// the decoder's rate at five columns of the middle row
 			if (VisionOSKit.StereoTestRate)
 			{
 				var parts = new List<string>();
@@ -1228,10 +1228,10 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 			int Mode(int[] hist) { int best = 0; for (int i = 1; i < hist.Length; i++) if (hist[i] > hist[best]) best = i; return best; }
 			string Hist(int[] hist) => string.Join(",", hist.Skip(1).Take(10));
 			var fraction = differing / (double)(w * h) * 100;
-			// je Zone: häufigste Lauflänge gegen die Erwartung, Toleranz 0,75 px oder 30 %. Beurteilt
-			// werden Mitte und rechts (dort hat die Szene bei Frame 900 viele senkrechte Kanten, das
-			// Histogramm einen klaren Gipfel); links ist das Histogramm flach (schräge Kanten, wenige
-			// Läufe) und wird nur ausgegeben. Zonen mit weniger als 100 Läufen zählen nicht.
+			// per zone: most frequent run length against the expectation, tolerance 0.75 px or 30 %. Centre
+			// and right are judged (there the scene at frame 900 has many vertical edges, the histogram
+			// a clear peak); on the left the histogram is flat (slanted edges, few runs) and is only
+			// printed. Zones with fewer than 100 runs do not count.
 			var widthOk = true; var zoneText = new List<string>();
 			for (int z = 0; z < 3; z++)
 			{
@@ -1240,18 +1240,18 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 				var judged = z > 0 && expN[z] >= 100;
 				var ok = !judged || Math.Abs(mode - expected) <= Math.Max(0.75, 0.3 * expected);
 				if (!ok) widthOk = false;
-				zoneText.Add($"{zoneNames[z]} mode={mode} expected={expected:F2} n={expN[z]} hist1..10=[{Hist(hists[z])}]{(judged ? "" : " (nicht beurteilt)")}");
+				zoneText.Add($"{zoneNames[z]} mode={mode} expected={expected:F2} n={expN[z]} hist1..10=[{Hist(hists[z])}]{(judged ? "" : " (not judged)")}");
 			}
 			var vrOk = fraction < 10 && widthOk;
 			if (!vrOk) vrChecksFailed++;
 			Log.Info($"[machost] vr check #{vrChecks} frame={game.Time.Frame} world region={w}x{h} msaa={VisionOSKit.PixelMsaa} differing={differing} ({fraction:F2}%) outlineLike={outlined} edge={VisionOSKit.EdgeAngleDegrees:F3}deg width(phys px) {string.Join(" | ", zoneText)} negative={(VisionOSKit.StereoNegativeNoAngle ? 1 : 0)} ({(vrOk ? "ok" : "ERROR")})");
 		}
-		// Test-Viereck: im schwarzen Feld zählen, wie viele Pixel rein grün sind und wie viele
-		// Zwischenwerte haben (nur mit MSAA > 0)
+		// test quad: count in the black field how many pixels are pure green and how many have
+		// intermediate values (only with MSAA > 0)
 		if (testQuad)
 		{
-			// Zählbereich: das Feld ist logisch gezeichnet; mit Map liegt sein Bild im physischen
-			// Raum, also die Ecken über die Map abbilden
+			// counting region: the field is drawn logically; with a map its image lies in physical
+			// space, so map the corners through the map
 			int qx0 = QuadBox.X, qy0 = QuadBox.Y, qx1 = QuadBox.X + QuadBox.Width, qy1 = QuadBox.Y + QuadBox.Height;
 			if (rateMapPtr != 0)
 			{
@@ -1272,12 +1272,12 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 			if ((hostMsaa > 1) != (partial > 0)) layerChecksFailed++;
 		}
 
-		// externe Tiefe: nach der Auflösung muss sie beschrieben sein (nicht nur der Clear-Wert)
+		// external depth: after the resolve it must be written (not only the clear value)
 		if (layerDepthTex != null)
 		{
 			try
 			{
-				// mit Map nur der physische Bereich (ausserhalb schreibt der Pass nichts)
+				// with a map only the physical region (outside it the pass writes nothing)
 				var drect = rateMapPtr != 0 ? new RectInt(0, 0, (int)physW, (int)physH) : rect;
 				for (int layerIndex = 0; layerIndex < LayerCount; layerIndex++)
 				{
@@ -1298,8 +1298,8 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 			catch (Exception e) { Log.Warning($"[machost] depth check: {e.GetType().Name}: {e.Message}"); }
 		}
 
-		// Kompositionsprüfung: dieselbe Vorschau wie im Fenster in ein Offscreen-Ziel in
-		// Fenstergrösse, zurücklesen, Magenta zählen, Hälften vergleichen, Ränder prüfen
+		// composition check: the same preview as in the window into an offscreen target of window
+		// size, read back, count magenta, compare the halves, check the borders
 		if (previewLeft != null && previewRight != null && batcher != null)
 		{
 			var size = game.Window.SizeInPixels();
@@ -1324,7 +1324,7 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 					if (c.R + c.G + c.B > 0) nonBlack++;
 					if (x < half && c != shot[y * size.X + x + half]) halvesDiffer++;
 				}
-			// im Stereo-Weltpass zeigen die Hälften verschiedene Augen
+			// in the stereo world pass the halves show different eyes
 			var composeOk = magenta == 0 && nonBlack > 0 && (halvesDiffer == 0 || vrWorld);
 			if (!composeOk) layerChecksFailed++;
 			Log.Info($"[machost] compose check #{layerChecks} window={size.X}x{size.Y} fullscreen={game.Window.Fullscreen} magenta={magenta} nonBlack={nonBlack} of {shot.Length} halvesDiffer={halvesDiffer} ({(composeOk ? "ok" : "ERROR")})");
@@ -1332,7 +1332,7 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 	}
 
 	next += delta;
-	// hinterher (etwa nach einer Lücke oder einem langen Frame): auf jetzt setzen, kein Nachholen
+	// behind (after a gap or a long frame, say): set to now, no catching up
 	if (next < clock.Elapsed - delta)
 		next = clock.Elapsed;
 
@@ -1352,9 +1352,9 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 Log.Info($"[machost] End: totalTicks={totalTicks} totalUpdates={totalUpdates} elapsed={clock.Elapsed.TotalSeconds:F2}s gameTime={game.Time.Elapsed.TotalSeconds:F2}s exiting={game.Exiting}" +
 	(layerColor != null ? $" layerChecks={layerChecks} failed={layerChecksFailed}" : "") +
 	(depthCheck > 0 ? $" depthChecks={depthChecks} failed={depthChecksFailed}" : "") +
-	(vrWorld ? $" vrWorldFrames={vrWorldFrames} vrCanvasFrames={vrCanvasFrames} vrChecks={vrChecks} failed={vrChecksFailed} coarseAllocations={VisionOSKit.CoarseAllocations}{(vrWorldFrames > 0 && VisionOSKit.CoarseAllocations != 1 ? " (FEHLER: genau eine Anlage erwartet)" : "")}" : ""));
+	(vrWorld ? $" vrWorldFrames={vrWorldFrames} vrCanvasFrames={vrCanvasFrames} vrChecks={vrChecks} failed={vrChecksFailed} coarseAllocations={VisionOSKit.CoarseAllocations}{(vrWorldFrames > 0 && VisionOSKit.CoarseAllocations != 1 ? " (ERROR: exactly one allocation expected)" : "")}" : ""));
 
-// Aufräumen in der Reihenfolge Ziel, Texturen, native Objekte; Foster gibt nur seine Handles frei
+// Clean up in the order target, textures, native objects; Foster releases only its handles
 VisionOSKit.Outputs = null;
 VisionOSKit.AfterSceneRender = null;
 VisionOSKit.AfterOutput = null;
@@ -1372,7 +1372,7 @@ K6dMetal.k6d_metal_release(hostQueue);
 K6dMetal.k6d_metal_release(hostDevice);
 return 0;
 
-// Vorschau-Komposition: beide Schichten nebeneinander, auf die Zielgrösse skaliert und zentriert
+// Preview composition: both layers side by side, scaled to the target size and centred
 static void Compose(Batcher batcher, Texture left, Texture right, Point2 size)
 {
 	var scale = Math.Min(size.X / (float)(left.Width * 2), size.Y / (float)left.Height);
@@ -1384,7 +1384,7 @@ static void Compose(Batcher batcher, Texture left, Texture right, Point2 size)
 	batcher.PopSampler();
 }
 
-// Bestätigungstaste C als SDL-Tastaturereignis (wie der Diagnose-Patch, hier vom Host)
+// Confirm key C as an SDL keyboard event (like the diagnostics patch, here from the host)
 static unsafe void PushKey(bool down, SDL_Scancode scancode = SDL_Scancode.SDL_SCANCODE_C)
 {
 	var ev = default(SDL_Event);
@@ -1397,10 +1397,10 @@ static unsafe void PushKey(bool down, SDL_Scancode scancode = SDL_Scancode.SDL_S
 }
 
 /// <summary>
-/// M4b Leistung: GPU-Zeit je Command Buffer über den Completion-Rückruf des Kits; die Etiketten
-/// kommen nach jedem Tick in Commit-Reihenfolge (zwei Buffer je Abschicken). Exklusive Zeit eines
-/// Buffers = Ende minus max(Start, Ende des Vorgängers), weil die Queue seriell ausführt, der
-/// Start aber schon beim Einreihen gesetzt wird; die inklusive Zeit ist Ende minus Start.
+/// Performance: GPU time per command buffer through the kit's completion callback; the labels
+/// arrive after every tick in commit order (two buffers per submission). Exclusive time of a
+/// buffer = end minus max(start, end of the predecessor), because the queue executes serially
+/// but the start is already set when enqueued; the inclusive time is end minus start.
 /// </summary>
 static unsafe class GpuPassTimer
 {
@@ -1445,7 +1445,7 @@ static unsafe class GpuPassTimer
 				if (labels.Count > 0) { var e = labels.Dequeue(); label = e.Label; world = e.World; } else { label = "unlabelled"; unlabelled++; }
 				var s = sums.GetValueOrDefault(label);
 				sums[label] = (s.Incl + (end - start), s.Excl + excl, s.Count + 1);
-				// Gesamtzeit eines Welt-Frames: vom ersten Start (world) bis zum letzten Ende (rest)
+				// total time of a world frame: from the first start (world) to the last end (rest)
 				if (world)
 				{
 					if (label == "world" && frameStart < 0) frameStart = start;
@@ -1471,7 +1471,7 @@ static unsafe class GpuPassTimer
 	}
 }
 
-/// <summary>Nativer Helfer native/k6d_metal.m (libk6dmetal.dylib neben dem Programm).</summary>
+/// <summary>Native helper native/k6d_metal.m (libk6dmetal.dylib next to the program).</summary>
 static partial class K6dMetal
 {
 	[DllImport("k6dmetal")] public static extern int k6d_metal_command_buffer_times(nint commandBuffer, out double start, out double end);
@@ -1481,7 +1481,7 @@ static partial class K6dMetal
 	[DllImport("k6dmetal")] public static extern nint k6d_metal_queue(nint device);
 	[DllImport("k6dmetal")] public static extern nint k6d_metal_array_texture(nint device, uint width, uint height, uint layers, int kind);
 	[DllImport("k6dmetal")] public static extern void k6d_metal_release(nint obj);
-	// K6e.2: Rate Map des Hosts
+	// the host's rate map
 	[DllImport("k6dmetal")] public static extern int k6d_metal_supports_rate_map(nint device, uint layers);
 	[DllImport("k6dmetal")] public static extern nint k6d_metal_rate_map(nint device, uint screenWidth, uint screenHeight, uint layers, uint samples, float edgeQuality);
 	[DllImport("k6dmetal")] public static extern int k6d_metal_rate_map_info(nint map, uint layer, out uint screenWidth, out uint screenHeight, out uint physicalWidth, out uint physicalHeight, out uint layerCount);
@@ -1489,11 +1489,11 @@ static partial class K6dMetal
 	[DllImport("k6dmetal")] public static extern void k6d_metal_rate_map_physical_to_screen(nint map, uint layer, float px, float py, out float sx, out float sy);
 }
 
-/// <summary>Feld des Test-Vierecks in der Schichttextur (K6d.3).</summary>
+/// <summary>Field of the test quad in the layer texture.</summary>
 static class QuadBox { public const int X = 40, Y = 560, Width = 200, Height = 120; }
 
-/// <summary>Messbild K6e.2: Balkenlagen als Anteile der logischen Grösse; Zeilen und Spalten der
-/// Stichproben liegen zwischen den Kreuzungen.</summary>
+/// <summary>Measurement image: bar positions as fractions of the logical size; the rows and columns
+/// of the samples lie between the crossings.</summary>
 static class RateMapBars
 {
 	public static readonly float[] VerticalFractions = [0.1f, 0.3f, 0.5f, 0.7f, 0.9f];
