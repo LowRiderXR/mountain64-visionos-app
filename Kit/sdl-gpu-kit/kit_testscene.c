@@ -1,27 +1,27 @@
 /*
- * kit_testscene.c — SDL_GPU-Kit für visionOS, Testszene Stufen K0 und K1a.
+ * kit_testscene.c — SDL_GPU kit for visionOS, test scene stages basic and inject.
  *
- * Nur SDL3-API plus die Metal-Hilfen aus kit_testscene_metal.h für den Host-Queue-Test.
- * Jede Zeile beginnt mit "[c64-kit]" und nennt den Schritt; bei einem Fehlschlag folgt der
- * Text von SDL_GetError(). Siehe kit_testscene.h.
+ * SDL3 API only plus the Metal helpers from kit_testscene_metal.h for the host queue test.
+ * Every line starts with "[c64-kit]" and names the step; on a failure the text of
+ * SDL_GetError() follows. See kit_testscene.h.
  *
- * Belegte Voraussetzungen (SDL main 4cfdb71ee):
- *  - Ein GPU-Device braucht ein initialisiertes Video-Subsystem (src/gpu/SDL_gpu.c:611,
+ * Documented prerequisites (SDL main 4cfdb71ee):
+ *  - A GPU device needs an initialised video subsystem (src/gpu/SDL_gpu.c:611,
  *    "Video subsystem not initialized" in SDL_GPUSelectBackend).
- *  - Auf iOS/visionOS ist SDL_MAIN_NEEDED gesetzt; SDL_Init scheitert ohne SDL_SetMainReady
+ *  - On iOS/visionOS SDL_MAIN_NEEDED is set; SDL_Init fails without SDL_SetMainReady
  *    (src/SDL.c:200-202, 345-346).
- *  - Der Metal-Treiber verlangt die Property SHADERS_MSL oder SHADERS_METALLIB und einen
- *    Video-Treiber mit Metal_CreateView (src/gpu/metal/SDL_gpu_metal.m:4363-4378).
- *  - K1a: SDL_CreateGPUDevice/SDL_DestroyGPUDevice prüfen keinen Thread (SDL_gpu.c,
- *    SDL_gpu_metal.m ohne SDL_IsMainThread); nur SDL_Init(VIDEO) gehört auf den Hauptthread.
+ *  - The Metal driver requires the property SHADERS_MSL or SHADERS_METALLIB and a video driver
+ *    with Metal_CreateView (src/gpu/metal/SDL_gpu_metal.m:4363-4378).
+ *  - Inject: SDL_CreateGPUDevice/SDL_DestroyGPUDevice check no thread (SDL_gpu.c,
+ *    SDL_gpu_metal.m without SDL_IsMainThread); only SDL_Init(VIDEO) belongs on the main thread.
  */
 
 #include "kit_testscene.h"
 #include "kit_testscene_metal.h"
 
 #include <SDL3/SDL.h>
-/* SDL_SetMainReady steht nur in SDL_main.h; SDL_MAIN_HANDLED verhindert, dass der Header main()
- * umdefiniert (SDL_main.h:570-583). Der Host (SwiftUI-App, CLI) hat sein eigenes main. */
+/* SDL_SetMainReady is only in SDL_main.h; SDL_MAIN_HANDLED prevents the header from redefining
+ * main() (SDL_main.h:570-583). The host (SwiftUI app, CLI) has its own main. */
 #define SDL_MAIN_HANDLED
 #include <SDL3/SDL_main.h>
 
@@ -51,7 +51,7 @@ static void kit_logf(kit_ctx *ctx, const char *fmt, ...)
 static void kit_fail(kit_ctx *ctx, const char *step)
 {
     const char *err = SDL_GetError();
-    kit_logf(ctx, "[c64-kit] FAIL step=%s error=\"%s\"", step, (err && *err) ? err : "(kein SDL-Fehlertext)");
+    kit_logf(ctx, "[c64-kit] FAIL step=%s error=\"%s\"", step, (err && *err) ? err : "(no SDL error text)");
 }
 
 static double kit_ms_since(Uint64 start)
@@ -59,7 +59,7 @@ static double kit_ms_since(Uint64 start)
     return (double)(SDL_GetPerformanceCounter() - start) * 1000.0 / (double)SDL_GetPerformanceFrequency();
 }
 
-/* Shader-Formate als Namen, Bitmaske aus SDL_gpu.h (SDL_GPU_SHADERFORMAT_*). */
+/* Shader formats as names, bit mask from SDL_gpu.h (SDL_GPU_SHADERFORMAT_*). */
 static void kit_format_names(SDL_GPUShaderFormat formats, char *out, size_t cap)
 {
     static const struct { SDL_GPUShaderFormat bit; const char *name; } table[] = {
@@ -87,14 +87,14 @@ static void kit_format_names(SDL_GPUShaderFormat formats, char *out, size_t cap)
 static bool kit_init_sdl(kit_ctx *ctx)
 {
     const Uint64 t0 = SDL_GetPerformanceCounter();
-    SDL_SetMainReady(); /* SDL_MAIN_NEEDED auf iOS/visionOS, SDL.c:345 */
+    SDL_SetMainReady(); /* SDL_MAIN_NEEDED on iOS/visionOS, SDL.c:345 */
     if (!SDL_Init(SDL_INIT_VIDEO)) {
         kit_fail(ctx, "init");
         return false;
     }
     const char *video = SDL_GetCurrentVideoDriver();
     kit_logf(ctx, "[c64-kit] step=init subsystems=video videoDriver=%s ms=%.1f",
-             video ? video : "(keiner)", kit_ms_since(t0));
+             video ? video : "(none)", kit_ms_since(t0));
     return true;
 }
 
@@ -138,18 +138,18 @@ int kit_testscene_run(const kit_testscene_options *options, kit_log_fn log, void
     SDL_GPUTransferBuffer *transfer = NULL;
     SDL_GPUFence *fence = NULL;
 
-    /* ---- Versionen: gelinkte Bibliothek gegen kompilierten Header ---- */
+    /* ---- Versions: linked library against compiled header ---- */
     {
         const int linked = SDL_GetVersion();
         const char *revision = SDL_GetRevision();
         kit_logf(&ctx, "[c64-kit] step=version linked=%d.%d.%d compiled=%d.%d.%d revision=\"%s\" platform=%s mode=%s",
                  SDL_VERSIONNUM_MAJOR(linked), SDL_VERSIONNUM_MINOR(linked), SDL_VERSIONNUM_MICRO(linked),
                  SDL_MAJOR_VERSION, SDL_MINOR_VERSION, SDL_MICRO_VERSION,
-                 (revision && *revision) ? revision : "(leer)", SDL_GetPlatform(),
+                 (revision && *revision) ? revision : "(empty)", SDL_GetPlatform(),
                  inject ? "inject" : "basic");
     }
 
-    /* ---- Schritt 1: SDL_Init(VIDEO), Pflicht für SDL_GPU (SDL_gpu.c:611) ---- */
+    /* ---- Step 1: SDL_Init(VIDEO), required for SDL_GPU (SDL_gpu.c:611) ---- */
     if (opt.init_sdl) {
         if (!kit_init_sdl(&ctx)) {
             result = KIT_STEP_INIT;
@@ -158,16 +158,16 @@ int kit_testscene_run(const kit_testscene_options *options, kit_log_fn log, void
         sdl_initialized = true;
     } else {
         const char *video = SDL_GetCurrentVideoDriver();
-        kit_logf(&ctx, "[c64-kit] step=init skipped videoDriver=%s", video ? video : "(keiner)");
+        kit_logf(&ctx, "[c64-kit] step=init skipped videoDriver=%s", video ? video : "(none)");
         if (video == NULL) {
-            SDL_SetError("Video-Subsystem nicht initialisiert; kit_testscene_init_sdl zuerst rufen");
+            SDL_SetError("Video subsystem not initialised; call kit_testscene_init_sdl first");
             kit_fail(&ctx, "init");
             result = KIT_STEP_INIT;
             goto done;
         }
     }
 
-    /* GPU-Treiber, die in dieser SDL-Bibliothek einkompiliert sind. */
+    /* GPU drivers compiled into this SDL library. */
     {
         char drivers[256] = "";
         const int n = SDL_GetNumGPUDrivers();
@@ -180,8 +180,8 @@ int kit_testscene_run(const kit_testscene_options *options, kit_log_fn log, void
         kit_logf(&ctx, "[c64-kit] step=drivers count=%d names=%s", n, drivers[0] ? drivers : "-");
     }
 
-    /* ---- Schritt 2: Device. MSL+METALLIB erlauben den Metal-Treiber (SDL_gpu_metal.m:4369).
-     *      K1a: Host-Device und/oder Host-Queue über die P1-Properties einspeisen. ---- */
+    /* ---- Step 2: device. MSL+METALLIB allow the Metal driver (SDL_gpu_metal.m:4369).
+     *      Inject: feed in the host device and/or host queue through the device properties. ---- */
     void *sdl_metal_device = NULL;
     void *sdl_metal_queue = NULL;
     {
@@ -200,7 +200,7 @@ int kit_testscene_run(const kit_testscene_options *options, kit_log_fn log, void
         }
 #else
         if (inject) {
-            kit_logf(&ctx, "[c64-kit] WARN inject angefordert, aber die SDL-Header kennen P1 nicht (ohne Patch gebaut)");
+            kit_logf(&ctx, "[c64-kit] WARN inject requested, but the SDL headers lack the device properties (built without the patch)");
         }
 #endif
         device = SDL_CreateGPUDeviceWithProperties(props);
@@ -223,11 +223,10 @@ int kit_testscene_run(const kit_testscene_options *options, kit_log_fn log, void
                  sdl_metal_device, sdl_metal_queue, kit_ms_since(t0));
     }
 
-    /* ---- K1a: Zeigervergleich Host gegen SDL ---- */
+    /* ---- Inject: pointer comparison host against SDL ---- */
     if (inject) {
-        /* Erwartung je nach Modus: Device gesetzt → gleiches Device; Queue gesetzt → gleiche
-         * Queue und SDLs Device = Device der Queue; nur Device → SDL hat eine eigene Queue
-         * auf diesem Device. */
+        /* Expectation per mode: device set -> same device; queue set -> same queue and SDL's
+         * device = device of the queue; only device -> SDL has its own queue on this device. */
         void *expected_device = opt.metal_device ? opt.metal_device : kit_metal_queue_device(opt.metal_queue);
         const bool same_device = (sdl_metal_device != NULL) && (sdl_metal_device == expected_device);
         const bool same_queue = (opt.metal_queue != NULL) && (sdl_metal_queue == opt.metal_queue);
@@ -239,14 +238,14 @@ int kit_testscene_run(const kit_testscene_options *options, kit_log_fn log, void
                  same_device ? 1 : 0, same_queue ? 1 : 0, queue_on_device ? 1 : 0, ok ? 1 : 0,
                  kit_metal_device_name(expected_device, name, sizeof(name)));
         if (!ok) {
-            SDL_SetError("SDL nutzt nicht die eingespeisten Metal-Objekte");
+            SDL_SetError("SDL does not use the injected Metal objects");
             kit_fail(&ctx, "inject");
             result = KIT_STEP_INJECT;
             goto done;
         }
     }
 
-    /* ---- Schritt 3: eigene Textur als Farbziel ---- */
+    /* ---- Step 3: own texture as colour target ---- */
     const SDL_GPUTextureFormat format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
     {
         const bool supported = SDL_GPUTextureSupportsFormat(device, format, SDL_GPU_TEXTURETYPE_2D,
@@ -271,7 +270,7 @@ int kit_testscene_run(const kit_testscene_options *options, kit_log_fn log, void
                  width, height, supported ? 1 : 0);
     }
 
-    /* ---- Schritt 4: Transfer-Puffer für das Rücklesen ---- */
+    /* ---- Step 4: transfer buffer for the read-back ---- */
     const Uint32 pixel_bytes = 4;
     const Uint32 download_bytes = width * height * pixel_bytes;
     {
@@ -287,7 +286,7 @@ int kit_testscene_run(const kit_testscene_options *options, kit_log_fn log, void
         }
     }
 
-    /* ---- Schritt 5: Command Buffer ---- */
+    /* ---- Step 5: command buffer ---- */
     SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(device);
     if (!cmd) {
         kit_fail(&ctx, "cmdbuf");
@@ -295,7 +294,7 @@ int kit_testscene_run(const kit_testscene_options *options, kit_log_fn log, void
         goto done;
     }
 
-    /* ---- Schritt 6: Clear-Pass (0.25, 0.5, 0.75, 1.0) ---- */
+    /* ---- Step 6: clear pass (0.25, 0.5, 0.75, 1.0) ---- */
     const SDL_FColor clear = { 0.25f, 0.5f, 0.75f, 1.0f };
     {
         SDL_GPUColorTargetInfo target;
@@ -316,7 +315,7 @@ int kit_testscene_run(const kit_testscene_options *options, kit_log_fn log, void
                  clear.r, clear.g, clear.b, clear.a);
     }
 
-    /* ---- Schritt 7: Textur in den Transfer-Puffer kopieren ---- */
+    /* ---- Step 7: copy the texture into the transfer buffer ---- */
     {
         SDL_GPUCopyPass *copy = SDL_BeginGPUCopyPass(cmd);
         if (!copy) {
@@ -340,7 +339,7 @@ int kit_testscene_run(const kit_testscene_options *options, kit_log_fn log, void
         SDL_EndGPUCopyPass(copy);
     }
 
-    /* ---- Schritt 8: Abschicken und auf den Fence warten ---- */
+    /* ---- Step 8: submit and wait for the fence ---- */
     {
         const Uint64 t0 = SDL_GetPerformanceCounter();
         fence = SDL_SubmitGPUCommandBufferAndAcquireFence(cmd);
@@ -358,7 +357,7 @@ int kit_testscene_run(const kit_testscene_options *options, kit_log_fn log, void
                  SDL_QueryGPUFence(device, fence) ? 1 : 0, kit_ms_since(t0));
     }
 
-    /* ---- Schritt 9: Pixel lesen und mit der Clear-Farbe vergleichen ---- */
+    /* ---- Step 9: read the pixel and compare with the clear colour ---- */
     {
         const Uint8 *pixels = (const Uint8 *)SDL_MapGPUTransferBuffer(device, transfer, false);
         if (!pixels) {
@@ -375,7 +374,7 @@ int kit_testscene_run(const kit_testscene_options *options, kit_log_fn log, void
         const Uint8 *pc = pixels + center;
         bool ok = true;
         for (int i = 0; i < 4; i++) {
-            /* Toleranz 1 für die Rundung 0.75*255 = 191.25 im Backend. */
+            /* Tolerance 1 for the rounding 0.75*255 = 191.25 in the backend. */
             if (SDL_abs((int)p0[i] - (int)expected[i]) > 1 || SDL_abs((int)pc[i] - (int)expected[i]) > 1) {
                 ok = false;
             }
@@ -385,7 +384,7 @@ int kit_testscene_run(const kit_testscene_options *options, kit_log_fn log, void
                  expected[0], expected[1], expected[2], expected[3], ok ? 1 : 0);
         SDL_UnmapGPUTransferBuffer(device, transfer);
         if (!ok) {
-            SDL_SetError("Pixel weicht von der Clear-Farbe ab");
+            SDL_SetError("Pixel differs from the clear colour");
             kit_fail(&ctx, "readback");
             result = KIT_STEP_READBACK;
             goto done;
@@ -407,7 +406,7 @@ done:
         device = NULL;
     }
 
-    /* ---- K1a: Host-Queue nach SDL_DestroyGPUDevice weiter brauchbar? ---- */
+    /* ---- Inject: host queue still usable after SDL_DestroyGPUDevice? ---- */
     if (opt.metal_queue && result == KIT_STEP_OK) {
         char status[256];
         const bool ok = kit_metal_hostqueue_check(opt.metal_queue, status, sizeof(status));

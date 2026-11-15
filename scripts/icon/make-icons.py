@@ -182,7 +182,7 @@ def abend():
     write_variant("abend", back, middle, front)
 
 
-# ---------------------------------------------------------------- variant 1b: Abend mit Schnee (dusk, snowfall)
+# ---------------------------------------------------------------- variant 1b: abend_schnee (dusk with snowfall)
 def flakes(g, seeds, c, big=False):
     """Snowflakes: single pixels, or a 2x2 block with a plus for the near layer."""
     for x, y in seeds:
@@ -293,7 +293,7 @@ def minimal():
     write_variant("minimal", back, middle, front)
 
 
-# ---------------------------------------------------------------- final: Nacht mit Schneefall
+# ---------------------------------------------------------------- final: nacht_schnee (night with snowfall)
 # Layers as agreed: Back = sky, moon, far ridge (opaque, edge to edge); Middle = the main peak with
 # its snow cap and outline; Front = the side peak on the right, the snowy ground and the flakes
 # (they float in front of everything). No glow around the moon (the system adds shine and shadow).
@@ -335,7 +335,7 @@ def nacht_schnee():
     flakes(front, [(6, 10), (20, 6), (44, 7), (57, 16), (10, 30), (38, 24), (60, 38), (24, 46), (48, 50)], (255, 255, 255, 255), big=True)
     write_variant("nacht-schnee", back, middle, front)
 
-# ---------------------------------------------------------------- Abend mit Schnee, ohne Sonne und Mond
+# ---------------------------------------------------------------- abend_schnee_ohne (dusk with snow, without sun and moon)
 # Same layer split as nacht_schnee (Back sky and far ridge, Middle main peak, Front side peak,
 # ground and flakes), dusk palette, no sun and no moon: the sky gradient alone carries the light.
 def abend_schnee_ohne():
@@ -368,7 +368,7 @@ def abend_schnee_ohne():
     flakes(front, [(6, 10), (20, 6), (44, 7), (57, 16), (10, 30), (38, 24), (60, 38), (24, 46), (48, 50)], (255, 255, 255, 255), big=True)
     write_variant("abend-schnee-ohne", back, middle, front)
 
-# ---------------------------------------------------------------- Abend mit Schnee, nach der Vorlage
+# ---------------------------------------------------------------- abend_schnee_v2 (dusk with snow, after the reference picture)
 # Like abend_schnee_ohne, but after the reference picture: a large snow cap with a darker right
 # half, a higher lavender far ridge with its own snow, a pale ground and twelve flakes.
 def abend_schnee_v2():

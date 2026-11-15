@@ -1,15 +1,15 @@
 /*
- * kit_import.h — SDL_GPU-Kit für visionOS, Stufe K1b: Baustein P3 (externe Texturen).
+ * kit_import.h — SDL_GPU kit for visionOS, import stage: external textures.
  *
- * Importiert MTLTexturen des Hosts (Farbe und Tiefe eines Compositor-Drawables) als
- * SDL_GPUTexture über SDL_PROP_GPU_TEXTURE_CREATE_METAL_TEXTURE_POINTER (Fork sdl-visionos) und
- * löscht alle Schichten über SDL_GPU, pro Schicht ein Render-Pass. Die Wrapper entstehen pro
- * Frame und werden nach dem Submit freigegeben (SDL zerstört sie verzögert, sobald der Command
- * Buffer fertig ist; the wrappers are therefore safe to release right after the submit).
+ * Imports MTLTextures of the host (colour and depth of a compositor drawable) as
+ * SDL_GPUTexture through SDL_PROP_GPU_TEXTURE_CREATE_METAL_TEXTURE_POINTER (fork sdl-visionos)
+ * and clears all layers through SDL_GPU, one render pass per layer. The wrappers are created
+ * per frame and released after the submit (SDL destroys them deferred once the command buffer
+ * is complete; the wrappers are therefore safe to release right after the submit).
  *
- * Reihenfolge mit dem Present: SDL committet seinen Command Buffer synchron auf der geteilten
- * Queue (P1); der Host committet danach seinen Buffer mit encodePresent. MTLCommandQueue ist
- * eine serielle Queue, Ausführung in Commit-Reihenfolge (MTLCommandQueue.h, MTLCommandBuffer.h).
+ * Order with the present: SDL commits its command buffer synchronously on the shared queue;
+ * the host commits its buffer with encodePresent afterwards. MTLCommandQueue is a serial queue,
+ * execution in commit order (MTLCommandQueue.h, MTLCommandBuffer.h).
  */
 
 #ifndef KIT_IMPORT_H
@@ -26,53 +26,52 @@ extern "C" {
 typedef struct kit_import_session kit_import_session;
 
 typedef struct kit_import_stats {
-    /* Fensterwerte seit dem letzten kit_import_take_stats */
+    /* window values since the last kit_import_take_stats */
     unsigned frames;
     unsigned fails;
-    double sum_ms;          /* CPU-Zeit des SDL-Teils (Wrapper, Pässe, Submit, Release) */
+    double sum_ms;          /* CPU time of the SDL part (wrappers, passes, submit, release) */
     double max_ms;
-    /* Gesamtwerte seit kit_import_begin */
+    /* totals since kit_import_begin */
     unsigned long frames_total;
     unsigned long fails_total;
     unsigned long wrappers_created;
     unsigned long wrappers_released;
-    unsigned distinct_color;    /* verschiedene MTLTexture-Zeiger, die der Host bisher übergab */
+    unsigned distinct_color;    /* distinct MTLTexture pointers the host has passed so far */
     unsigned distinct_depth;
 } kit_import_stats;
 
-/* SDL_GPU-Device auf dem Device und der Queue des Hosts (P1) anlegen. SDL_Init(VIDEO) muss
- * schon gelaufen sein (kit_testscene_init_sdl im Hauptthread). NULL bei Fehler (Zeile FAIL). */
+/* Create the SDL_GPU device on the host's device and queue. SDL_Init(VIDEO) must already have
+ * run (kit_testscene_init_sdl on the main thread). NULL on error (FAIL line). */
 kit_import_session *kit_import_begin(void *metal_device, void *metal_queue, kit_log_fn log, void *user);
 
-/* Diagnose (K1b, Schwarzbild trotz fails=0): wait = nach jedem Submit auf den Fence warten,
- * bevor der Host committet (trennt GPU-Reihenfolge von «Pass schreibt nichts»); verify_every =
- * alle N Frames den Mittelpixel von Schicht 0 der importierten Farbtextur über SDL zurücklesen
- * und loggen (0 = aus; erzwingt für diesen Frame das Warten). */
+/* Diagnostics (black image despite fails=0): wait = wait for the fence after every submit
+ * before the host commits (separates GPU order from "the pass writes nothing"); verify_every =
+ * every N frames read the centre pixel of layer 0 of the imported colour texture back through
+ * SDL and log it (0 = off; forces the wait for that frame). */
 void kit_import_set_diagnostics(kit_import_session *session, bool wait_for_gpu, unsigned verify_every);
 
-/* Hat kit_import_clear_frame in diesem Frame den Mittelpixel zurückgelesen, liefert das die vier
- * Bytes (Speicherreihenfolge, bei BGRA8 b,g,r,a) und true; der Host liest dann an derselben
- * Stelle unmittelbar vor encodePresent nochmals. Setzt das Kennzeichen zurück. */
+/* If kit_import_clear_frame read the centre pixel back in this frame, returns the four bytes
+ * (memory order, for BGRA8 b,g,r,a) and true; the host then reads the same spot again right
+ * before encodePresent. Resets the flag. */
 bool kit_import_last_verify(kit_import_session *session, unsigned char out[4]);
 
-/* Farb- und Tiefentextur des Frames importieren und alle Schichten löschen (Farbe rgba, Tiefe
- * depth), Command Buffer committen, Wrapper freigeben. false, wenn ein Schritt scheitert; der
- * Host löscht dann selbst. Loggt beim ersten Aufruf step=import und bei neuen Texturzeigern
- * step=import-rotation (erste 600 Frames). Fehler werden höchstens einmal pro Sekunde geloggt. */
+/* Import the frame's colour and depth texture and clear all layers (colour rgba, depth depth),
+ * commit the command buffer, release the wrappers. false when a step fails; the host then
+ * clears itself. Logs step=import on the first call and step=import-rotation on new texture
+ * pointers (first 600 frames). Errors are logged at most once per second. */
 bool kit_import_clear_frame(kit_import_session *session, void *color_texture, void *depth_texture,
                             const float rgba[4], float depth);
 
-/* Fensterwerte lesen und nullen; Gesamtwerte bleiben. */
+/* Read and reset the window values; totals stay. */
 void kit_import_take_stats(kit_import_session *session, kit_import_stats *out);
 
-/* Auf die GPU warten, Device zerstören, Zusammenfassung loggen (step=import-end). */
+/* Wait for the GPU, destroy the device, log the summary (step=import-end). */
 void kit_import_end(kit_import_session *session);
 
-/* Mac-Selbsttest: eigenes Device und eigene Queue, zwei 2D-Array-Texturen mit 2 Schichten
- * (bgra8Unorm_srgb, depth32Float), Import, pro Schicht ein Clear-Pass mit verschiedener Farbe
- * und Tiefe, beide Schichten zurücklesen und vergleichen, danach Negativtests (falsches Format,
- * falsche Schichtzahl müssen mit Fehlertext scheitern). SDL_Init muss gelaufen sein.
- * 0 = bestanden, sonst Schrittnummer ab 20. */
+/* Mac self-test: own device and queue, two 2D array textures with 2 layers (bgra8Unorm_srgb,
+ * depth32Float), import, one clear pass per layer with different colour and depth, read both
+ * layers back and compare, then negative tests (wrong format, wrong layer count must fail with
+ * an error text). SDL_Init must have run. 0 = passed, otherwise step number from 20. */
 int kit_import_selftest(kit_log_fn log, void *user, bool debug_mode);
 
 #ifdef __cplusplus

@@ -1,5 +1,5 @@
 /*
- * kit_import.c — SDL_GPU-Kit für visionOS, Stufe K1b: Baustein P3. Siehe kit_import.h.
+ * kit_import.c — SDL_GPU kit for visionOS, import stage. See kit_import.h.
  */
 
 #include "kit_import.h"
@@ -23,7 +23,7 @@ struct kit_import_session {
     void *distinct_color[KIT_DISTINCT_MAX];
     void *distinct_depth[KIT_DISTINCT_MAX];
     kit_import_stats stats;
-    /* Diagnose */
+    /* diagnostics */
     bool wait_for_gpu;
     unsigned verify_every;
     SDL_GPUTransferBuffer *verify_buffer;
@@ -70,29 +70,29 @@ static const char *kit_format_name(int sdl_format)
     case SDL_GPU_TEXTUREFORMAT_D32_FLOAT: return "D32_FLOAT";
     case SDL_GPU_TEXTUREFORMAT_D32_FLOAT_S8_UINT: return "D32_FLOAT_S8_UINT";
     case SDL_GPU_TEXTUREFORMAT_D16_UNORM: return "D16_UNORM";
-    default: return "unbekannt";
+    default: return "unknown";
     }
 }
 
-/* Create-Info aus dem MTLTexture ableiten und importieren. Bei Fehler NULL; der SDL-Fehlertext
- * steht in SDL_GetError(). Mit override_format / override_layers (>= 0) für Negativtests. */
+/* Derive the create info from the MTLTexture and import. NULL on error; the SDL error text is
+ * in SDL_GetError(). With override_format / override_layers (>= 0) for negative tests. */
 static SDL_GPUTexture *kit_wrap(SDL_GPUDevice *device, void *mtl_texture, bool depth,
                                 int override_format, int override_layers, kit_metal_texture_desc *desc_out)
 {
     kit_metal_texture_desc desc;
     if (!kit_metal_texture_info(mtl_texture, &desc)) {
-        SDL_SetError("MTLTexture-Beschreibung nicht lesbar");
+        SDL_SetError("MTLTexture description not readable");
         return NULL;
     }
     if (desc_out) {
         *desc_out = desc;
     }
     if (desc.sdl_type < 0) {
-        SDL_SetError("MTLTexture-Typ %d hat kein SDL-Gegenstück", desc.mtl_type);
+        SDL_SetError("MTLTexture type %d has no SDL counterpart", desc.mtl_type);
         return NULL;
     }
     if (desc.sdl_format == SDL_GPU_TEXTUREFORMAT_INVALID && override_format < 0) {
-        SDL_SetError("MTLPixelFormat %d hat kein SDL-Gegenstück", desc.mtl_pixel_format);
+        SDL_SetError("MTLPixelFormat %d has no SDL counterpart", desc.mtl_pixel_format);
         return NULL;
     }
 
@@ -111,7 +111,7 @@ static SDL_GPUTexture *kit_wrap(SDL_GPUDevice *device, void *mtl_texture, bool d
     SDL_SetPointerProperty(info.props, SDL_PROP_GPU_TEXTURE_CREATE_METAL_TEXTURE_POINTER, mtl_texture);
 #else
     SDL_DestroyProperties(info.props);
-    SDL_SetError("SDL-Header ohne P3 (SDL_PROP_GPU_TEXTURE_CREATE_METAL_TEXTURE_POINTER fehlt)");
+    SDL_SetError("SDL headers without external textures (SDL_PROP_GPU_TEXTURE_CREATE_METAL_TEXTURE_POINTER missing)");
     return NULL;
 #endif
     SDL_GPUTexture *texture = SDL_CreateGPUTexture(device, &info);
@@ -119,8 +119,8 @@ static SDL_GPUTexture *kit_wrap(SDL_GPUDevice *device, void *mtl_texture, bool d
     return texture;
 }
 
-/* Alle Schichten einer importierten Farb- und Tiefentextur löschen, pro Schicht ein Pass.
- * rgba_per_layer/depth_per_layer: ein Eintrag pro Schicht oder NULL für den Einheitswert. */
+/* Clear all layers of an imported colour and depth texture, one pass per layer.
+ * rgba_per_layer/depth_per_layer: one entry per layer or NULL for the uniform value. */
 static bool kit_clear_layers(SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *color, SDL_GPUTexture *depth,
                              unsigned layers, const float *rgba, float depth_value,
                              const float (*rgba_per_layer)[4], const float *depth_per_layer)
@@ -162,7 +162,7 @@ static unsigned kit_note_distinct(void **list, void *ptr)
     unsigned count = 0;
     for (unsigned i = 0; i < KIT_DISTINCT_MAX; i++) {
         if (list[i] == ptr) {
-            /* bekannt: Anzahl zählen */
+            /* known: count the entries */
             for (unsigned j = 0; j < KIT_DISTINCT_MAX && list[j]; j++) count++;
             return count;
         }
@@ -223,7 +223,7 @@ void kit_import_set_diagnostics(kit_import_session *s, bool wait_for_gpu, unsign
         SDL_GPUTransferBufferCreateInfo info;
         SDL_zero(info);
         info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD;
-        info.size = 64; /* ein Pixel, grosszügig */
+        info.size = 64; /* one pixel, generous */
         s->verify_buffer = SDL_CreateGPUTransferBuffer(s->device, &info);
     }
     kit_logf(s, "[c64-kit] step=import-diagnostics wait=%d verifyEvery=%u verifyBuffer=%d",
@@ -313,7 +313,7 @@ bool kit_import_clear_frame(kit_import_session *s, void *color_texture, void *de
         return false;
     }
 
-    /* Diagnose: Mittelpixel von Schicht 0 nach dem Clear zurücklesen (alle verify_every Frames). */
+    /* Diagnostics: read the centre pixel of layer 0 back after the clear (every verify_every frames). */
     const bool verify_now = (s->verify_every > 0) && s->verify_buffer && (s->stats.frames_total % s->verify_every == 1);
     if (verify_now) {
         SDL_GPUCopyPass *copy = SDL_BeginGPUCopyPass(cmd);
@@ -352,9 +352,9 @@ bool kit_import_clear_frame(kit_import_session *s, void *color_texture, void *de
         if (verify_now) {
             const Uint8 *p = (const Uint8 *)SDL_MapGPUTransferBuffer(s->device, s->verify_buffer, false);
             if (p) {
-                /* Bytes in Speicherreihenfolge; bei BGRA8 also B,G,R,A. Clear (0, 0.1, 0.3) in
-                 * sRGB-Kodierung erwartet etwa B=149, G=89, R=0, A=255. */
-                kit_logf(s, "[c64-kit] step=import-verify frame=%lu layer=0 afterSDL=%u,%u,%u,%u (Speicherreihenfolge, bei BGRA8: b,g,r,a) format=%s",
+                /* Bytes in memory order; for BGRA8 that is B,G,R,A. Clear (0, 0.1, 0.3) in sRGB
+                 * encoding expects about B=149, G=89, R=0, A=255. */
+                kit_logf(s, "[c64-kit] step=import-verify frame=%lu layer=0 afterSDL=%u,%u,%u,%u (memory order, for BGRA8: b,g,r,a) format=%s",
                          s->stats.frames_total, p[0], p[1], p[2], p[3], kit_format_name(cdesc.sdl_format));
                 SDL_memcpy(s->verify_pixel, p, 4);
                 s->verify_pending = true;
@@ -367,8 +367,8 @@ bool kit_import_clear_frame(kit_import_session *s, void *color_texture, void *de
         kit_import_fail(s, "import-submit", NULL, color, depth);
         return false;
     }
-    /* Freigabe sofort nach dem Submit: SDL zerstört den Wrapper erst, wenn der Command Buffer
-     * fertig ist (referenceCount), und gibt dabei nur seine eigene Referenz ab. */
+    /* Release right after the submit: SDL destroys the wrapper only when the command buffer is
+     * complete (referenceCount) and releases only its own reference. */
     SDL_ReleaseGPUTexture(s->device, color);
     s->stats.wrappers_released += 1;
     if (depth) {
@@ -414,7 +414,7 @@ void kit_import_end(kit_import_session *s)
     SDL_free(s);
 }
 
-/* ------------------------------------------------------------------ Mac-Selbsttest */
+/* ------------------------------------------------------------------ Mac self-test */
 
 typedef struct kit_self_ctx {
     kit_log_fn log;
@@ -450,7 +450,7 @@ int kit_import_selftest(kit_log_fn log, void *user, bool debug_mode)
     kit_import_session *s = NULL;
 
     if (!kit_metal_create_host_objects(&host_device, &host_queue)) {
-        self_logf(&ctx, "[c64-kit] FAIL step=selftest-host error=\"Device/Queue nicht erzeugt\"");
+        self_logf(&ctx, "[c64-kit] FAIL step=selftest-host error=\"device/queue not created\"");
         return 20;
     }
     s = kit_import_begin(host_device, host_queue, log, user);
@@ -462,12 +462,12 @@ int kit_import_selftest(kit_log_fn log, void *user, bool debug_mode)
 
     if (!kit_metal_create_array_texture(host_device, false, W, H, LAYERS, &mtl_color) ||
         !kit_metal_create_array_texture(host_device, true, W, H, LAYERS, &mtl_depth)) {
-        self_logf(&ctx, "[c64-kit] FAIL step=selftest-textures error=\"MTLTexture nicht erzeugt\"");
+        self_logf(&ctx, "[c64-kit] FAIL step=selftest-textures error=\"MTLTexture not created\"");
         result = 22;
         goto done;
     }
 
-    /* Import */
+    /* import */
     kit_metal_texture_desc cdesc, ddesc;
     color = kit_wrap(s->device, mtl_color, false, -1, -1, &cdesc);
     if (!color) {
@@ -487,8 +487,8 @@ int kit_import_selftest(kit_log_fn log, void *user, bool debug_mode)
               ddesc.sdl_type == SDL_GPU_TEXTURETYPE_2D_ARRAY ? "2D_ARRAY" : "2D", kit_format_name(ddesc.sdl_format),
               ddesc.width, ddesc.height, ddesc.layers, mtl_depth, (void *)depth);
 
-    /* Pro Schicht ein Pass: Schicht 0 rot, Tiefe 0.25; Schicht 1 blau, Tiefe 0.75. Nur 0 und 1
-     * in der Farbe, damit die sRGB-Kodierung beim Rücklesen keine Rolle spielt. */
+    /* One pass per layer: layer 0 red, depth 0.25; layer 1 blue, depth 0.75. Only 0 and 1 in
+     * the colour, so the sRGB encoding plays no role in the read-back. */
     const float rgba[2][4] = { { 1.0f, 0.0f, 0.0f, 1.0f }, { 0.0f, 0.0f, 1.0f, 1.0f } };
     const float depths[2] = { 0.25f, 0.75f };
     const Uint32 pixel_bytes = 4;
@@ -558,7 +558,7 @@ int kit_import_selftest(kit_log_fn log, void *user, bool debug_mode)
         goto done;
     }
 
-    /* Rücklesen: Farbe als BGRA-Bytes, Tiefe als float. */
+    /* Read-back: colour as BGRA bytes, depth as float. */
     {
         const Uint8 *cp = (const Uint8 *)SDL_MapGPUTransferBuffer(s->device, tcolor, false);
         const float *dpf = (const float *)SDL_MapGPUTransferBuffer(s->device, tdepth, false);
@@ -594,18 +594,18 @@ int kit_import_selftest(kit_log_fn log, void *user, bool debug_mode)
         }
     }
 
-    /* Negativtests: müssen scheitern, mit Fehlertext. */
+    /* Negative tests: must fail, with error text. */
     {
         SDL_GPUTexture *bad = kit_wrap(s->device, mtl_color, false, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, -1, NULL);
         const bool failed_format = (bad == NULL);
         self_logf(&ctx, "[c64-kit] step=import-negative case=wrongFormat(R8G8B8A8_UNORM) failed=%d error=\"%s\"",
-                  failed_format ? 1 : 0, failed_format ? SDL_GetError() : "(kein Fehler, Import gelang)");
+                  failed_format ? 1 : 0, failed_format ? SDL_GetError() : "(no error, import succeeded)");
         if (bad) SDL_ReleaseGPUTexture(s->device, bad);
 
         bad = kit_wrap(s->device, mtl_color, false, -1, 1, NULL);
         const bool failed_layers = (bad == NULL);
         self_logf(&ctx, "[c64-kit] step=import-negative case=wrongLayers(1) failed=%d error=\"%s\"",
-                  failed_layers ? 1 : 0, failed_layers ? SDL_GetError() : "(kein Fehler, Import gelang)");
+                  failed_layers ? 1 : 0, failed_layers ? SDL_GetError() : "(no error, import succeeded)");
         if (bad) SDL_ReleaseGPUTexture(s->device, bad);
 
         if (!failed_format || !failed_layers) {
@@ -624,7 +624,7 @@ done:
     if (s) {
         kit_import_end(s);
     }
-    /* Nach dem Zerstören des SDL-Devices müssen die Host-Texturen noch gültig sein. */
+    /* After destroying the SDL device the host textures must still be valid. */
     if (mtl_color || mtl_depth) {
         char status[128];
         const bool queue_ok = kit_metal_hostqueue_check(host_queue, status, sizeof(status));

@@ -147,7 +147,7 @@ nonisolated enum CelesteProbe {
     // MARK: Resolution and line width
 
     /// Internal resolution of the game, outline width and canvas size from C64_RES and C64_LINE.
-    ///   C64_RES=640x360|1280x720|1920x1080|2560x1440|native   default 1920x1080 (provisional).
+    ///   C64_RES=640x360|1280x720|1920x1080|2560x1440|native   default 1920x1080.
     ///       native: table per device (hw.machine) from the map measurement ([c64-native]); while
     ///       it is empty, 1920x1080 with a log line.
     ///   C64_LINE=1|2|3|4|auto                                  default auto = round(height/360).

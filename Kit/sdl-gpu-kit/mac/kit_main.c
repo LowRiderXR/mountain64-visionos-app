@@ -1,22 +1,22 @@
 /*
- * kit_main.c — Kommandozeilenlauf der Kit-Testszene auf macOS (Stufen K0, K1a, K1b).
+ * kit_main.c — command line run of the kit test scene on macOS (basic, inject, import and the
+ * multiview self-tests).
  *
- * Gleicher Code wie am Gerät (kit_testscene.c, kit_import.c), gegen
- * Frameworks/macos/libSDL3.0.dylib aus scripts/build-sdl3.sh. Ausgabe: die [c64-kit]-Zeilen
- * auf stdout, Exit-Code = gescheiterter Schritt (0 = bestanden). Aufruf über run-mac.sh.
+ * Same code as on the device (kit_testscene.c, kit_import.c, kit_multiview.c), against
+ * Frameworks/macos/libSDL3.0.dylib from scripts/build-sdl3.sh. Output: the [c64-kit] lines on
+ * stdout, exit code = failed step (0 = passed). Invoked through run-mac.sh.
  *
  *   kit-testscene [--debug] [--size N] [--inject | --inject-device | --inject-queue | --import | --multiview | --foveation | --msaa | --depth-store]
  *
- *   --inject         K1a: Device und Queue des Runners an SDL geben (P1, beide Properties)
- *   --inject-device  nur das Device; SDL legt eine eigene Queue darauf an
- *   --inject-queue   nur die Queue; SDL übernimmt deren Device
- *   --import         K1b: eigene 2D-Array-Texturen importieren (P3), pro Schicht löschen,
- *                    zurücklesen, Negativtests
- *   --multiview      K2: ein Pass mit view_count 2 (P6)
- *   --foveation      K3: eigene Rate Map am Pass (P4)
- *   --msaa           K4a: MSAA 4x mit Auflösung von Farbe und Tiefe unter Multiview und Map
- *   --depth-store    K4c: Tiefenauflösung mit view_count 2 bei gespeicherten MSAA-Samples
- *                    (store_op STORE gegen DONT_CARE), Tiefenprobe beider Schichten
+ *   --inject         give the runner's device and queue to SDL (both properties)
+ *   --inject-device  only the device; SDL creates its own queue on it
+ *   --inject-queue   only the queue; SDL takes over its device
+ *   --import         import own 2D array textures, clear per layer, read back, negative tests
+ *   --multiview      one pass with view_count 2
+ *   --foveation      own rate map on the pass
+ *   --msaa           MSAA 4x with resolve of colour and depth under multiview and map
+ *   --depth-store    depth resolve with view_count 2 with stored MSAA samples
+ *                    (store_op STORE against DONT_CARE), depth probe of both layers
  */
 
 #include "../kit_testscene.h"
@@ -70,13 +70,13 @@ int main(int argc, char **argv)
         } else if (strcmp(argv[i], "--depth-store") == 0) {
             want_depth_store = true;
         } else {
-            fprintf(stderr, "Unbekanntes Argument: %s\n", argv[i]);
+            fprintf(stderr, "Unknown argument: %s\n", argv[i]);
             return 64;
         }
     }
 
     if (want_import || want_multiview || want_foveation || want_msaa || want_depth_store) {
-        /* K1b/K2/K3: SDL_Init hier wie am Gerät im Hauptthread, Selbsttest mit eigenen Objekten. */
+        /* Self-tests: SDL_Init here as on the device on the main thread, then the test with its own objects. */
         if (!kit_testscene_init_sdl(log_stdout, NULL)) {
             return 1;
         }
@@ -93,7 +93,7 @@ int main(int argc, char **argv)
     void *host_queue = NULL;
     if (want_device || want_queue) {
         if (!kit_metal_create_host_objects(&host_device, &host_queue)) {
-            fprintf(stderr, "Host-Device oder -Queue konnte nicht erzeugt werden\n");
+            fprintf(stderr, "Host device or queue could not be created\n");
             return 65;
         }
         char name[128];
@@ -107,8 +107,8 @@ int main(int argc, char **argv)
     const int rc = kit_testscene_run(&opt, log_stdout, NULL);
 
     if (host_device || host_queue) {
-        /* Nach SDL_DestroyGPUDevice müssen die Host-Referenzen noch gültig sein; die Freigabe
-         * hier ist die letzte. Ein Absturz an dieser Stelle hiesse: SDL hat zu viel freigegeben. */
+        /* After SDL_DestroyGPUDevice the host references must still be valid; the release here
+         * is the last one. A crash at this point would mean: SDL released too much. */
         kit_metal_release_host_objects(host_device, host_queue);
         printf("[c64-kit] host objects released ok=1\n");
     }

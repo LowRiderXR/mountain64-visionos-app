@@ -1,5 +1,5 @@
 /*
- * kit_multiview.c — SDL_GPU-Kit für visionOS, Stufen K2 (P6), K3 (P4), K4a (MSAA). Siehe kit_multiview.h.
+ * kit_multiview.c — SDL_GPU kit for visionOS, stages multiview, rate map and MSAA. See kit_multiview.h.
  */
 
 #include "kit_multiview.h"
@@ -16,7 +16,7 @@
 #define KIT_TAG_CAPACITY 256
 #define KIT_GPU_SAMPLES 4096
 #define KIT_GPU_SKIP_DEFAULT 90
-/* K4c: erste Tiefenprobe bei Frame 120 (Quad eingefroren nach 90), dann alle 300 Frames. */
+/* First depth probe at frame 120 (quad frozen after 90), then every 300 frames. */
 #define KIT_PROBE_FIRST_FRAME 120
 #define KIT_PROBE_INTERVAL 300
 #define KIT_PROBE_SENTINEL 1.0f
@@ -25,15 +25,15 @@ static const char *const kit_depth_filter_names[3] = { "sample0", "min", "max" }
 
 static void kit_logf(kit_multiview_session *s, const char *fmt, ...);
 
-/* Muss dem cbuffer MultiviewUniforms in shaders/multiview.hlsl entsprechen (224 Bytes). */
+/* Must match the cbuffer MultiviewUniforms in shaders/multiview.hlsl (224 bytes). */
 typedef struct kit_mv_uniforms {
-    float view_projection[KIT_VIEW_COUNT][16]; /* spaltenweise wie simd_float4x4 */
+    float view_projection[KIT_VIEW_COUNT][16]; /* column major like simd_float4x4 */
     float center[4];
     float right[4];
     float up[4];
     float view_color[KIT_VIEW_COUNT][4];
-    float params[4]; /* x: 1 Schachbrett, 0 flache Farbe */
-    /* K4b: Balken aus Geometrie (Vertices 6..11) */
+    float params[4]; /* x: 1 checkerboard, 0 flat colour */
+    /* bar from geometry (vertices 6..11) */
     float bar_center[4];
     float bar_right[4];
     float bar_up[4];
@@ -51,42 +51,42 @@ struct kit_multiview_session {
     bool first_logged;
     Uint64 last_fail_log;
     kit_multiview_stats stats;
-    /* K3: Messbild */
-    SDL_GPUGraphicsPipeline *measure_pipeline;  /* RG32F, ohne Tiefe, view_count 2 */
-    SDL_GPUTexture *measure_texture;            /* 2D-Array RG32F in physischer Grösse */
+    /* measurement image */
+    SDL_GPUGraphicsPipeline *measure_pipeline;  /* RG32F, without depth, view_count 2 */
+    SDL_GPUTexture *measure_texture;            /* 2D array RG32F of physical size */
     SDL_GPUTransferBuffer *measure_transfer;
     unsigned measure_width;
     unsigned measure_height;
     unsigned measure_layers;
-    /* K4a: MSAA */
+    /* MSAA */
     kit_multiview_options opt;
-    SDL_GPUSampleCount msaa_sc;                 /* SDL-Enum zu opt.msaa_samples */
-    void *metal_device;                         /* id<MTLDevice> (unretained), für die MSAA-Texturen */
-    void *msaa_color_mtl;                       /* Host-Texturen 2DMultisampleArray in Drawable-Grösse */
+    SDL_GPUSampleCount msaa_sc;                 /* SDL enum for opt.msaa_samples */
+    void *metal_device;                         /* id<MTLDevice> (unretained), for the MSAA textures */
+    void *msaa_color_mtl;                       /* host textures 2DMultisampleArray of drawable size */
     void *msaa_depth_mtl;
-    SDL_GPUTexture *msaa_color;                 /* Wrapper, leben für die Sitzung */
+    SDL_GPUTexture *msaa_color;                 /* wrappers, live for the session */
     SDL_GPUTexture *msaa_depth;
-    SDL_GPUTexture *measure_msaa;               /* RG32F MSAA (SDL-eigen) für das Messbild unter MSAA */
+    SDL_GPUTexture *measure_msaa;               /* RG32F MSAA (SDL-owned) for the measurement image under MSAA */
     bool msaa_logged;
-    /* K4c: Probetexturen (SDL-eigen, 1x, 2D-Array in Drawable-Grösse), Farbe und Tiefe. */
+    /* Probe textures (SDL-owned, 1x, 2D array of drawable size), colour and depth. */
     SDL_GPUTexture *probe_color;
     SDL_GPUTexture *probe_depth;
     unsigned probe_width;
     unsigned probe_height;
     unsigned probe_layers;
-    /* K4a: GPU-Zeit über den Completed-Rückruf des Metal-Backends. Der Rückruf läuft auf einem
-     * Metal-Thread; die Herkunft eines Command Buffers ('F' Frame, 'M' Messbild, 'R' Rücklesen)
-     * steht in einer FIFO, die der Submit-Thread vor dem Submit füllt (die Queue arbeitet in
-     * Commit-Reihenfolge, die Abschlüsse kommen in derselben Reihenfolge). */
+    /* GPU time through the completion callback of the Metal backend. The callback runs on a Metal
+     * thread; the origin of a command buffer ('F' frame, 'M' measurement, 'R' read-back, 'P' probe)
+     * is in a FIFO the submitting thread fills before the submit (the queue works in commit order,
+     * the completions arrive in the same order). */
     SDL_Mutex *gpu_lock;
     bool closed;
     char tags[KIT_TAG_CAPACITY];
     unsigned tag_head;
     unsigned tag_tail;
-    unsigned gpu_skip;                          /* Aufwärmphase: so viele Frame-Abschlüsse nicht werten */
-    unsigned gpu_completed_frames;              /* alle Frame-Abschlüsse, auch die übersprungenen */
-    double gpu_samples[KIT_GPU_SAMPLES];        /* Ring der letzten gewerteten GPU-Zeiten */
-    unsigned gpu_sample_count;                  /* gesamt, Ring = count % KIT_GPU_SAMPLES */
+    unsigned gpu_skip;                          /* warm-up phase: this many frame completions are not counted */
+    unsigned gpu_completed_frames;              /* all frame completions, including the skipped ones */
+    double gpu_samples[KIT_GPU_SAMPLES];        /* ring of the last counted GPU times */
+    unsigned gpu_sample_count;                  /* total, ring = count % KIT_GPU_SAMPLES */
     char line[KIT_LINE_MAX];
 };
 
@@ -100,7 +100,7 @@ static void kit_push_tag(kit_multiview_session *s, char tag)
     SDL_UnlockMutex(s->gpu_lock);
 }
 
-/* Completed-Rückruf (Metal-Thread): GPU-Zeit des SDL-Command-Buffers nach Herkunft verbuchen. */
+/* Completion callback (Metal thread): book the GPU time of the SDL command buffer by origin. */
 static void SDLCALL kit_gpu_completed(void *userdata, void *mtl_command_buffer)
 {
     kit_multiview_session *s = (kit_multiview_session *)userdata;
@@ -122,7 +122,7 @@ static void SDLCALL kit_gpu_completed(void *userdata, void *mtl_command_buffer)
         s->stats.gpu_errors += 1;
     }
     if (tag == 'F') {
-        /* Fensterwerte: alle Frames; Gesamtwerte und Stichprobe: erst nach der Aufwärmphase. */
+        /* window values: all frames; totals and sample: only after the warm-up phase. */
         s->stats.gpu_frames += 1;
         s->stats.gpu_sum_ms += ms;
         if (ms > s->stats.gpu_max_ms) s->stats.gpu_max_ms = ms;
@@ -150,8 +150,8 @@ static SDL_GPUSampleCount kit_sample_count(unsigned samples)
     }
 }
 
-/* K4b: Diagnose-Spiegel des internen MetalTextureContainer (SDL_gpu_metal.m am Pin, Felder bis
- * textureCount). Nur für die Zählung der Texturen pro Container im Test. */
+/* Diagnostic mirror of the internal MetalTextureContainer (SDL_gpu_metal.m at the pinned
+ * revision, fields up to textureCount). Only for counting the textures per container in the test. */
 typedef struct kit_container_mirror {
     SDL_GPUTextureCreateInfo info;
     void *activeTexture;
@@ -169,7 +169,7 @@ void kit_multiview_log_containers(kit_multiview_session *s)
     const kit_container_mirror *c = (const kit_container_mirror *)s->msaa_color;
     const kit_container_mirror *d = (const kit_container_mirror *)s->msaa_depth;
     const kit_container_mirror *m = (const kit_container_mirror *)s->measure_msaa;
-    kit_logf(s, "[c64-kit] step=msaa-containers msaaColor{textureCount=%u canBeCycled=%u memoryless=%u} msaaDepth{textureCount=%u canBeCycled=%u memoryless=%u} measureMsaa{textureCount=%u canBeCycled=%u memoryless=%u nominalMB=%.1f} msaaNominalMB=%.1f msaaAllocatedMB=%.1f (Spiegel des Container-Layouts am Pin)",
+    kit_logf(s, "[c64-kit] step=msaa-containers msaaColor{textureCount=%u canBeCycled=%u memoryless=%u} msaaDepth{textureCount=%u canBeCycled=%u memoryless=%u} measureMsaa{textureCount=%u canBeCycled=%u memoryless=%u nominalMB=%.1f} msaaNominalMB=%.1f msaaAllocatedMB=%.1f (mirror of the container layout at the pinned revision)",
              c ? c->textureCount : 0, c ? c->canBeCycled : 0, c ? c->memoryless : 0,
              d ? d->textureCount : 0, d ? d->canBeCycled : 0, d ? d->memoryless : 0,
              m ? m->textureCount : 0, m ? m->canBeCycled : 0, m ? m->memoryless : 0,
@@ -182,7 +182,7 @@ void kit_multiview_options_default(kit_multiview_options *out)
 {
     SDL_zerop(out);
     out->msaa_samples = 0;
-    out->depth_filter = 2; /* max: Reverse-Z, nächste Fläche */
+    out->depth_filter = 2; /* max: reverse-Z, nearest surface */
     out->with_bar = true;
     out->memoryless = false;
     out->pattern = 1.0f;
@@ -209,27 +209,27 @@ static double kit_ms_since(Uint64 start)
     return (double)(SDL_GetPerformanceCounter() - start) * 1000.0 / (double)SDL_GetPerformanceFrequency();
 }
 
-/* MTLTexture importieren (P3), Create-Info aus der Textur. NULL mit SDL-Fehler. */
+/* Import an MTLTexture, create info from the texture. NULL with SDL error. */
 static SDL_GPUTexture *kit_wrap(SDL_GPUDevice *device, void *mtl_texture, bool depth, kit_metal_texture_desc *desc_out)
 {
     kit_metal_texture_desc desc;
     if (!kit_metal_texture_info(mtl_texture, &desc)) {
-        SDL_SetError("MTLTexture-Beschreibung nicht lesbar");
+        SDL_SetError("MTLTexture description not readable");
         return NULL;
     }
     if (desc_out) {
         *desc_out = desc;
     }
     if (desc.sdl_type < 0 || desc.sdl_format == SDL_GPU_TEXTUREFORMAT_INVALID) {
-        SDL_SetError("MTLTexture ohne SDL-Gegenstück (Typ %d, Format %d)", desc.mtl_type, desc.mtl_pixel_format);
+        SDL_SetError("MTLTexture without SDL counterpart (type %d, format %d)", desc.mtl_type, desc.mtl_pixel_format);
         return NULL;
     }
     if (desc.samples != 1 && desc.samples != 2 && desc.samples != 4 && desc.samples != 8) {
-        SDL_SetError("MTLTexture mit %u Samples hat kein SDL-Gegenstück", desc.samples);
+        SDL_SetError("MTLTexture with %u samples has no SDL counterpart", desc.samples);
         return NULL;
     }
 #ifndef SDL_PROP_GPU_TEXTURE_CREATE_METAL_TEXTURE_POINTER
-    SDL_SetError("SDL-Header ohne P3");
+    SDL_SetError("SDL headers without external textures");
     return NULL;
 #else
     SDL_GPUTextureCreateInfo info;
@@ -264,8 +264,8 @@ static SDL_GPUShader *kit_create_shader(SDL_GPUDevice *device, const char *msl, 
     return SDL_CreateGPUShader(device, &info);
 }
 
-/* Pipeline: Dreiecke aus der Vertex-ID (kein Vertex-Puffer), Reverse-Z (greater, Schreiben an),
- * kein Culling, kein Blending. view_count über die P6-Property; sample_count für MSAA (K4a). */
+/* Pipeline: triangles from the vertex ID (no vertex buffer), reverse-Z (greater, writes on), no
+ * culling, no blending. view_count through the pipeline property; sample_count for MSAA. */
 static SDL_GPUGraphicsPipeline *kit_create_pipeline_ex(SDL_GPUDevice *device, SDL_GPUShader *vs, SDL_GPUShader *fs,
                                                        SDL_GPUTextureFormat color, SDL_GPUTextureFormat depth,
                                                        bool with_depth, Uint32 view_count, SDL_GPUSampleCount sample_count)
@@ -310,19 +310,19 @@ static SDL_GPUGraphicsPipeline *kit_create_pipeline(SDL_GPUDevice *device, SDL_G
     return kit_create_pipeline_ex(device, vs, fs, color, depth, true, view_count, sample_count);
 }
 
-/* Beschreibung eines Passes: Ziele, optional Auflösungsziele (K4a), Clear, Views, Startschicht,
- * Rate Map (K3). Mit color_resolve wird die Farbe mit store_op RESOLVE in dieselbe Schicht
- * (base_layer) der Auflösungstextur geschrieben; mit depth_resolve die Tiefe über die
- * Pass-Property (store_op des MSAA-Ziels DONT_CARE: nur auflösen, Inhalt verwerfen; K4c
- * depth_store: STORE, Metal StoreAndMultisampleResolve, die Samples bleiben erhalten). */
+/* Description of a pass: targets, optional resolve targets, clear, views, base layer, rate map.
+ * With color_resolve the colour is written with store_op RESOLVE into the same layer (base_layer)
+ * of the resolve texture; with depth_resolve the depth through the pass property (store_op of
+ * the MSAA target DONT_CARE: resolve only, discard the content; depth_store: STORE, Metal
+ * StoreAndMultisampleResolve, the samples are kept). */
 typedef struct kit_pass_desc {
     SDL_GPUTexture *color;
     SDL_GPUTexture *depth;            /* optional */
-    SDL_GPUTexture *color_resolve;    /* optional, nur mit MSAA-Farbziel */
-    SDL_GPUTexture *depth_resolve;    /* optional, nur mit MSAA-Tiefenziel */
-    bool depth_store;                 /* K4c: mit depth_resolve STORE statt DONT_CARE */
+    SDL_GPUTexture *color_resolve;    /* optional, only with an MSAA colour target */
+    SDL_GPUTexture *depth_resolve;    /* optional, only with an MSAA depth target */
+    bool depth_store;                 /* with depth_resolve STORE instead of DONT_CARE */
     unsigned depth_filter;            /* 0 sample0, 1 min, 2 max */
-    const char *depth_filter_override; /* Testzwecke: Filtername direkt (NULL = aus depth_filter) */
+    const char *depth_filter_override; /* test use: filter name directly (NULL = from depth_filter) */
     float rgba[4];
     float depth_clear;
     Uint32 view_count;
@@ -380,7 +380,7 @@ static SDL_GPURenderPass *kit_begin_pass_ex(SDL_GPUCommandBuffer *cmd, const kit
                                                        : kit_depth_filter_names[d->depth_filter < 3 ? d->depth_filter : 0]);
 #else
         SDL_DestroyProperties(props);
-        SDL_SetError("SDL-Header ohne Tiefen-Aufloesung (K4a)");
+        SDL_SetError("SDL headers without depth resolve");
         return NULL;
 #endif
     }
@@ -388,12 +388,12 @@ static SDL_GPURenderPass *kit_begin_pass_ex(SDL_GPUCommandBuffer *cmd, const kit
     SDL_DestroyProperties(props);
     return pass;
 #else
-    SDL_SetError("SDL-Header ohne P6");
+    SDL_SetError("SDL headers without view_count");
     return NULL;
 #endif
 }
 
-/* Pass mit optionaler Rate Map (K3, P4) und optionalem Tiefenziel, ohne Auflösung. */
+/* Pass with optional rate map and optional depth target, without resolve. */
 static SDL_GPURenderPass *kit_begin_pass_map(SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *color, SDL_GPUTexture *depth,
                                              const float rgba[4], float depth_clear, Uint32 view_count, Uint32 base_layer,
                                              void *rate_map)
@@ -422,8 +422,8 @@ static SDL_GPURenderPass *kit_begin_pass(SDL_GPUCommandBuffer *cmd, SDL_GPUTextu
     return kit_begin_pass_at(cmd, color, depth, rgba, depth_clear, view_count, 0);
 }
 
-/* Bind mit Fehlerprüfung: SDL_BindGPUGraphicsPipeline ist void, der Kern meldet einen
- * view_count-Konflikt über SDL_SetError. */
+/* Bind with error check: SDL_BindGPUGraphicsPipeline is void, the core reports a view_count
+ * conflict through SDL_SetError. */
 static bool kit_bind_checked(SDL_GPURenderPass *pass, SDL_GPUGraphicsPipeline *pipeline)
 {
     SDL_ClearError();
@@ -537,16 +537,16 @@ kit_multiview_session *kit_multiview_begin_ex(void *metal_device, void *metal_qu
     s->stats.depth_store = s->opt.depth_store ? 1 : 0;
     s->gpu_skip = KIT_GPU_SKIP_DEFAULT;
     s->gpu_lock = SDL_CreateMutex();
-    /* K4c: der Schalter und die Probe gelten nur mit MSAA; STORE auf memoryless Zielen lehnt
-     * SDL ab (SDL_gpu_metal.m, memoryless-Regeln), deshalb hier schon ablehnen. */
+    /* The switch and the probe only apply with MSAA; SDL rejects STORE on memoryless targets
+     * (SDL_gpu_metal.m, memoryless rules), so reject it here already. */
     if ((s->opt.depth_store || s->opt.depth_probe) && s->opt.msaa_samples <= 1) {
-        kit_logf(s, "[c64-kit] FAIL step=multiview-options error=\"depth_store/depth_probe verlangen MSAA (msaa_samples > 1)\"");
+        kit_logf(s, "[c64-kit] FAIL step=multiview-options error=\"depth_store/depth_probe require MSAA (msaa_samples > 1)\"");
         SDL_DestroyMutex(s->gpu_lock);
         SDL_free(s);
         return NULL;
     }
     if (s->opt.depth_store && s->opt.memoryless) {
-        kit_logf(s, "[c64-kit] FAIL step=multiview-options error=\"depth_store=store verlangt memoryless aus (STORE auf memoryless Zielen ist unzulaessig)\"");
+        kit_logf(s, "[c64-kit] FAIL step=multiview-options error=\"depth_store=store requires memoryless off (STORE on memoryless targets is not allowed)\"");
         SDL_DestroyMutex(s->gpu_lock);
         SDL_free(s);
         return NULL;
@@ -565,7 +565,7 @@ kit_multiview_session *kit_multiview_begin_ex(void *metal_device, void *metal_qu
     }
 #endif
 #ifdef SDL_PROP_GPU_DEVICE_CREATE_METAL_COMMAND_BUFFER_COMPLETED_CALLBACK_POINTER
-    /* K4a: GPU-Zeit jedes SDL-Command-Buffers aus dem Completed-Rückruf des Backends. */
+    /* GPU time of every SDL command buffer from the completion callback of the backend. */
     SDL_SetPointerProperty(props, SDL_PROP_GPU_DEVICE_CREATE_METAL_COMMAND_BUFFER_COMPLETED_CALLBACK_POINTER, (void *)kit_gpu_completed);
     SDL_SetPointerProperty(props, SDL_PROP_GPU_DEVICE_CREATE_METAL_COMMAND_BUFFER_COMPLETED_USERDATA_POINTER, s);
 #endif
@@ -577,7 +577,7 @@ kit_multiview_session *kit_multiview_begin_ex(void *metal_device, void *metal_qu
         SDL_free(s);
         return NULL;
     }
-    /* Metal-Device für die MSAA-Texturen: das übergebene oder das von SDL gewählte. */
+    /* Metal device for the MSAA textures: the one passed in or the one SDL chose. */
     s->metal_device = metal_device;
     if (!s->metal_device) {
         s->metal_device = SDL_GetPointerProperty(SDL_GetGPUDeviceProperties(s->device), SDL_PROP_GPU_DEVICE_METAL_DEVICE_POINTER, NULL);
@@ -591,7 +591,7 @@ kit_multiview_session *kit_multiview_begin_ex(void *metal_device, void *metal_qu
                  SDL_GPUTextureSupportsSampleCount(s->device, s->color_format, s->msaa_sc) ? 1 : 0,
                  SDL_GPUTextureSupportsSampleCount(s->device, s->depth_format, s->msaa_sc) ? 1 : 0);
         if (!supported) {
-            kit_logf(s, "[c64-kit] FAIL step=multiview-msaa-support error=\"MSAA %ux nicht unterstützt\"", s->opt.msaa_samples);
+            kit_logf(s, "[c64-kit] FAIL step=multiview-msaa-support error=\"MSAA %ux not supported\"", s->opt.msaa_samples);
             kit_multiview_end(s);
             return NULL;
         }
@@ -603,7 +603,7 @@ kit_multiview_session *kit_multiview_begin_ex(void *metal_device, void *metal_qu
              SDL_GPUSupportsViewCount(s->device, 3) ? 1 : 0, SDL_GPUSupportsViewCount(s->device, 4) ? 1 : 0,
              SDL_GPUSupportsViewCount(s->device, 8) ? 1 : 0, SDL_GetRevision());
     if (!supports2) {
-        kit_logf(s, "[c64-kit] FAIL step=multiview-support error=\"view_count 2 nicht unterstützt\"");
+        kit_logf(s, "[c64-kit] FAIL step=multiview-support error=\"view_count 2 not supported\"");
         SDL_DestroyGPUDevice(s->device);
         SDL_free(s);
         return NULL;
@@ -631,8 +631,8 @@ kit_multiview_session *kit_multiview_begin_ex(void *metal_device, void *metal_qu
     return s;
 }
 
-/* K4a: MSAA-Texturen in Drawable-Grösse anlegen oder bei neuer Grösse ersetzen (Host-Texturen,
- * importiert mit sample_count; leben für die Sitzung). */
+/* Create the MSAA textures of drawable size or replace them on a new size (host textures,
+ * imported with sample_count; live for the session). */
 static bool kit_ensure_msaa(kit_multiview_session *s, unsigned width, unsigned height, unsigned layers)
 {
     if (s->msaa_color && s->stats.msaa_width == width && s->stats.msaa_height == height && s->stats.msaa_layers == layers) {
@@ -650,7 +650,7 @@ static bool kit_ensure_msaa(kit_multiview_session *s, unsigned width, unsigned h
     const unsigned long long nominal_each = (unsigned long long)width * height * layers * s->opt.msaa_samples * 4ull;
     s->stats.msaa_nominal_bytes = nominal_each * 2;
     if (s->opt.memoryless) {
-        /* K4b: SDL legt die Ziele memoryless an (nur Tile-Speicher, kein allocatedSize). */
+        /* SDL creates the targets memoryless (tile memory only, no allocatedSize). */
         SDL_GPUTextureCreateInfo info;
         SDL_zero(info);
         info.type = SDL_GPU_TEXTURETYPE_2D_ARRAY;
@@ -664,7 +664,7 @@ static bool kit_ensure_msaa(kit_multiview_session *s, unsigned width, unsigned h
         SDL_SetBooleanProperty(info.props, SDL_PROP_GPU_TEXTURE_CREATE_METAL_MEMORYLESS_BOOLEAN, true);
 #else
         SDL_DestroyProperties(info.props);
-        SDL_SetError("SDL-Header ohne memoryless (K4b)");
+        SDL_SetError("SDL headers without memoryless");
         return false;
 #endif
         info.format = s->color_format;
@@ -681,7 +681,7 @@ static bool kit_ensure_msaa(kit_multiview_session *s, unsigned width, unsigned h
     } else {
         if (!kit_metal_create_array_texture_ex(s->metal_device, false, width, height, layers, s->opt.msaa_samples, &s->msaa_color_mtl) ||
             !kit_metal_create_array_texture_ex(s->metal_device, true, width, height, layers, s->opt.msaa_samples, &s->msaa_depth_mtl)) {
-            SDL_SetError("MSAA-Texturen %ux%ux%u mit %u Samples nicht erzeugt", width, height, layers, s->opt.msaa_samples);
+            SDL_SetError("MSAA textures %ux%ux%u with %u samples not created", width, height, layers, s->opt.msaa_samples);
             return false;
         }
         s->msaa_color = kit_wrap(s->device, s->msaa_color_mtl, false, NULL);
@@ -697,7 +697,7 @@ static bool kit_ensure_msaa(kit_multiview_session *s, unsigned width, unsigned h
     kit_logf(s, "[c64-kit] step=multiview-msaa samples=%u memoryless=%d color{%ux%ux%u} depth{%ux%ux%u} nominalMB=%.1f allocatedMB=%s depthResolveFilter=%s resolve=color:storeOp=RESOLVE depth:passProperty storeOp=%s cycle=0",
              s->opt.msaa_samples, s->opt.memoryless ? 1 : 0, width, height, layers, width, height, layers,
              (double)s->stats.msaa_nominal_bytes / (1024.0 * 1024.0),
-             s->opt.memoryless ? "-(memoryless)" : "siehe multiview-msaa-allocated", kit_depth_filter_names[s->opt.depth_filter],
+             s->opt.memoryless ? "-(memoryless)" : "see multiview-msaa-allocated", kit_depth_filter_names[s->opt.depth_filter],
              s->opt.depth_store ? "STORE(StoreAndMultisampleResolve)" : "DONT_CARE(MultisampleResolve)");
     if (!s->opt.memoryless) {
         kit_logf(s, "[c64-kit] step=multiview-msaa-allocated color=%llu depth=%llu totalMB=%.1f",
@@ -758,7 +758,7 @@ bool kit_multiview_frame(kit_multiview_session *s, void *color_texture, void *de
     s->stats.wrappers_created += 1;
 
     if ((SDL_GPUTextureFormat)cdesc.sdl_format != s->color_format || (SDL_GPUTextureFormat)ddesc.sdl_format != s->depth_format) {
-        SDL_SetError("Drawable-Formate (%d/%d) passen nicht zur Pipeline (%d/%d)", cdesc.sdl_format, ddesc.sdl_format,
+        SDL_SetError("Drawable formats (%d/%d) do not match the pipeline (%d/%d)", cdesc.sdl_format, ddesc.sdl_format,
                      (int)s->color_format, (int)s->depth_format);
         kit_frame_fail(s, "multiview-format", NULL, color, depth);
         return false;
@@ -771,15 +771,15 @@ bool kit_multiview_frame(kit_multiview_session *s, void *color_texture, void *de
         kit_logf(s, "[c64-kit] step=multiview-frame color{size=%ux%u layers=%u mtl=%p} depth{layers=%u mtl=%p} pass{view_count=%d baseLayer=0 clear=%.2f,%.2f,%.2f,%.2f depth=%.4f} draw=%d rateMap=%p%s",
                  cdesc.width, cdesc.height, cdesc.layers, color_texture, ddesc.layers, depth_texture,
                  KIT_VIEW_COUNT, rgba[0], rgba[1], rgba[2], rgba[3], depth_clear, draw_quad ? 1 : 0, rate_map,
-                 has_map ? "" : " (keine Map: Viewport = Texturgroesse)");
+                 has_map ? "" : " (no map: viewport = texture size)");
         if (has_map) {
-            kit_logf(s, "[c64-kit] step=multiview-ratemap layers=%u screen=%ux%u physicalL0=%ux%u physicalL1=%ux%u granularity=%ux%u viewport=logisch",
+            kit_logf(s, "[c64-kit] step=multiview-ratemap layers=%u screen=%ux%u physicalL0=%ux%u physicalL1=%ux%u granularity=%ux%u viewport=logical",
                      md.layers, md.screen_width, md.screen_height, md.physical_width[0], md.physical_height[0],
                      md.physical_width[1], md.physical_height[1], md.granularity_width, md.granularity_height);
         }
     }
 
-    /* K4a: mit MSAA sind die Pass-Ziele die MSAA-Texturen, die Drawable-Wrapper die Auflösungsziele. */
+    /* With MSAA the pass targets are the MSAA textures, the drawable wrappers the resolve targets. */
     kit_pass_desc pd;
     SDL_zero(pd);
     pd.color = color;
@@ -822,8 +822,8 @@ bool kit_multiview_frame(kit_multiview_session *s, void *color_texture, void *de
         kit_mv_uniforms u;
         kit_fill_uniforms(&u, view_projection, center, right, up, s->opt.view_colors, s->opt.pattern);
         if (s->opt.with_bar) {
-            /* K4b: Balken rechts neben dem Brett in der Brettebene, um 20° gekippt, 1,2 m lang,
-             * 6 cm breit; Kanten aus Geometrie, an denen MSAA sichtbar wird. */
+            /* Bar to the right of the board in the board plane, tilted by 20°, 1.2 m long, 6 cm
+             * wide; edges from geometry at which MSAA becomes visible. */
             const float rl = SDL_sqrtf(right[0] * right[0] + right[1] * right[1] + right[2] * right[2]);
             const float ul = SDL_sqrtf(up[0] * up[0] + up[1] * up[1] + up[2] * up[2]);
             if (rl > 1e-6f && ul > 1e-6f) {
@@ -857,8 +857,8 @@ bool kit_multiview_frame(kit_multiview_session *s, void *color_texture, void *de
     if (ms > s->stats.max_ms) s->stats.max_ms = ms;
     if (ms > s->stats.total_max_ms) s->stats.total_max_ms = ms;
 
-    /* K4c: Tiefenprobe nach dem Frame (eigener Command Buffer, synchron; die Zeit zählt nicht in
-     * die Frame-Statistik, steht aber in der Probe-Zeile). */
+    /* Depth probe after the frame (own command buffer, synchronous; the time does not count in
+     * the frame statistics but is in the probe line). */
     if (s->opt.depth_probe && s->opt.msaa_samples > 1 && draw_quad &&
         s->stats.frames_total >= KIT_PROBE_FIRST_FRAME &&
         (s->stats.frames_total - KIT_PROBE_FIRST_FRAME) % KIT_PROBE_INTERVAL == 0) {
@@ -871,10 +871,10 @@ bool kit_multiview_frame(kit_multiview_session *s, void *color_texture, void *de
     return true;
 }
 
-/* ------------------------------------------------------------------ K4c: Tiefenprobe */
+/* ------------------------------------------------------------------ Depth probe */
 
-/* Beide Schichten einer SDL-Farb- und -Tiefentextur (1x, 4 Bytes pro Pixel) in Host-Speicher
- * laden; synchron (Fence). */
+/* Load both layers of an SDL colour and depth texture (1x, 4 bytes per pixel) into host memory;
+ * synchronous (fence). */
 static bool kit_download_layers(kit_multiview_session *s, SDL_GPUTexture *color, SDL_GPUTexture *depth, unsigned W, unsigned H,
                                 unsigned layers, Uint8 **color_out, float **depth_out)
 {
@@ -948,7 +948,7 @@ done:
     return ok;
 }
 
-/* Probetexturen (SDL-eigen, 1x, zwei Schichten) in der Grösse anlegen oder wiederverwenden. */
+/* Create the probe textures (SDL-owned, 1x, two layers) in the size or reuse them. */
 static bool kit_ensure_probe_textures(kit_multiview_session *s, unsigned width, unsigned height, unsigned layers)
 {
     if (s->probe_color && s->probe_width == width && s->probe_height == height && s->probe_layers == layers) {
@@ -983,8 +983,8 @@ static bool kit_ensure_probe_textures(kit_multiview_session *s, unsigned width, 
     return true;
 }
 
-/* Verschiedene 32-Bit-Muster in einer Schicht zählen: offene Adressierung, Tabelle doppelt so
- * gross wie die Pixelzahl (aufgerundet auf eine Zweierpotenz). */
+/* Count distinct 32-bit patterns in a layer: open addressing, table twice the pixel count
+ * (rounded up to a power of two). */
 static unsigned kit_count_distinct(const Uint32 *values, unsigned count)
 {
     unsigned cap = 1;
@@ -1056,11 +1056,11 @@ bool kit_multiview_depth_probe(kit_multiview_session *s, unsigned width, unsigne
         return false;
     }
     if (s->opt.msaa_samples <= 1) {
-        SDL_SetError("Tiefenprobe verlangt MSAA");
+        SDL_SetError("Depth probe requires MSAA");
         return false;
     }
     if (layers != KIT_VIEW_COUNT) {
-        SDL_SetError("Tiefenprobe erwartet %d Schichten, nicht %u", KIT_VIEW_COUNT, layers);
+        SDL_SetError("Depth probe expects %d layers, not %u", KIT_VIEW_COUNT, layers);
         return false;
     }
     const Uint64 t0 = SDL_GetPerformanceCounter();
@@ -1079,9 +1079,9 @@ bool kit_multiview_depth_probe(kit_multiview_session *s, unsigned width, unsigne
     if (!cmd) {
         return false;
     }
-    /* 1. Sentinel: beide Schichten der Probetexturen in einem Zwei-View-Pass ohne Draw löschen
-     * (Tiefe 1.0, Farbe schwarz); so ist «nicht beschrieben» vom Clear des Passes (depth_clear)
-     * und von jedem Quadwert unterscheidbar. */
+    /* 1. Sentinel: clear both layers of the probe textures in a two-view pass without a draw
+     * (depth 1.0, colour black); so "not written" is distinguishable from the pass clear
+     * (depth_clear) and from every quad value. */
     {
         kit_pass_desc d;
         SDL_zero(d);
@@ -1096,8 +1096,8 @@ bool kit_multiview_depth_probe(kit_multiview_session *s, unsigned width, unsigne
         }
         SDL_EndGPURenderPass(pass);
     }
-    /* 2. Der Probe-Pass: wie der Frame-Pass (MSAA-Ziele, view_count 2, Map, Quad), aber Farbe und
-     * Tiefe (Filter max) in die Probetexturen aufgelöst; store_op der MSAA-Tiefe nach Schalter. */
+    /* 2. The probe pass: like the frame pass (MSAA targets, view_count 2, map, quad), but colour
+     * and depth (filter max) resolved into the probe textures; store_op of the MSAA depth per switch. */
     {
         kit_pass_desc d;
         SDL_zero(d);
@@ -1131,7 +1131,7 @@ bool kit_multiview_depth_probe(kit_multiview_session *s, unsigned width, unsigne
     if (!SDL_SubmitGPUCommandBuffer(cmd)) {
         return false;
     }
-    /* 3. Beide Schichten lesen und auswerten. */
+    /* 3. Read both layers and evaluate. */
     Uint8 *c = NULL;
     float *d = NULL;
     if (!kit_download_layers(s, s->probe_color, s->probe_depth, width, height, layers, &c, &d)) {
@@ -1204,14 +1204,14 @@ void kit_multiview_end(kit_multiview_session *s)
     unsigned gpu_n = 0;
     double gpu_mean = 0, gpu_p95 = 0, gpu_max = 0;
     kit_multiview_gpu_percentiles(s, &gpu_n, &gpu_mean, &gpu_p95, &gpu_max);
-    kit_logf(s, "[c64-kit] step=multiview-end frames=%lu fails=%lu passes=%lu draws=%lu sdl(ms) mean=%.3f max=%.3f gpu(ms, ab Frame %u) n=%u mean=%.3f p95=%.3f max=%.3f untagged=%lu gpuErr=%lu msaa=%u depthStore=%s probes=%lu wrappers created=%lu released=%lu",
+    kit_logf(s, "[c64-kit] step=multiview-end frames=%lu fails=%lu passes=%lu draws=%lu sdl(ms) mean=%.3f max=%.3f gpu(ms, from frame %u) n=%u mean=%.3f p95=%.3f max=%.3f untagged=%lu gpuErr=%lu msaa=%u depthStore=%s probes=%lu wrappers created=%lu released=%lu",
              s->stats.frames_total, s->stats.fails_total, s->stats.passes_total, s->stats.draws_total,
              mean, s->stats.total_max_ms, s->gpu_skip + 1, gpu_n, gpu_mean, gpu_p95, gpu_max,
              s->stats.gpu_untagged, s->stats.gpu_errors, s->opt.msaa_samples,
              s->opt.depth_store ? "store" : "dontcare", s->stats.probes_total,
              s->stats.wrappers_created, s->stats.wrappers_released);
-    /* Der Completed-Rückruf kann nach dem Warten noch kurz laufen: Sitzung als geschlossen
-     * markieren, ihm eine kurze Frist lassen, dann freigeben. */
+    /* The completion callback can still run briefly after the wait: mark the session as closed,
+     * give it a short grace period, then free. */
     if (s->gpu_lock) {
         SDL_LockMutex(s->gpu_lock);
         s->closed = true;
@@ -1222,18 +1222,18 @@ void kit_multiview_end(kit_multiview_session *s)
     SDL_free(s);
 }
 
-/* ------------------------------------------------------------------ K3: Messbild gegen die Map */
+/* ------------------------------------------------------------------ Measurement image against the map */
 
 #define KIT_MEASURE_SAMPLES 9
 
-/* Stichproben als Anteile der physischen Grösse: Mitte, vier Ränder, vier Zwischenlagen. */
+/* Sample points as fractions of the physical size: centre, four edges, four in between. */
 static const float kit_measure_points[KIT_MEASURE_SAMPLES][2] = {
     { 0.5f, 0.5f }, { 0.08f, 0.5f }, { 0.92f, 0.5f }, { 0.5f, 0.08f }, { 0.5f, 0.92f },
     { 0.08f, 0.08f }, { 0.92f, 0.92f }, { 0.3f, 0.7f }, { 0.7f, 0.3f }
 };
 
-/* Messung; tex_w/tex_h >= physische Grösse der Map (0 = genau die Map-Grösse). Die Stichproben
- * liegen immer in der physischen Grösse der Map, nicht der Textur. */
+/* Measurement; tex_w/tex_h >= physical size of the map (0 = exactly the map size). The sample
+ * points always lie in the physical size of the map, not the texture. */
 static bool kit_measure_impl(kit_multiview_session *s, void *rate_map, bool verbose,
                              unsigned tex_w, unsigned tex_h, kit_multiview_measure *out)
 {
@@ -1244,15 +1244,15 @@ static bool kit_measure_impl(kit_multiview_session *s, void *rate_map, bool verb
     SDL_zero(*out);
     kit_metal_map_desc md;
     if (!kit_metal_map_info(rate_map, &md) || md.layers < KIT_VIEW_COUNT) {
-        SDL_SetError("Rate Map ohne zwei Schichten");
+        SDL_SetError("Rate map without two layers");
         return false;
     }
     if (md.physical_width[0] != md.physical_width[1] || md.physical_height[0] != md.physical_height[1]) {
-        SDL_SetError("Rate Map: Schichten mit verschiedener physischer Groesse (%ux%u, %ux%u)",
+        SDL_SetError("Rate map: layers with different physical size (%ux%u, %ux%u)",
                      md.physical_width[0], md.physical_height[0], md.physical_width[1], md.physical_height[1]);
         return false;
     }
-    /* W/H: physische Grösse der Map = Raum der Stichproben; die Textur darf grösser sein. */
+    /* W/H: physical size of the map = space of the sample points; the texture may be larger. */
     const unsigned W = md.physical_width[0], H = md.physical_height[0];
     if (tex_w < W) tex_w = W;
     if (tex_h < H) tex_h = H;
@@ -1262,12 +1262,13 @@ static bool kit_measure_impl(kit_multiview_session *s, void *rate_map, bool verb
     out->physical_height = H;
     out->layers = md.layers;
 
-    /* Mess-Pipeline und -Textur beim ersten Aufruf oder bei neuer Grösse anlegen; unter MSAA (K4a)
-     * rendert der Pass in eine SDL-eigene RG32F-Multisample-Array-Textur und löst in die
-     * Mess-Textur auf. */
-    /* K4b: Das Messbild rendert nur dann multisample, wenn die MSAA-Textur memoryless ist; sonst
-     * kostete die RG32F-MSAA-Textur bei Render Quality 1,0 rund 430 MB (M5), mehr als die MSAA-Ziele
-     * selbst. Die Messung des Rasterizers gegen die Map ist davon unabhängig (K4a, Mac: 0,002 px). */
+    /* Create the measurement pipeline and texture at the first call or on a new size; under MSAA
+     * the pass renders into an SDL-owned RG32F multisample array texture and resolves into the
+     * measurement texture. */
+    /* The measurement image renders multisample only when the MSAA texture is memoryless;
+     * otherwise the RG32F MSAA texture cost about 430 MB at render quality 1.0 (M5), more than the
+     * MSAA targets themselves. The measurement of the rasterizer against the map is independent of
+     * it (Mac: 0.002 px). */
     const bool measure_msaa = (s->opt.msaa_samples > 1) && s->opt.memoryless;
     if (!s->measure_pipeline) {
         s->measure_pipeline = kit_create_pipeline_ex(s->device, s->vertex, s->fragment, SDL_GPU_TEXTUREFORMAT_R32G32_FLOAT,
@@ -1303,7 +1304,7 @@ static bool kit_measure_impl(kit_multiview_session *s, void *rate_map, bool verb
             info.props = 0;
 #ifdef SDL_PROP_GPU_TEXTURE_CREATE_METAL_MEMORYLESS_BOOLEAN
             if (s->opt.memoryless) {
-                /* K4b: die MSAA-Textur des Messbilds wird nur aufgelöst, nie gelesen. */
+                /* the MSAA texture of the measurement image is only resolved, never read. */
                 info.props = SDL_CreateProperties();
                 SDL_SetBooleanProperty(info.props, SDL_PROP_GPU_TEXTURE_CREATE_METAL_MEMORYLESS_BOOLEAN, true);
             }
@@ -1330,7 +1331,7 @@ static bool kit_measure_impl(kit_multiview_session *s, void *rate_map, bool verb
         }
     }
 
-    /* Pass mit Map: Vollbild-Quad (Einheitsmatrizen), Muster 2 = Fragmentposition. */
+    /* Pass with map: full-screen quad (identity matrices), pattern 2 = fragment position. */
     SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(s->device);
     if (!cmd) {
         return false;
@@ -1361,13 +1362,13 @@ static bool kit_measure_impl(kit_multiview_session *s, void *rate_map, bool verb
     const float white[2][4] = { { 1, 1, 1, 1 }, { 1, 1, 1, 1 } };
     kit_mv_uniforms u;
     kit_fill_uniforms(&u, vp, center, right, up, white, 2.0f);
-    u.params[1] = (float)md.screen_width;   /* logische Grösse für die interpolierte Koordinate */
+    u.params[1] = (float)md.screen_width;   /* logical size for the interpolated coordinate */
     u.params[2] = (float)md.screen_height;
     SDL_PushGPUVertexUniformData(cmd, 0, &u, sizeof(u));
     SDL_DrawGPUPrimitives(pass, 6, 1, 0, 0);
     SDL_EndGPURenderPass(pass);
 
-    /* Stichproben zurücklesen: 1×1 pro Punkt und Schicht. */
+    /* Read the sample points back: 1×1 per point and layer. */
     unsigned px[KIT_MEASURE_SAMPLES], py[KIT_MEASURE_SAMPLES];
     for (unsigned k = 0; k < KIT_MEASURE_SAMPLES; k++) {
         px[k] = (unsigned)(kit_measure_points[k][0] * (float)(W - 1));
@@ -1417,14 +1418,14 @@ static bool kit_measure_impl(kit_multiview_session *s, void *rate_map, bool verb
     for (unsigned layer = 0; layer < KIT_VIEW_COUNT; layer++) {
         for (unsigned k = 0; k < KIT_MEASURE_SAMPLES; k++) {
             const float *v = data + (layer * KIT_MEASURE_SAMPLES + k) * 2;
-            const float sx = v[0], sy = v[1];             /* logisch, aus dem Fragment */
+            const float sx = v[0], sy = v[1];             /* logical, from the fragment */
             const float cx = (float)px[k] + 0.5f, cy = (float)py[k] + 0.5f;
             float ex, ey, bx, by;
-            kit_metal_map_physical_to_screen(rate_map, layer, cx, cy, &ex, &ey); /* Soll logisch */
-            kit_metal_map_screen_to_physical(rate_map, layer, sx, sy, &bx, &by); /* Ist zurück physisch */
+            kit_metal_map_physical_to_screen(rate_map, layer, cx, cy, &ex, &ey); /* expected logical */
+            kit_metal_map_screen_to_physical(rate_map, layer, sx, sy, &bx, &by); /* actual back to physical */
             const float dev = SDL_sqrtf((bx - cx) * (bx - cx) + (by - cy) * (by - cy));
             if (sx < 0 || sy < 0) {
-                /* Clear-Wert: das Fragment wurde nicht geschrieben */
+                /* clear value: the fragment was not written */
                 maxdev = 1e9f;
             }
             sum += dev;
@@ -1439,7 +1440,7 @@ static bool kit_measure_impl(kit_multiview_session *s, void *rate_map, bool verb
     SDL_UnmapGPUTransferBuffer(s->device, s->measure_transfer);
     if (verbose) {
         kit_logf(s, "[c64-kit] step=fov-sample-space samplesIn=mapPhysical %ux%u measureTexture=%ux%u msaa=%u%s", W, H, tex_w, tex_h,
-                 s->opt.msaa_samples, s->measure_msaa ? " (RG32F multisample memoryless, aufgeloest in die Mess-Textur)" : " (Messbild ohne MSAA)");
+                 s->opt.msaa_samples, s->measure_msaa ? " (RG32F multisample memoryless, resolved into the measurement texture)" : " (measurement image without MSAA)");
     }
     out->samples = count;
     out->max_dev_px = maxdev;
@@ -1453,7 +1454,7 @@ bool kit_multiview_measure_map(kit_multiview_session *s, void *rate_map, bool ve
     return kit_measure_impl(s, rate_map, verbose, 0, 0, out);
 }
 
-/* ------------------------------------------------------------------ Mac-Selbsttest */
+/* ------------------------------------------------------------------ Mac self-test */
 
 typedef struct kit_self_ctx {
     kit_log_fn log;
@@ -1490,7 +1491,7 @@ int kit_multiview_selftest(kit_log_fn log, void *user)
     kit_multiview_session *s = NULL;
 
     if (!kit_metal_create_host_objects(&host_device, &host_queue)) {
-        self_logf(&ctx, "[c64-kit] FAIL step=selftest-host error=\"Device/Queue nicht erzeugt\"");
+        self_logf(&ctx, "[c64-kit] FAIL step=selftest-host error=\"device/queue not created\"");
         return 40;
     }
     s = kit_multiview_begin(host_device, host_queue, log, user);
@@ -1500,7 +1501,7 @@ int kit_multiview_selftest(kit_log_fn log, void *user)
     }
     if (!kit_metal_create_array_texture(host_device, false, W, H, LAYERS, &mtl_color) ||
         !kit_metal_create_array_texture(host_device, true, W, H, LAYERS, &mtl_depth)) {
-        self_logf(&ctx, "[c64-kit] FAIL step=selftest-textures error=\"MTLTexture nicht erzeugt\"");
+        self_logf(&ctx, "[c64-kit] FAIL step=selftest-textures error=\"MTLTexture not created\"");
         result = 42;
         goto done;
     }
@@ -1512,9 +1513,9 @@ int kit_multiview_selftest(kit_log_fn log, void *user)
         goto done;
     }
 
-    /* Matrizen: Einheit mit Verschiebung in z (Spalte 3, Index 14), damit View 0 auf Tiefe 0.25
-     * und View 1 auf Tiefe 0.75 landet; Quad füllt mit center 0, right (1,0,0), up (0,1,0) das
-     * ganze Ziel. Flache Farbe: View 0 rot, View 1 blau. */
+    /* Matrices: identity with a shift in z (column 3, index 14), so that view 0 lands at depth
+     * 0.25 and view 1 at depth 0.75; the quad fills the whole target with center 0, right (1,0,0),
+     * up (0,1,0). Flat colour: view 0 red, view 1 blue. */
     float vp[32] = { 0 };
     for (int v = 0; v < 2; v++) {
         vp[v * 16 + 0] = 1; vp[v * 16 + 5] = 1; vp[v * 16 + 10] = 1; vp[v * 16 + 15] = 1;
@@ -1566,7 +1567,7 @@ int kit_multiview_selftest(kit_log_fn log, void *user)
     SDL_PushGPUVertexUniformData(cmd, 0, &u, sizeof(u));
     SDL_DrawGPUPrimitives(pass, 6, 1, 0, 0);
     SDL_EndGPURenderPass(pass);
-    self_logf(&ctx, "[c64-kit] step=multiview-draw passes=1 draws=1 view_count=%d view0=rot/0.25 view1=blau/0.75 clear=schwarz/%.3f", KIT_VIEW_COUNT, depth_clear);
+    self_logf(&ctx, "[c64-kit] step=multiview-draw passes=1 draws=1 view_count=%d view0=red/0.25 view1=blue/0.75 clear=black/%.3f", KIT_VIEW_COUNT, depth_clear);
 
     SDL_GPUCopyPass *copy = SDL_BeginGPUCopyPass(cmd);
     if (!copy) {
@@ -1638,9 +1639,9 @@ int kit_multiview_selftest(kit_log_fn log, void *user)
         }
     }
 
-    /* Schichtversatz: 2D-Array mit 4 Schichten, Vorab-Clear aller Schichten grün/0.5 (vier
-     * Ein-View-Pässe), dann ein Pass mit Basis 2 und view_count 2 (Clear schwarz, Draw rot/0.25
-     * und blau/0.75). Erwartet: Schicht 0 und 1 unberührt, 2 rot, 3 blau. */
+    /* Layer offset: 2D array with 4 layers, pre-clear of all layers green/0.5 (four one-view
+     * passes), then one pass with base 2 and view_count 2 (clear black, draw red/0.25 and
+     * blue/0.75). Expected: layers 0 and 1 untouched, 2 red, 3 blue. */
     {
         const unsigned L4 = 4;
         void *mtl_color4 = NULL, *mtl_depth4 = NULL;
@@ -1653,7 +1654,7 @@ int kit_multiview_selftest(kit_log_fn log, void *user)
 
         if (!kit_metal_create_array_texture(host_device, false, W, H, L4, &mtl_color4) ||
             !kit_metal_create_array_texture(host_device, true, W, H, L4, &mtl_depth4)) {
-            self_logf(&ctx, "[c64-kit] FAIL step=offset-textures error=\"MTLTexture nicht erzeugt\"");
+            self_logf(&ctx, "[c64-kit] FAIL step=offset-textures error=\"MTLTexture not created\"");
             step_result = 54;
             goto offset_done;
         }
@@ -1699,7 +1700,7 @@ int kit_multiview_selftest(kit_log_fn log, void *user)
         SDL_PushGPUVertexUniformData(cmd4, 0, &u, sizeof(u));
         SDL_DrawGPUPrimitives(p2, 6, 1, 0, 0);
         SDL_EndGPURenderPass(p2);
-        self_logf(&ctx, "[c64-kit] step=multiview-offset layers=%u preclear=gruen/%.2f pass{baseLayer=2 view_count=%d clear=schwarz/%.3f} draw=1", L4, pre_depth, KIT_VIEW_COUNT, depth_clear);
+        self_logf(&ctx, "[c64-kit] step=multiview-offset layers=%u preclear=green/%.2f pass{baseLayer=2 view_count=%d clear=black/%.3f} draw=1", L4, pre_depth, KIT_VIEW_COUNT, depth_clear);
 
         SDL_GPUCopyPass *copy4 = SDL_BeginGPUCopyPass(cmd4);
         if (!copy4) {
@@ -1741,10 +1742,10 @@ int kit_multiview_selftest(kit_log_fn log, void *user)
                 step_result = 60;
                 goto offset_done;
             }
-            /* Erwartung pro Schicht in BGRA und Tiefe. */
+            /* Expectation per layer in BGRA and depth. */
             const Uint8 exp_color[4][4] = { { 0, 255, 0, 255 }, { 0, 255, 0, 255 }, { 0, 0, 255, 255 }, { 255, 0, 0, 255 } };
             const float exp_depth[4] = { pre_depth, pre_depth, 0.25f, 0.75f };
-            const char *exp_name[4] = { "gruen/unberuehrt", "gruen/unberuehrt", "rot/view0", "blau/view1" };
+            const char *exp_name[4] = { "green/untouched", "green/untouched", "red/view0", "blue/view1" };
             bool all_ok = true;
             for (unsigned layer = 0; layer < L4; layer++) {
                 const Uint32 center_px = ((H / 2) * W + (W / 2)) * pixel_bytes;
@@ -1779,29 +1780,29 @@ int kit_multiview_selftest(kit_log_fn log, void *user)
         }
     }
 
-    /* Negativtest 1: Pipeline mit view_count 1 in einem Pass mit view_count 2. */
+    /* Negative test 1: pipeline with view_count 1 in a pass with view_count 2. */
     {
         single_view = kit_create_pipeline(s->device, s->vertex, s->fragment, s->color_format, s->depth_format, 1, SDL_GPU_SAMPLECOUNT_1);
         SDL_GPUCommandBuffer *cmd2 = SDL_AcquireGPUCommandBuffer(s->device);
         SDL_GPURenderPass *pass2 = cmd2 ? kit_begin_pass(cmd2, color, depth, clear, depth_clear, KIT_VIEW_COUNT) : NULL;
         bool failed = false;
-        const char *text = "(Pass nicht begonnen)";
+        const char *text = "(pass not begun)";
         if (pass2) {
             failed = !kit_bind_checked(pass2, single_view);
-            text = failed ? SDL_GetError() : "(kein Fehler, Bind gelang)";
+            text = failed ? SDL_GetError() : "(no error, bind succeeded)";
             SDL_EndGPURenderPass(pass2);
         }
         if (cmd2) SDL_CancelGPUCommandBuffer(cmd2);
         self_logf(&ctx, "[c64-kit] step=multiview-negative case=pipelineView1InPassView2 failed=%d error=\"%s\"", failed ? 1 : 0, text);
         if (!failed) result = 52;
     }
-    /* Negativtest 2: Pass mit view_count 3 auf Texturen mit 2 Schichten. */
+    /* Negative test 2: pass with view_count 3 on textures with 2 layers. */
     {
         SDL_GPUCommandBuffer *cmd3 = SDL_AcquireGPUCommandBuffer(s->device);
         SDL_GPURenderPass *pass3 = cmd3 ? kit_begin_pass(cmd3, color, depth, clear, depth_clear, 3) : NULL;
         const bool failed = (pass3 == NULL);
         self_logf(&ctx, "[c64-kit] step=multiview-negative case=passView3OnTwoLayers failed=%d error=\"%s\"",
-                  failed ? 1 : 0, failed ? SDL_GetError() : "(kein Fehler, Pass begann)");
+                  failed ? 1 : 0, failed ? SDL_GetError() : "(no error, pass began)");
         if (pass3) SDL_EndGPURenderPass(pass3);
         if (cmd3) SDL_CancelGPUCommandBuffer(cmd3);
         if (!failed && result == 0) result = 53;
@@ -1831,7 +1832,7 @@ done:
     return result;
 }
 
-/* ------------------------------------------------------------------ Mac-Selbsttest K3 (P4) */
+/* ------------------------------------------------------------------ Mac self-test of the rate map */
 
 int kit_multiview_foveation_selftest(kit_log_fn log, void *user)
 {
@@ -1848,7 +1849,7 @@ int kit_multiview_foveation_selftest(kit_log_fn log, void *user)
     kit_multiview_session *s = NULL;
 
     if (!kit_metal_create_host_objects(&host_device, &host_queue)) {
-        self_logf(&ctx, "[c64-kit] FAIL step=selftest-host error=\"Device/Queue nicht erzeugt\"");
+        self_logf(&ctx, "[c64-kit] FAIL step=selftest-host error=\"device/queue not created\"");
         return 70;
     }
     self_logf(&ctx, "[c64-kit] step=fov-support layers1=%d layers2=%d layers4=%d",
@@ -1861,10 +1862,10 @@ int kit_multiview_foveation_selftest(kit_log_fn log, void *user)
         goto done;
     }
 
-    /* Eigene Map: 1024×1024 logisch, 2 Schichten, 16×16 Stützstellen, asymmetrisches
-     * Zweistufen-Profil (erstes Drittel 1,0, Rest 0,5), beide Schichten gleich. */
+    /* Own map: 1024×1024 logical, 2 layers, 16×16 sample points, asymmetric two-step profile
+     * (first third 1.0, rest 0.5), both layers equal. */
     if (!kit_metal_create_rate_map(host_device, 1024, 1024, KIT_VIEW_COUNT, 16, 0.5f, &map)) {
-        self_logf(&ctx, "[c64-kit] FAIL step=fov-map error=\"Rate Map nicht erzeugt (Gerät ohne Unterstützung?)\"");
+        self_logf(&ctx, "[c64-kit] FAIL step=fov-map error=\"Rate map not created (device without support?)\"");
         result = 72;
         goto done;
     }
@@ -1874,7 +1875,7 @@ int kit_multiview_foveation_selftest(kit_log_fn log, void *user)
               md.layers, md.screen_width, md.screen_height, md.physical_width[0], md.physical_height[0],
               md.physical_width[1], md.physical_height[1], md.granularity_width, md.granularity_height);
     {
-        /* Zur Anschauung: Mitte und Rand der logischen Fläche in physischen Koordinaten, Schicht 0. */
+        /* For illustration: centre and edge of the logical area in physical coordinates, layer 0. */
         float cx, cy, lx, ly, rx, ry;
         kit_metal_map_screen_to_physical(map, 0, 512, 512, &cx, &cy);
         kit_metal_map_screen_to_physical(map, 0, 64, 512, &lx, &ly);
@@ -1883,7 +1884,7 @@ int kit_multiview_foveation_selftest(kit_log_fn log, void *user)
                   lx, ly, cx, cy, rx, ry);
     }
 
-    /* Messbild gegen die Map. */
+    /* Measurement image against the map. */
     kit_multiview_measure m;
     if (!kit_multiview_measure_map(s, map, true, &m)) {
         self_logf(&ctx, "[c64-kit] FAIL step=fov-measure error=\"%s\"", SDL_GetError());
@@ -1899,8 +1900,8 @@ int kit_multiview_foveation_selftest(kit_log_fn log, void *user)
         goto done;
     }
 
-    /* Positivtest: Textur grösser als die physische Grösse der Map (wie der Compositor auf der
-     * M2: Map 1856×1792, Textur 1888×1792). Stichproben bleiben im Raum der Map. */
+    /* Positive test: texture larger than the physical size of the map (like the compositor on the
+     * M2: map 1856×1792, texture 1888×1792). Sample points stay in the space of the map. */
     {
         kit_multiview_measure m2;
         const unsigned bigger_w = m.physical_width + 32, bigger_h = m.physical_height + 32;
@@ -1918,7 +1919,7 @@ int kit_multiview_foveation_selftest(kit_log_fn log, void *user)
         }
     }
 
-    /* Negativtest 1: Textur kleiner als die physische Grösse der Map (64×64×2 gegen die Map). */
+    /* Negative test 1: texture smaller than the physical size of the map (64×64×2 against the map). */
     {
         if (!kit_metal_create_array_texture(host_device, false, 64, 64, KIT_VIEW_COUNT, &mtl_color_small)) {
             result = 75;
@@ -1930,20 +1931,20 @@ int kit_multiview_foveation_selftest(kit_log_fn log, void *user)
         SDL_GPURenderPass *pass = (cmd && color_small) ? kit_begin_pass_map(cmd, color_small, NULL, clear, 0.0f, KIT_VIEW_COUNT, 0, map) : NULL;
         const bool failed = (pass == NULL);
         self_logf(&ctx, "[c64-kit] step=fov-negative case=textureSmallerThanMap failed=%d error=\"%s\"",
-                  failed ? 1 : 0, failed ? SDL_GetError() : "(kein Fehler, Pass begann)");
+                  failed ? 1 : 0, failed ? SDL_GetError() : "(no error, pass began)");
         if (pass) SDL_EndGPURenderPass(pass);
         if (cmd) SDL_CancelGPUCommandBuffer(cmd);
         if (!failed) result = 76;
     }
 
-    /* Negativtest 2: Map mit Startschicht 1 (Ein-View-Pass auf Schicht 1 der Mess-Textur). */
+    /* Negative test 2: map with base layer 1 (one-view pass on layer 1 of the measurement texture). */
     {
         SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(s->device);
         const float clear[4] = { 0, 0, 0, 1 };
         SDL_GPURenderPass *pass = (cmd && s->measure_texture) ? kit_begin_pass_map(cmd, s->measure_texture, NULL, clear, 0.0f, 1, 1, map) : NULL;
         const bool failed = (pass == NULL);
         self_logf(&ctx, "[c64-kit] step=fov-negative case=mapWithBaseLayer1 failed=%d error=\"%s\"",
-                  failed ? 1 : 0, failed ? SDL_GetError() : "(kein Fehler, Pass begann)");
+                  failed ? 1 : 0, failed ? SDL_GetError() : "(no error, pass began)");
         if (pass) SDL_EndGPURenderPass(pass);
         if (cmd) SDL_CancelGPUCommandBuffer(cmd);
         if (!failed && result == 0) result = 79;
@@ -1967,10 +1968,10 @@ done:
     return result;
 }
 
-/* ------------------------------------------------------------------ Mac-Selbsttest K4a (MSAA) */
+/* ------------------------------------------------------------------ Mac self-test MSAA */
 
-/* Beide Schichten von Farbe (BGRA8) und Tiefe (D32F) zweier Host-Texturen vollständig lesen;
- * die Puffer gehören dem Aufrufer (SDL_free). */
+/* Read both layers of colour (BGRA8) and depth (D32F) of two host textures completely; the
+ * buffers belong to the caller (SDL_free). */
 static bool kit_read_layers(kit_multiview_session *s, void *mtl_color, void *mtl_depth, unsigned W, unsigned H,
                             unsigned layers, Uint8 **color_out, float **depth_out)
 {
@@ -2052,10 +2053,10 @@ done:
 }
 
 typedef struct kit_edge_result {
-    unsigned full;            /* Kanal exakt 255 (Quad) */
-    unsigned clear;           /* Kanal exakt 0 (Clear) */
-    unsigned intermediate;    /* Zwischenwert: geglättete Kante */
-    unsigned depth_match;     /* Kantenpixel, deren aufgelöste Tiefe zum Filter passt */
+    unsigned full;            /* channel exactly 255 (quad) */
+    unsigned clear;           /* channel exactly 0 (clear) */
+    unsigned intermediate;    /* intermediate value: smoothed edge */
+    unsigned depth_match;     /* edge pixels whose resolved depth matches the filter */
     unsigned depth_mismatch;
     float min_depth;
     bool center_ok;
@@ -2063,7 +2064,7 @@ typedef struct kit_edge_result {
     bool alpha_ok;
 } kit_edge_result;
 
-/* Eine Schicht auswerten: channel = BGRA-Index des Quad-Kanals (2 rot, 0 blau), filter 0/1/2. */
+/* Evaluate one layer: channel = BGRA index of the quad channel (2 red, 0 blue), filter 0/1/2. */
 static void kit_edge_analyze(const Uint8 *c, const float *d, unsigned W, unsigned H, int channel,
                              float quad_depth, float clear_depth, unsigned filter, kit_edge_result *r)
 {
@@ -2101,8 +2102,8 @@ static void kit_edge_analyze(const Uint8 *c, const float *d, unsigned W, unsigne
     r->corner_ok = (c[ki * 4 + channel] == 0) && SDL_fabsf(d[ki] - clear_depth) < 1e-6f;
 }
 
-/* Gedrehtes Quad mit schrägen Kanten rendern (View 0 rot/0,25, View 1 blau/0,75 über Clear
- * schwarz/0,001), beide Schichten lesen und auswerten. Loggt step=msaa-edge pro Schicht. */
+/* Render a rotated quad with slanted edges (view 0 red/0.25, view 1 blue/0.75 over clear
+ * black/0.001), read both layers and evaluate. Logs step=msaa-edge per layer. */
 static int kit_edge_round(kit_self_ctx *ctx, kit_multiview_session *s, void *mtl_color, void *mtl_depth,
                           unsigned W, unsigned H, void *map, const char *label, bool expect_smooth, int fail_code)
 {
@@ -2116,7 +2117,7 @@ static int kit_edge_round(kit_self_ctx *ctx, kit_multiview_session *s, void *mtl
     const float clear[4] = { 0, 0, 0, 1 };
     const float clear_depth = 0.001f;
     const float quad_depth[2] = { 0.25f, 0.75f };
-    const int channel[2] = { 2, 0 }; /* rot, blau in BGRA */
+    const int channel[2] = { 2, 0 }; /* red, blue in BGRA */
     kit_multiview_stats before, after;
     kit_multiview_take_stats(s, &before);
     if (!kit_multiview_frame(s, mtl_color, mtl_depth, clear, clear_depth, true, vp, center, right, up, map)) {
@@ -2138,25 +2139,25 @@ static int kit_edge_round(kit_self_ctx *ctx, kit_multiview_session *s, void *mtl
         const bool depth_ok = (r.depth_mismatch == 0);
         const bool ok = smooth_ok && depth_ok && r.full > 0 && r.clear > 0 && r.center_ok && r.corner_ok && r.alpha_ok && r.min_depth > 0;
         self_logf(ctx, "[c64-kit] step=msaa-edge case=%s samples=%u filter=%s layer=%u color=%s full=%u clear=%u intermediate=%u depthAtEdges{match=%u mismatch=%u} minDepth=%.4f center=%d corner=%d alpha255=%d ok=%d",
-                  label, s->opt.msaa_samples, kit_depth_filter_names[s->opt.depth_filter], layer, layer == 0 ? "rot" : "blau",
+                  label, s->opt.msaa_samples, kit_depth_filter_names[s->opt.depth_filter], layer, layer == 0 ? "red" : "blue",
                   r.full, r.clear, r.intermediate, r.depth_match, r.depth_mismatch, r.min_depth,
                   r.center_ok ? 1 : 0, r.corner_ok ? 1 : 0, r.alpha_ok ? 1 : 0, ok ? 1 : 0);
         if (!ok) result = fail_code + 1;
     }
     SDL_free(c);
     SDL_free(d);
-    /* GPU-Zeit dieses einen Frames aus dem Rückruf (nach dem Rücklesen ist der Frame sicher fertig);
-     * erster Frame einer Sitzung, also mit Aufwärmen. Der Vergleich steht in step=msaa-gpu-bench. */
+    /* GPU time of this one frame from the callback (after the read-back the frame is surely
+     * complete); first frame of a session, so with warm-up. The comparison is in step=msaa-gpu-bench. */
     kit_multiview_take_stats(s, &after);
-    self_logf(ctx, "[c64-kit] step=msaa-gpu case=%s gpuFrames=%u gpu(ms) mean=%.3f max=%.3f untagged=%lu gpuErr=%lu (einzelner Frame, mit Aufwaermen)",
+    self_logf(ctx, "[c64-kit] step=msaa-gpu case=%s gpuFrames=%u gpu(ms) mean=%.3f max=%.3f untagged=%lu gpuErr=%lu (single frame, with warm-up)",
               label, after.gpu_frames, after.gpu_frames ? after.gpu_sum_ms / after.gpu_frames : 0.0, after.gpu_max_ms,
               after.gpu_untagged, after.gpu_errors);
     (void)before;
     return result;
 }
 
-/* GPU-Zeit über viele gleiche Frames ohne Aufwärmphase: `frames` Frames rendern, die ersten `skip`
- * Abschlüsse nicht werten, dann Mittel, p95 und Maximum aus dem Rückruf. */
+/* GPU time over many equal frames without the warm-up phase: render `frames` frames, do not
+ * count the first `skip` completions, then mean, p95 and maximum from the callback. */
 static bool kit_gpu_bench(kit_self_ctx *ctx, kit_multiview_session *s, void *mtl_color, void *mtl_depth, void *map,
                           const char *label, unsigned frames, unsigned skip)
 {
@@ -2169,7 +2170,7 @@ static bool kit_gpu_bench(kit_self_ctx *ctx, kit_multiview_session *s, void *mtl
     const float center[3] = { 0, 0, 0 }, right[3] = { 0.6f, 0.15f, 0 }, up[3] = { -0.15f, 0.6f, 0 };
     const float clear[4] = { 0, 0, 0, 1 };
     kit_multiview_stats drop;
-    /* Zähler auf Null: Aufwärmphase neu ab hier. */
+    /* counters to zero: the warm-up phase starts anew here. */
     SDL_LockMutex(s->gpu_lock);
     s->gpu_completed_frames = 0;
     s->gpu_sample_count = 0;
@@ -2186,7 +2187,7 @@ static bool kit_gpu_bench(kit_self_ctx *ctx, kit_multiview_session *s, void *mtl
         }
     }
     SDL_WaitForGPUIdle(s->device);
-    SDL_Delay(5); /* Rückrufe der letzten Buffer */
+    SDL_Delay(5); /* callbacks of the last buffers */
     unsigned n = 0;
     double mean = 0, p95 = 0, mx = 0;
     kit_multiview_gpu_percentiles(s, &n, &mean, &p95, &mx);
@@ -2213,7 +2214,7 @@ int kit_multiview_msaa_selftest(kit_log_fn log, void *user)
     unsigned W = 0, H = 0;
 
     if (!kit_metal_create_host_objects(&host_device, &host_queue)) {
-        self_logf(&ctx, "[c64-kit] FAIL step=selftest-host error=\"Device/Queue nicht erzeugt\"");
+        self_logf(&ctx, "[c64-kit] FAIL step=selftest-host error=\"device/queue not created\"");
         return 90;
     }
     kit_multiview_options_default(&opt);
@@ -2229,9 +2230,9 @@ int kit_multiview_msaa_selftest(kit_log_fn log, void *user)
         goto done;
     }
 
-    /* Map wie K3: 1024×1024 logisch, physisch 688×688; «Drawable» in dieser Grösse. */
+    /* Map as in the rate map test: 1024×1024 logical, physically 688×688; "drawable" of that size. */
     if (!kit_metal_create_rate_map(host_device, 1024, 1024, KIT_VIEW_COUNT, 16, 0.5f, &map)) {
-        self_logf(&ctx, "[c64-kit] FAIL step=msaa-map error=\"Rate Map nicht erzeugt\"");
+        self_logf(&ctx, "[c64-kit] FAIL step=msaa-map error=\"Rate map not created\"");
         result = 92;
         goto done;
     }
@@ -2243,24 +2244,24 @@ int kit_multiview_msaa_selftest(kit_log_fn log, void *user)
     }
     if (!kit_metal_create_array_texture(host_device, false, W, H, KIT_VIEW_COUNT, &mtl_color) ||
         !kit_metal_create_array_texture(host_device, true, W, H, KIT_VIEW_COUNT, &mtl_depth)) {
-        self_logf(&ctx, "[c64-kit] FAIL step=msaa-textures error=\"Aufloesungstexturen nicht erzeugt\"");
+        self_logf(&ctx, "[c64-kit] FAIL step=msaa-textures error=\"Resolve textures not created\"");
         result = 93;
         goto done;
     }
-    self_logf(&ctx, "[c64-kit] step=msaa-setup resolve{%ux%ux%u bgra8_srgb+d32f samples=1} msaa=%u map{screen=1024x1024 physical=%ux%u} quad=gedreht(right=0.6,0.15 up=-0.15,0.6) view0=rot/0.25 view1=blau/0.75 clear=schwarz/0.001",
+    self_logf(&ctx, "[c64-kit] step=msaa-setup resolve{%ux%ux%u bgra8_srgb+d32f samples=1} msaa=%u map{screen=1024x1024 physical=%ux%u} quad=rotated(right=0.6,0.15 up=-0.15,0.6) view0=red/0.25 view1=blue/0.75 clear=black/0.001",
               W, H, KIT_VIEW_COUNT, opt.msaa_samples, W, H);
 
-    /* Kante mit MSAA 4x, Filter max: Zwischenwerte, Tiefe an Kanten = Quad. */
+    /* Edge with MSAA 4x, filter max: intermediate values, depth at edges = quad. */
     result = kit_edge_round(&ctx, s, mtl_color, mtl_depth, W, H, map, "msaa4-max", true, 94);
     if (result) goto done;
 
-    /* Filter min: Tiefe an Kanten = Clear. */
+    /* Filter min: depth at edges = clear. */
     kit_multiview_set_depth_filter(s, 1);
     result = kit_edge_round(&ctx, s, mtl_color, mtl_depth, W, H, map, "msaa4-min", true, 96);
     if (result) goto done;
     kit_multiview_set_depth_filter(s, 2);
 
-    /* Messbild der Map unter MSAA (Mess-Textur = Map-Grösse und 32 px grösser). */
+    /* Measurement image of the map under MSAA (measurement texture = map size and 32 px larger). */
     {
         kit_multiview_measure m;
         if (!kit_multiview_measure_map(s, map, false, &m)) {
@@ -2284,7 +2285,7 @@ int kit_multiview_msaa_selftest(kit_log_fn log, void *user)
         if (!within2) { result = 102; goto done; }
     }
 
-    /* Negativtests am Pass. */
+    /* Negative tests on the pass. */
     {
         SDL_GPUTexture *color_res = kit_wrap(s->device, mtl_color, false, NULL);
         SDL_GPUTexture *depth_res = kit_wrap(s->device, mtl_depth, true, NULL);
@@ -2298,7 +2299,7 @@ int kit_multiview_msaa_selftest(kit_log_fn log, void *user)
         d.depth_clear = 0.001f;
         d.view_count = KIT_VIEW_COUNT;
         d.rate_map = map;
-        /* A: Auflösungstextur der Tiefe ist selbst multisample. */
+        /* A: the depth resolve texture is itself multisample. */
         d.depth_resolve = s->msaa_depth;
         d.depth_filter = 2;
         {
@@ -2306,12 +2307,12 @@ int kit_multiview_msaa_selftest(kit_log_fn log, void *user)
             SDL_GPURenderPass *pass = cmd ? kit_begin_pass_ex(cmd, &d) : NULL;
             const bool failed = (pass == NULL);
             self_logf(&ctx, "[c64-kit] step=msaa-negative case=depthResolveTextureMultisample failed=%d error=\"%s\"",
-                      failed ? 1 : 0, failed ? SDL_GetError() : "(kein Fehler, Pass begann)");
+                      failed ? 1 : 0, failed ? SDL_GetError() : "(no error, pass began)");
             if (pass) SDL_EndGPURenderPass(pass);
             if (cmd) SDL_CancelGPUCommandBuffer(cmd);
             if (!failed) result = 103;
         }
-        /* B: unbekannter Filter. */
+        /* B: unknown filter. */
         d.depth_resolve = depth_res;
         d.depth_filter_override = "median";
         {
@@ -2319,7 +2320,7 @@ int kit_multiview_msaa_selftest(kit_log_fn log, void *user)
             SDL_GPURenderPass *pass = cmd ? kit_begin_pass_ex(cmd, &d) : NULL;
             const bool failed = (pass == NULL);
             self_logf(&ctx, "[c64-kit] step=msaa-negative case=unknownDepthFilter failed=%d error=\"%s\"",
-                      failed ? 1 : 0, failed ? SDL_GetError() : "(kein Fehler, Pass begann)");
+                      failed ? 1 : 0, failed ? SDL_GetError() : "(no error, pass began)");
             if (pass) SDL_EndGPURenderPass(pass);
             if (cmd) SDL_CancelGPUCommandBuffer(cmd);
             if (!failed && result == 0) result = 104;
@@ -2329,9 +2330,9 @@ int kit_multiview_msaa_selftest(kit_log_fn log, void *user)
         if (result) goto done;
     }
 
-    /* K4b, Schritt 1 und 2: Speicher der MSAA-Ziele. Pro Variante (memoryless aus, an) eine frische
-     * Sitzung, fünf Frames und eine Messung (legt die Mess-Texturen an), dann phys_footprint-Delta,
-     * Container-Zählung und Negativtests der memoryless-Regeln. */
+    /* Memory of the MSAA targets. Per variant (memoryless off, on) a fresh session, five frames and
+     * one measurement (creates the measurement textures), then phys_footprint delta, container
+     * count and negative tests of the memoryless rules. */
     kit_multiview_end(s);
     s = NULL;
     for (unsigned variant = 0; variant < 2 && result == 0; variant++) {
@@ -2374,15 +2375,15 @@ int kit_multiview_msaa_selftest(kit_log_fn log, void *user)
             result = 114;
             break;
         }
-        /* Kante mit memoryless-Zielen muss gleich aussehen wie ohne. */
+        /* The edge with memoryless targets must look the same as without. */
         if (variant == 1) {
             result = kit_edge_round(&ctx, s, mtl_color, mtl_depth, W, H, map, "msaa4-memoryless", true, 115);
             if (result) break;
-            /* Negativtests der memoryless-Regeln. */
+            /* Negative tests of the memoryless rules. */
             SDL_GPUTexture *color_res = kit_wrap(s->device, mtl_color, false, NULL);
             SDL_GPUTexture *depth_res = kit_wrap(s->device, mtl_depth, true, NULL);
             {
-                /* A: LOAD auf memoryless Farbziel. */
+                /* A: LOAD on a memoryless colour target. */
                 SDL_GPUColorTargetInfo ct;
                 SDL_zero(ct);
                 ct.texture = s->msaa_color;
@@ -2393,11 +2394,11 @@ int kit_multiview_msaa_selftest(kit_log_fn log, void *user)
                 SDL_GPURenderPass *pass = cmd ? SDL_BeginGPURenderPass(cmd, &ct, 1, NULL) : NULL;
                 const bool failed = (pass == NULL);
                 self_logf(&ctx, "[c64-kit] step=msaa-negative case=memorylessLoad failed=%d error=\"%s\"", failed ? 1 : 0,
-                          failed ? SDL_GetError() : "(kein Fehler, Pass begann)");
+                          failed ? SDL_GetError() : "(no error, pass began)");
                 if (pass) SDL_EndGPURenderPass(pass);
                 if (cmd) SDL_CancelGPUCommandBuffer(cmd);
                 if (!failed) result = 116;
-                /* B: STORE auf memoryless Farbziel. */
+                /* B: STORE on a memoryless colour target. */
                 ct.load_op = SDL_GPU_LOADOP_CLEAR;
                 ct.store_op = SDL_GPU_STOREOP_STORE;
                 ct.resolve_texture = NULL;
@@ -2405,13 +2406,13 @@ int kit_multiview_msaa_selftest(kit_log_fn log, void *user)
                 pass = cmd ? SDL_BeginGPURenderPass(cmd, &ct, 1, NULL) : NULL;
                 const bool failed2 = (pass == NULL);
                 self_logf(&ctx, "[c64-kit] step=msaa-negative case=memorylessStore failed=%d error=\"%s\"", failed2 ? 1 : 0,
-                          failed2 ? SDL_GetError() : "(kein Fehler, Pass begann)");
+                          failed2 ? SDL_GetError() : "(no error, pass began)");
                 if (pass) SDL_EndGPURenderPass(pass);
                 if (cmd) SDL_CancelGPUCommandBuffer(cmd);
                 if (!failed2 && result == 0) result = 117;
             }
             {
-                /* C: memoryless mit SAMPLER-Usage. */
+                /* C: memoryless with SAMPLER usage. */
                 SDL_GPUTextureCreateInfo info;
                 SDL_zero(info);
                 info.type = SDL_GPU_TEXTURETYPE_2D;
@@ -2428,13 +2429,13 @@ int kit_multiview_msaa_selftest(kit_log_fn log, void *user)
                 SDL_DestroyProperties(info.props);
                 const bool failed = (t == NULL);
                 self_logf(&ctx, "[c64-kit] step=msaa-negative case=memorylessWithSamplerUsage failed=%d error=\"%s\"", failed ? 1 : 0,
-                          failed ? SDL_GetError() : "(kein Fehler, Textur erzeugt)");
+                          failed ? SDL_GetError() : "(no error, texture created)");
                 if (t) SDL_ReleaseGPUTexture(s->device, t);
                 if (!failed && result == 0) result = 118;
             }
             {
-                /* D: Download aus memoryless Textur (Kopierpass; die Funktion ist void, der
-                 * Fehlertext steht in SDL_GetError). */
+                /* D: download from a memoryless texture (copy pass; the function is void, the
+                 * error text is in SDL_GetError). */
                 SDL_GPUTransferBufferCreateInfo tinfo;
                 SDL_zero(tinfo);
                 tinfo.usage = SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD;
@@ -2455,7 +2456,7 @@ int kit_multiview_msaa_selftest(kit_log_fn log, void *user)
                     SDL_DownloadFromGPUTexture(copy, &src, &dst);
                     failed = SDL_GetError()[0] != '\0';
                     self_logf(&ctx, "[c64-kit] step=msaa-negative case=downloadFromMemoryless failed=%d error=\"%s\"", failed ? 1 : 0,
-                              failed ? SDL_GetError() : "(kein Fehler gemeldet)");
+                              failed ? SDL_GetError() : "(no error reported)");
                     SDL_EndGPUCopyPass(copy);
                 }
                 if (cmd) SDL_CancelGPUCommandBuffer(cmd);
@@ -2470,10 +2471,10 @@ int kit_multiview_msaa_selftest(kit_log_fn log, void *user)
     }
     if (result) goto done;
 
-    /* GPU-Zeit im Wechsel: vier frische Sitzungen (4x, ohne, 4x, ohne), je 240 gleiche Frames,
-     * die ersten 120 nicht gewertet. Der Wechsel zeigt, ob die Reihenfolge (GPU-Takt des Mac
-     * ohne Vsync-Taktung) die Zahlen bestimmt; in der ersten Sitzung ohne MSAA zusätzlich
-     * dieselbe Kante hart (keine Zwischenwerte). */
+    /* GPU time alternating: four fresh sessions (4x, none, 4x, none), 240 equal frames each, the
+     * first 120 not counted. The alternation shows whether the order (GPU clock of the Mac
+     * without vsync pacing) determines the numbers; in the first session without MSAA
+     * additionally the same edge hard (no intermediate values). */
     kit_multiview_end(s);
     s = NULL;
     for (unsigned round = 0; round < 4 && result == 0; round++) {
@@ -2513,7 +2514,7 @@ done:
     return result;
 }
 
-/* ------------------------------------------------------------------ K4c: Mac-Nachstellung */
+/* ------------------------------------------------------------------ Mac reproduction of the depth store case */
 
 int kit_multiview_depth_store_selftest(kit_log_fn log, void *user)
 {
@@ -2529,12 +2530,12 @@ int kit_multiview_depth_store_selftest(kit_log_fn log, void *user)
     unsigned W = 0, H = 0;
 
     if (!kit_metal_create_host_objects(&host_device, &host_queue)) {
-        self_logf(&ctx, "[c64-kit] FAIL step=selftest-host error=\"Device/Queue nicht erzeugt\"");
+        self_logf(&ctx, "[c64-kit] FAIL step=selftest-host error=\"device/queue not created\"");
         return 130;
     }
-    /* Map wie K3/K4a: 1024×1024 logisch, physisch 688×688; die Probe läuft in dieser Grösse. */
+    /* Map as in the rate map and MSAA tests: 1024×1024 logical, physically 688×688; the probe runs in that size. */
     if (!kit_metal_create_rate_map(host_device, 1024, 1024, KIT_VIEW_COUNT, 16, 0.5f, &map)) {
-        self_logf(&ctx, "[c64-kit] FAIL step=depth-store-map error=\"Rate Map nicht erzeugt\"");
+        self_logf(&ctx, "[c64-kit] FAIL step=depth-store-map error=\"Rate map not created\"");
         result = 131;
         goto done;
     }
@@ -2545,7 +2546,7 @@ int kit_multiview_depth_store_selftest(kit_log_fn log, void *user)
         H = md.physical_height[0];
     }
 
-    /* Quad wie kit_edge_round: View 0 rot/0,25, View 1 blau/0,75 über Clear schwarz/0,001. */
+    /* Quad like kit_edge_round: view 0 red/0.25, view 1 blue/0.75 over clear black/0.001. */
     float vp[32] = { 0 };
     for (int v = 0; v < 2; v++) {
         vp[v * 16 + 0] = 1; vp[v * 16 + 5] = 1; vp[v * 16 + 10] = 1; vp[v * 16 + 15] = 1;
@@ -2555,7 +2556,7 @@ int kit_multiview_depth_store_selftest(kit_log_fn log, void *user)
     const float center[3] = { 0, 0, 0 }, right[3] = { 0.6f, 0.15f, 0 }, up[3] = { -0.15f, 0.6f, 0 };
     const float clear[4] = { 0, 0, 0, 1 };
     const float quad_depth[2] = { 0.25f, 0.75f };
-    self_logf(&ctx, "[c64-kit] step=depth-store-setup probe{%ux%ux%u bgra8_srgb+d32f samples=1 sentinel=%.1f} msaa=4 filter=max quad view0=rot/0.25 view1=blau/0.75 clear=schwarz/0.001 cases=dontcare,store x noMap,map",
+    self_logf(&ctx, "[c64-kit] step=depth-store-setup probe{%ux%ux%u bgra8_srgb+d32f samples=1 sentinel=%.1f} msaa=4 filter=max quad view0=red/0.25 view1=blue/0.75 clear=black/0.001 cases=dontcare,store x noMap,map",
               W, H, KIT_VIEW_COUNT, (double)KIT_PROBE_SENTINEL);
 
     for (unsigned variant = 0; variant < 2 && result == 0; variant++) {
@@ -2583,8 +2584,8 @@ int kit_multiview_depth_store_selftest(kit_log_fn log, void *user)
                 result = 133;
                 break;
             }
-            /* Abnahme: Farbe muss in beiden Schichten ankommen (jede Variante); die Tiefe nur bei
-             * dontcare: beide Schichten voll, Maximum = Quad-Tiefe der View, Minimum = Clear. */
+            /* Acceptance: the colour must arrive in both layers (every variant); the depth only for
+             * dontcare: both layers full, maximum = quad depth of the view, minimum = clear. */
             bool ok = r.layer[0].color_nonblack > 0 && r.layer[1].color_nonblack > 0;
             if (!opt.depth_store) {
                 for (unsigned layer = 0; layer < 2; layer++) {

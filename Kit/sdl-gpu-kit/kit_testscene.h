@@ -1,19 +1,20 @@
 /*
- * kit_testscene.h — SDL_GPU-Kit für visionOS, Testszene Stufen K0 und K1a.
+ * kit_testscene.h — SDL_GPU kit for visionOS, test scene stages basic and inject.
  *
- * First stage of the kit: SDL_GPU ohne Patches in einem fremden
- * Prozess (SwiftUI-App auf visionOS, Kommandozeile auf macOS). Die Szene legt ein Device und
- * eine eigene Textur an, führt einen Clear-Pass aus, liest einen Pixel zurück und meldet jeden
- * Schritt als Zeile "[c64-kit] ..." über den Log-Callback. Kein Fenster, kein Swapchain.
+ * First stage of the kit: SDL_GPU without patches in a foreign process (SwiftUI app on
+ * visionOS, command line on macOS). The scene creates a device and its own texture, runs a
+ * clear pass, reads one pixel back and reports every step as a line "[c64-kit] ..." through
+ * the log callback. No window, no swapchain.
  *
- * K1a (Baustein P1): dieselbe Szene mit eingespeistem MTLDevice und/oder MTLCommandQueue des
- * Hosts (Properties SDL_PROP_GPU_DEVICE_CREATE_METAL_DEVICE_POINTER / ..._COMMAND_QUEUE_POINTER
- * aus dem Fork sdl-visionos). Zusätzliche Schritte: Zeigervergleich Host gegen SDL
- * (step=inject) und nach SDL_DestroyGPUDevice ein leerer Command Buffer auf der Host-Queue
- * (step=hostqueue-after-destroy), der zeigt, dass SDL keine fremde Referenz freigegeben hat.
+ * Inject: the same scene with the host's MTLDevice and/or MTLCommandQueue fed in (properties
+ * SDL_PROP_GPU_DEVICE_CREATE_METAL_DEVICE_POINTER / ..._COMMAND_QUEUE_POINTER from the fork
+ * sdl-visionos). Additional steps: pointer comparison host against SDL (step=inject) and after
+ * SDL_DestroyGPUDevice an empty command buffer on the host queue (step=hostqueue-after-destroy),
+ * which shows that SDL released no foreign reference.
  *
- * Der Code ist plattformneutral (nur SDL3-API); die Metal-Hilfen für den Host liegen in
- * kit_testscene_metal.m. Das Kit gehört nicht zu SDL: ab K1 hängt die Szene am Swift-Host.
+ * The code is platform neutral (SDL3 API only); the Metal helpers for the host are in
+ * kit_testscene_metal.m. The kit is not part of SDL: from the inject stage on the scene hangs
+ * on the Swift host.
  */
 
 #ifndef KIT_TESTSCENE_H
@@ -25,29 +26,29 @@
 extern "C" {
 #endif
 
-/* Eine Logzeile ohne Zeilenende. Wird vom Host ins Unified Log, in die Fortschrittsdatei oder
- * auf stdout geschrieben. */
+/* One log line without line ending. Written by the host into the unified log, the progress
+ * file or to stdout. */
 typedef void (*kit_log_fn)(const char *line, void *user);
 
 typedef struct kit_testscene_options {
-    /* true: die Szene ruft SDL_SetMainReady und SDL_Init(SDL_INIT_VIDEO) selbst.
-     * false: der Host hat SDL schon initialisiert (kit_testscene_init_sdl). */
+    /* true: the scene calls SDL_SetMainReady and SDL_Init(SDL_INIT_VIDEO) itself.
+     * false: the host has already initialised SDL (kit_testscene_init_sdl). */
     bool init_sdl;
-    /* true: am Ende SDL_Quit. Auf UIKit-Plattformen nur vom Hauptthread sinnvoll. */
+    /* true: SDL_Quit at the end. On UIKit platforms only meaningful from the main thread. */
     bool quit_sdl;
-    /* SDL_GPU im Debug-Modus anlegen (Validierung im Backend, langsamer). */
+    /* Create SDL_GPU in debug mode (validation in the backend, slower). */
     bool debug_mode;
-    /* Grösse der Testtextur; 0 = 256. */
+    /* Size of the test texture; 0 = 256. */
     int width;
     int height;
-    /* K1a: id<MTLDevice> und/oder id<MTLCommandQueue> des Hosts, unretained übergeben; NULL =
-     * SDL erzeugt selbst. Der Host bleibt Besitzer; die Szene gibt nichts frei. */
+    /* Inject: id<MTLDevice> and/or id<MTLCommandQueue> of the host, passed unretained; NULL =
+     * SDL creates them itself. The host stays the owner; the scene releases nothing. */
     void *metal_device;
     void *metal_queue;
 } kit_testscene_options;
 
-/* Schritte in Reihenfolge; der Rückgabewert von kit_testscene_run nennt den Schritt, an dem es
- * scheiterte (0 = alles bestanden). */
+/* Steps in order; the return value of kit_testscene_run names the step at which it failed
+ * (0 = all passed). */
 enum kit_testscene_step {
     KIT_STEP_OK = 0,
     KIT_STEP_INIT = 1,        /* SDL_Init(SDL_INIT_VIDEO) */
@@ -58,21 +59,21 @@ enum kit_testscene_step {
     KIT_STEP_RENDERPASS = 6,  /* SDL_BeginGPURenderPass (Clear) */
     KIT_STEP_COPYPASS = 7,    /* SDL_BeginGPUCopyPass / SDL_DownloadFromGPUTexture */
     KIT_STEP_SUBMIT = 8,      /* SDL_SubmitGPUCommandBufferAndAcquireFence + SDL_WaitForGPUFences */
-    KIT_STEP_READBACK = 9,    /* SDL_MapGPUTransferBuffer, Pixelvergleich */
-    KIT_STEP_INJECT = 10,     /* K1a: SDL nutzt nicht die eingespeisten Objekte */
-    KIT_STEP_HOSTQUEUE = 11   /* K1a: Host-Queue nach SDL_DestroyGPUDevice unbrauchbar */
+    KIT_STEP_READBACK = 9,    /* SDL_MapGPUTransferBuffer, pixel comparison */
+    KIT_STEP_INJECT = 10,     /* inject: SDL does not use the injected objects */
+    KIT_STEP_HOSTQUEUE = 11   /* inject: host queue unusable after SDL_DestroyGPUDevice */
 };
 
-/* SDL_SetMainReady + SDL_Init(SDL_INIT_VIDEO), mit Logzeile step=init. Auf UIKit-Plattformen
- * im Hauptthread rufen. Gibt false zurück, wenn SDL_Init scheitert (Fehlertext in der Zeile). */
+/* SDL_SetMainReady + SDL_Init(SDL_INIT_VIDEO), with log line step=init. Call on the main thread
+ * on UIKit platforms. Returns false when SDL_Init fails (error text in the line). */
 bool kit_testscene_init_sdl(kit_log_fn log, void *user);
 
-/* SDL_Quit, Gegenstück zu kit_testscene_init_sdl. */
+/* SDL_Quit, counterpart of kit_testscene_init_sdl. */
 void kit_testscene_quit_sdl(void);
 
-/* Führt die Szene einmal aus. Thread: beliebig, sofern SDL_Init schon lief; mit init_sdl auf
- * UIKit-Plattformen der Hauptthread. Gibt KIT_STEP_OK oder den gescheiterten Schritt zurück;
- * die letzte Zeile "[c64-kit] result=..." fasst zusammen. */
+/* Runs the scene once. Thread: any, provided SDL_Init has already run; with init_sdl on UIKit
+ * platforms the main thread. Returns KIT_STEP_OK or the failed step; the last line
+ * "[c64-kit] result=..." summarises. */
 int kit_testscene_run(const kit_testscene_options *options, kit_log_fn log, void *user);
 
 #ifdef __cplusplus

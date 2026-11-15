@@ -1,5 +1,5 @@
 /*
- * kit_testscene_metal.m — Metal-Hilfen für die Kit-Testszene (K1a, K1b). Siehe kit_testscene_metal.h.
+ * kit_testscene_metal.m — Metal helpers for the kit test scene. See kit_testscene_metal.h.
  */
 
 #import <Metal/Metal.h>
@@ -81,8 +81,8 @@ bool kit_metal_hostqueue_check(void *queue, char *status_out, size_t cap)
     }
 }
 
-/* MTLPixelFormat → SDL_GPUTextureFormat für die gängigen Compositor- und Spielformate; die
- * Zuordnung entspricht SDLToMetal_TextureFormat im Metal-Backend (SDL_gpu_metal.m:92-170). */
+/* MTLPixelFormat -> SDL_GPUTextureFormat for the common compositor and game formats; the
+ * mapping matches SDLToMetal_TextureFormat in the Metal backend (SDL_gpu_metal.m:92-170). */
 static int kit_sdl_format(MTLPixelFormat format)
 {
     switch (format) {
@@ -95,7 +95,7 @@ static int kit_sdl_format(MTLPixelFormat format)
     case MTLPixelFormatDepth32Float: return SDL_GPU_TEXTUREFORMAT_D32_FLOAT;
     case MTLPixelFormatDepth32Float_Stencil8: return SDL_GPU_TEXTUREFORMAT_D32_FLOAT_S8_UINT;
     case MTLPixelFormatDepth16Unorm: return SDL_GPU_TEXTUREFORMAT_D16_UNORM;
-    default: return SDL_GPU_TEXTUREFORMAT_INVALID; /* etwa bgr10a2Unorm: kein SDL-Format */
+    default: return SDL_GPU_TEXTUREFORMAT_INVALID; /* such as bgr10a2Unorm: no SDL format */
     }
 }
 
@@ -110,7 +110,7 @@ bool kit_metal_texture_info(void *texture, kit_metal_texture_desc *out)
     case MTLTextureType2D: out->sdl_type = SDL_GPU_TEXTURETYPE_2D; break;
     case MTLTextureType2DMultisample: out->sdl_type = SDL_GPU_TEXTURETYPE_2D; break;
     case MTLTextureType2DArray: out->sdl_type = SDL_GPU_TEXTURETYPE_2D_ARRAY; break;
-    case MTLTextureType2DMultisampleArray: out->sdl_type = SDL_GPU_TEXTURETYPE_2D_ARRAY; break; /* K4a: Samples aus sampleCount */
+    case MTLTextureType2DMultisampleArray: out->sdl_type = SDL_GPU_TEXTURETYPE_2D_ARRAY; break; /* samples from sampleCount */
     default: out->sdl_type = -1; break;
     }
     out->mtl_pixel_format = (int)t.pixelFormat;
@@ -213,7 +213,7 @@ void kit_metal_release_texture(void *texture)
     }
 }
 
-/* ------------------------------------------------------------------ Rate Maps (K3) */
+/* ------------------------------------------------------------------ Rate maps */
 
 bool kit_metal_map_info(void *map, kit_metal_map_desc *out)
 {
@@ -272,12 +272,12 @@ bool kit_metal_create_rate_map(void *device, unsigned screen_width, unsigned scr
             rasterizationRateMapDescriptorWithScreenSize:MTLSizeMake(screen_width, screen_height, 1)];
         float profile[64];
         for (unsigned i = 0; i < samples; i++) {
-            /* Asymmetrisches Zweistufen-Profil: 1,0 im ersten Drittel, edge_quality danach.
-             * Metal interpoliert zwischen den Stützstellen und rundet die physische Grösse auf
-             * die Granularität; weder Permutation noch Spiegelung desselben Profils ergaben
-             * gleiche physische Breiten (Messungen 2026-10-17: 712/688, 816/784, 688/682).
-             * Deshalb bekommen alle Schichten dasselbe Profil (wie die Compositor-Map, deren
-             * Schichten gleich gross sind); die Schichtwahl der Map prüft der Gerätelauf. */
+            /* Asymmetric two-step profile: 1.0 in the first third, edge_quality after that.
+             * Metal interpolates between the sample points and rounds the physical size to the
+             * granularity; neither a permutation nor a mirror image of the same profile gave
+             * equal physical widths (measurements 2026-10-17: 712/688, 816/784, 688/682).
+             * Therefore all layers get the same profile (like the compositor's map, whose
+             * layers are equally sized); the map's layer selection is checked by the device run. */
             profile[i] = (i < samples / 3) ? 1.0f : edge_quality;
         }
         for (unsigned layer = 0; layer < layers; layer++) {

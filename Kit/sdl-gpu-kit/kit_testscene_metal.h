@@ -1,9 +1,9 @@
 /*
- * kit_testscene_metal.h — Metal-Hilfen für die Kit-Testszene (K1a P1, K1b P3).
+ * kit_testscene_metal.h — Metal helpers for the kit test scene (inject and import stages).
  *
- * Für Hosts ohne Objective-C (die C-Kommandozeile auf dem Mac) und für Prüfungen nach
- * SDL_DestroyGPUDevice. Zeiger sind id<MTLDevice> / id<MTLCommandQueue> / id<MTLTexture> als
- * void*. Implementierung in kit_testscene_metal.m (ARC).
+ * For hosts without Objective-C (the C command line on the Mac) and for checks after
+ * SDL_DestroyGPUDevice. Pointers are id<MTLDevice> / id<MTLCommandQueue> / id<MTLTexture> as
+ * void*. Implementation in kit_testscene_metal.m (ARC).
  */
 
 #ifndef KIT_TESTSCENE_METAL_H
@@ -16,27 +16,27 @@
 extern "C" {
 #endif
 
-/* Systemstandard-Device und eine Queue darauf anlegen. Beide werden mit +1 zurückgegeben
- * (CFBridgingRetain); Freigabe über kit_metal_release_host_objects. */
+/* Create the system default device and a queue on it. Both are returned with +1
+ * (CFBridgingRetain); release through kit_metal_release_host_objects. */
 bool kit_metal_create_host_objects(void **device_out, void **queue_out);
 
-/* Gibt die mit kit_metal_create_host_objects erzeugten Referenzen frei (NULL erlaubt). */
+/* Releases the references created with kit_metal_create_host_objects (NULL allowed). */
 void kit_metal_release_host_objects(void *device, void *queue);
 
-/* Device einer Queue (unretained), für Zeigervergleich und Logzeilen. */
+/* Device of a queue (unretained), for pointer comparison and log lines. */
 void *kit_metal_queue_device(void *queue);
 
-/* Name eines Devices in buf (UTF-8), gibt buf zurück. */
+/* Name of a device in buf (UTF-8), returns buf. */
 const char *kit_metal_device_name(void *device, char *buf, size_t cap);
 
-/* Leerer Command Buffer auf der Queue: commit, waitUntilCompleted. Gibt true zurück, wenn der
- * Status MTLCommandBufferStatusCompleted ist und kein Fehler anliegt; status_out erhält eine
- * kurze Beschreibung (Status, Fehlertext). */
+/* Empty command buffer on the queue: commit, waitUntilCompleted. Returns true when the status
+ * is MTLCommandBufferStatusCompleted and no error is set; status_out receives a short
+ * description (status, error text). */
 bool kit_metal_hostqueue_check(void *queue, char *status_out, size_t cap);
 
-/* Beschreibung eines MTLTexture für den Import (K1b). sdl_type / sdl_format sind Werte der
- * SDL-Enums SDL_GPUTextureType / SDL_GPUTextureFormat; sdl_type < 0 bzw.
- * sdl_format == SDL_GPU_TEXTUREFORMAT_INVALID (0), wenn es kein Gegenstück gibt. */
+/* Description of an MTLTexture for the import. sdl_type / sdl_format are values of the SDL
+ * enums SDL_GPUTextureType / SDL_GPUTextureFormat; sdl_type < 0 or
+ * sdl_format == SDL_GPU_TEXTUREFORMAT_INVALID (0) when there is no counterpart. */
 typedef struct kit_metal_texture_desc {
     int sdl_type;
     int sdl_format;
@@ -46,43 +46,43 @@ typedef struct kit_metal_texture_desc {
     unsigned levels;      /* mipmapLevelCount */
     unsigned samples;     /* sampleCount */
     unsigned long usage;  /* MTLTextureUsage */
-    int mtl_pixel_format; /* Rohwert MTLPixelFormat */
-    int mtl_type;         /* Rohwert MTLTextureType */
+    int mtl_pixel_format; /* raw value MTLPixelFormat */
+    int mtl_type;         /* raw value MTLTextureType */
 } kit_metal_texture_desc;
 
 bool kit_metal_texture_info(void *texture, kit_metal_texture_desc *out);
 
-/* 2D-Array-Textur anlegen (StorageMode private, Usage RenderTarget): Farbe bgra8Unorm_srgb oder
- * Tiefe depth32Float. +1 zurückgegeben, Freigabe über kit_metal_release_texture. */
+/* Create a 2D array texture (storage mode private, usage RenderTarget): colour bgra8Unorm_srgb
+ * or depth depth32Float. Returned with +1, release through kit_metal_release_texture. */
 bool kit_metal_create_array_texture(void *device, bool depth, unsigned width, unsigned height,
                                     unsigned layers, void **texture_out);
 
 void kit_metal_release_texture(void *texture);
 
-/* K4a: wie kit_metal_create_array_texture, mit samples > 1 als MTLTextureType2DMultisampleArray. */
+/* Like kit_metal_create_array_texture, with samples > 1 as MTLTextureType2DMultisampleArray. */
 bool kit_metal_create_array_texture_ex(void *device, bool depth, unsigned width, unsigned height,
                                        unsigned layers, unsigned samples, void **texture_out);
 
-/* allocatedSize einer MTLTexture in Bytes (0 bei NULL). */
+/* allocatedSize of an MTLTexture in bytes (0 for NULL). */
 unsigned long long kit_metal_texture_allocated_bytes(void *texture);
 
-/* K4b: phys_footprint des Prozesses in Bytes (task_info TASK_VM_INFO), Mac und visionOS. */
+/* phys_footprint of the process in bytes (task_info TASK_VM_INFO), Mac and visionOS. */
 unsigned long long kit_metal_process_footprint_bytes(void);
 
-/* supportsTextureSampleCount: des Devices. */
+/* supportsTextureSampleCount: of the device. */
 bool kit_metal_supports_sample_count(void *device, unsigned samples);
 
-/* GPU-Zeiten eines abgeschlossenen MTLCommandBuffer (Sekunden, Mach-Zeitbasis von Metal);
- * status_out erhält MTLCommandBufferStatus, error_out (optional) den Fehlertext. */
+/* GPU times of a completed MTLCommandBuffer (seconds, Metal's Mach time base); status_out
+ * receives MTLCommandBufferStatus, error_out (optional) the error text. */
 bool kit_metal_command_buffer_gpu_time(void *command_buffer, double *start_s, double *end_s,
                                        int *status_out, char *error_out, size_t cap);
 
-/* Rasterization Rate Map (K3, Baustein P4). Zeiger ist id<MTLRasterizationRateMap> als void*. */
+/* Rasterization rate map. Pointer is id<MTLRasterizationRateMap> as void*. */
 typedef struct kit_metal_map_desc {
     unsigned screen_width;
     unsigned screen_height;
     unsigned layers;
-    unsigned physical_width[8];   /* pro Schicht */
+    unsigned physical_width[8];   /* per layer */
     unsigned physical_height[8];
     unsigned granularity_width;
     unsigned granularity_height;
@@ -90,14 +90,14 @@ typedef struct kit_metal_map_desc {
 
 bool kit_metal_map_info(void *map, kit_metal_map_desc *out);
 
-/* Physische Fragmentkoordinate → logische Bildschirmkoordinate einer Schicht und zurück. */
+/* Physical fragment coordinate -> logical screen coordinate of a layer and back. */
 void kit_metal_map_physical_to_screen(void *map, unsigned layer, float px, float py, float *sx, float *sy);
 void kit_metal_map_screen_to_physical(void *map, unsigned layer, float sx, float sy, float *px, float *py);
 
-/* Eigene Zweischicht-Map für den Mac-Test: screen_width × screen_height logisch, Qualität in
- * einem samples × samples Raster, Mitte 1,0 und Rand edge_quality (Schicht 1 horizontal
- * gespiegelt, damit die Schichten verschieden abbilden). +1 zurückgegeben, Freigabe über
- * kit_metal_release_map. false, wenn das Gerät keine Maps mit so vielen Schichten kann. */
+/* Own two-layer map for the Mac test: screen_width × screen_height logical, quality in a
+ * samples × samples grid, 1.0 in the first third and edge_quality after that, the same profile
+ * in every layer. Returned with +1, release through kit_metal_release_map. false when the device
+ * cannot do maps with that many layers. */
 bool kit_metal_create_rate_map(void *device, unsigned screen_width, unsigned screen_height, unsigned layers,
                                unsigned samples, float edge_quality, void **map_out);
 
