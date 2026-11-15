@@ -6,10 +6,11 @@
 // knows no Metal. Ownership: the host holds the Metal objects and releases them with
 // k6d_metal_release; SDL holds only its own reference. Model: Kit/sdl-gpu-kit/kit_testscene_metal.m
 // (kit_metal_create_array_texture_ex), here with the pixel formats that match Foster's
-// TextureFormat.Color (RGBA8Unorm) and Depth16 (Depth16Unorm).
+// TextureFormat.Color (RGBA8Unorm), Depth16 (Depth16Unorm) and Depth32 (Depth32Float).
 //
-// Build (scripts/celeste-mac.sh machost):
-//   clang -fobjc-arc -dynamiclib -framework Metal -framework Foundation k6d_metal.m -o libk6dmetal.dylib
+// Build (scripts/celeste-mac.sh machost; CoreGraphics and ImageIO for the canvas dump):
+//   clang -std=gnu17 -Wall -Wextra -O1 -fobjc-arc -dynamiclib -framework Metal -framework Foundation \
+//     -framework CoreGraphics -framework ImageIO -install_name @rpath/libk6dmetal.dylib k6d_metal.m -o libk6dmetal.dylib
 
 #import <Metal/Metal.h>
 

@@ -25,7 +25,7 @@
   </PropertyGroup>
 
   <!-- UseLocalFoster and UseKitSDL must also apply to Celeste's restore; therefore pass them as
-       global properties when building (scripts/celeste-machost.sh does that):
+       global properties when building (scripts/celeste-mac.sh does that):
        dotnet build Tools/Celeste64.MacHost -c Release -p:UseLocalFoster=true -p:UseKitSDL=true -->
   <!-- native/k6d_metal.m is built by scripts/celeste-mac.sh with clang to libk6dmetal.dylib
        next to the program; MSBuild does not know the file. -->

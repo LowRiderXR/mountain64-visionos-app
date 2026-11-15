@@ -67,7 +67,9 @@
 //                       counts (the Mac without a gamepad shows the line "Connect a game controller to play")
 //   --key-probe N       inject an F7 key event before tick N (SDL_PushEvent), release it two
 //                       ticks later; reports after which tick Foster sees the key as pressed and
-//                       as released (before da3b23a N+1, afterwards N)
+//                       as released (Foster used to update its input before polling the events,
+//                       so the key showed one tick late, after tick N+1; since it polls first,
+//                       after tick N)
 //   --vr-depth          reverse-Z path (VisionOSKit.ReverseZ, near 0.1 m like the headset's
 //                       layer): shader variants without SV_Depth, world target Depth32, clear 0,
 //                       compares swapped, sky 3 km
@@ -94,7 +96,8 @@
 //                       of the threshold): 0 on flat surfaces
 //   --pixel-msaa N      pixel look: 0 or 4 samples in the world pass into A (memoryless, resolved
 //                       only, depth with max; VisionOSKit.PixelMsaa, default 4)
-//   --edge-deg D        outline width in degrees (VisionOSKit.EdgeAngleDegrees, default 0.12)
+//   --edge-deg D        outline width in degrees (VisionOSKit.EdgeAngleDegrees; without the option
+//                       the kit's default 0.06 applies, or C64_EDGE_DEG)
 //   --coarse-dump PFX   in the vr-check write the resolved colour of A, layer 0, as
 //                       PFX-A-L0-<frame>.rgba (MSAA edges: compare a run with 4 against a run
 //                       with 0, the share of differing pixels must be > 0; two runs with 0 must
@@ -780,7 +783,7 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 		Log.Info("[machost] fullscreen lifted (--windowed)");
 	}
 
-	// confirm key at fixed ticks: press in this tick, release in the next
+	// confirm key at fixed ticks: press in this tick, release two ticks later
 	foreach (var t in tapConfirm)
 		if (totalTicks == t) { PushKey(true); pendingTaps.Add((totalTicks + 2, false)); }
 	for (int i = pendingTaps.Count - 1; i >= 0; i--)
@@ -969,7 +972,7 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 			// sky: cube with half edge R and Z factor 0.5, so distances R/2 to R·1.5: depth near/(1.5 R) to near/(0.5 R)
 			var skyLo = nearM / (VisionOSKit.SkyRadiusMeters * 1.5); var skyHi = nearM / (VisionOSKit.SkyRadiusMeters * 0.5);
 			// in the level (Game keeps its scenes private): after the last confirm key plus loading
-			// time and wipe (120 ticks), otherwise title or overworld without a sky
+			// time and wipe (300 ticks), otherwise title or overworld without a sky
 			var inWorld = tapConfirm.Count > 0 && totalTicks > tapConfirm[^1] + 300;
 			var skyOk = !inWorld || (zero == 0 && dmin >= skyLo * 0.99 && dmin <= skyHi * 1.01);
 			ok &= skyOk;
@@ -1082,18 +1085,14 @@ while (!game.Exiting && (seconds <= 0 || clock.Elapsed.TotalSeconds < seconds))
 			}
 		}
 
-		// Pixel look: drawable layer 0 (physical) against the coarse target B. The magnification pass
-		// takes for every logical pixel the coarse texel (nearest) its position falls into; with a map
-		// the decoder converts physical -> logical (the map is separable per axis, assumption as for
-		// MTLRasterizationRateLayerDescriptor: column values from the middle row, row values from the
-		// middle column). Every drawable pixel must carry exactly its texel; at block borders the
-		// rounding may hit the neighbouring texel. Also the block width along the middle row in
-		// logical pixels: equal across the image, expectation logical width / width of B.
-		// Drawable layer 0 against A (only outline pixels
-		// differ), plus the outline width: horizontal runs of outline pixels (drawable darker than A
-		// in all channels), most frequent run length in the image centre (±15 % of the logical width)
-		// and at the border (outer 25 %), expectation angle·(1+x²+y²)·k_logical/rate in physical pixels
-		// (rate = logical per physical pixel from the decoder, 1 without a map)
+		// Drawable layer 0 (physical) against the world target A (only outline pixels differ), plus
+		// the outline width: horizontal runs of outline pixels (drawable darker than A in all
+		// channels), most frequent run length in the image centre (±15 % of the logical width) and
+		// at the border (outer 25 %), expectation angle·(1+x²+y²)·k_logical/rate in physical pixels.
+		// With a map the decoder converts physical -> logical (the map is separable per axis,
+		// assumption as for MTLRasterizationRateLayerDescriptor: column values from the middle row,
+		// row values from the middle column); rate = logical per physical pixel from the decoder,
+		// 1 without a map.
 		if (vrCheck && vrWorldFrames > 0 && VisionOSKit.Intermediate is { } worldA)
 		{
 			vrChecks++;
@@ -1384,7 +1383,8 @@ static void Compose(Batcher batcher, Texture left, Texture right, Point2 size)
 	batcher.PopSampler();
 }
 
-// Confirm key C as an SDL keyboard event (like the diagnostics patch, here from the host)
+// Confirm key C (or another scancode) as an SDL keyboard event through SDL_PushEvent: the game
+// sees it like a real key press, without a change to Celeste
 static unsafe void PushKey(bool down, SDL_Scancode scancode = SDL_Scancode.SDL_SCANCODE_C)
 {
 	var ev = default(SDL_Event);
