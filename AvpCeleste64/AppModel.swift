@@ -2,7 +2,7 @@
 //  AppModel.swift
 //  AvpCeleste64
 //
-//  Zustand für das Startfenster: ob der ImmersiveSpace offen ist.
+//  State for the start window: whether the immersive space is open.
 //
 
 import Foundation

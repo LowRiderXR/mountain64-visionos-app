@@ -2,17 +2,20 @@
 //  Renderer.swift
 //  AvpCeleste64
 //
-//  Renderschleife für P0a auf eigenem Thread, nach Apples Muster:
-//  queryNextFrame → Update → warten bis optimalInputTime → Submission → Drawable holen.
-//  Pro Frame und Auge ein Pass auf die eigene Textur: opaker Clear auf Schwarz (Alpha 1),
-//  Tiefe auf 0 (Reverse-Z, 0 = fern). Render-Pose über ARKit an das Drawable melden,
-//  encodePresent zuletzt, commit, endSubmission. Jeder angefangene Frame wird abgeschlossen.
+//  Render loop of the host on its own thread, after Apple's pattern: queryNextFrame, update,
+//  wait until optimalInputTime (minus C64_EARLY_MS), queryDrawables, startSubmission, render,
+//  encodePresent last, commit, endSubmission. Every frame that was started is completed.
+//  Celeste runs in two halves per frame: celeste_update before the wait, the render half after
+//  the device anchor. A level writes its stereo world straight into the drawable
+//  (celeste_render_frame_vr); otherwise the host draws the canvas with the game's 2D image in
+//  its own pass (opaque black clear, depth 0.0001 = 1000 m). Pauses (layer not running, app in
+//  the background) are decided only at the top of the loop.
 //
-//  Immer (billig): einmal pro Sekunde eine Zeile [c64-frame] in die Probe. Nur in Debug-Builds:
-//  C64_STALL_SEQ (Millisekunden mit Komma): 10 s nach Start der Schleife blockiert der
-//  Render-Thread einmal für die erste Dauer, 10 s danach für die nächste, und so weiter; der
-//  Block sitzt VOR queryNextFrame, also ohne angefangenen Frame. Dazu die Kit-Testszenen (C64_KIT)
-//  und die Testszene (C64_TESTSCENE).
+//  Always (cheap): one line [c64-frame] per second into the probe. Only in Debug builds:
+//  C64_STALL_SEQ (milliseconds, comma separated): 10 s after the loop started the render
+//  thread blocks once for the first duration, 10 s later for the next, and so on; the block
+//  sits BEFORE queryNextFrame, so without a started frame. Also the kit test scenes (C64_KIT)
+//  and the test scene (C64_TESTSCENE).
 //
 
 import ARKit
@@ -23,8 +26,8 @@ import os
 import QuartzCore
 
 extension LayerRenderer.Clock.Instant {
-    /// Sekunden seit der Epoche der Compositor-Uhr (Mach-Zeitbasis), wie sie
-    /// WorldTrackingProvider.queryDeviceAnchor(atTimestamp:) erwartet.
+    /// Seconds since the epoch of the compositor clock (Mach time base), as
+    /// WorldTrackingProvider.queryDeviceAnchor(atTimestamp:) expects them.
     nonisolated var timeInterval: TimeInterval {
         let components = LayerRenderer.Clock.Instant.epoch.duration(to: self).components
         return TimeInterval(components.seconds) + TimeInterval(components.attoseconds) * 1e-18
@@ -33,16 +36,15 @@ extension LayerRenderer.Clock.Instant {
 
 nonisolated final class Renderer: @unchecked Sendable {
 
-    // MARK: Aufbau
+    // MARK: Setup
 
     private let layerRenderer: LayerRenderer
     private let device: MTLDevice
     private let commandQueue: MTLCommandQueue
     private let appModel: AppModel
-    // ARKit: Session und Provider leben so lange wie der Renderer (Apple: «ARKit stops sessions
-    // when they're deinitialized»). Der Provider kann nach einem Fehler ersetzt werden (ein
-    // gestoppter Provider darf nicht erneut an run gehen), deshalb hinter einem Lock; der
-    // Render-Thread liest ihn pro Frame.
+    // ARKit: session and provider live as long as the renderer (Apple: "ARKit stops sessions
+    // when they're deinitialized"). The provider can be replaced after an error (a stopped
+    // provider must not be run again), hence behind a lock; the render thread reads it per frame.
     private let arSession = ARKitSession()
     private let arLock = NSLock()
     private var worldTrackingStorage = WorldTrackingProvider()
@@ -52,34 +54,34 @@ nonisolated final class Renderer: @unchecked Sendable {
     private var arRunAttempts = 0
     private static let arMaxRunAttempts = 3
     private var lastLoggedProviderState: DataProviderState?
-    // Zustand des Providers einmal pro Sekunde in den ersten zehn Sekunden (M4a.5b-6: bleibt
-    // ARKit nach dem Schliessen des Startfensters running?).
+    // Provider state once per second during the first ten seconds (does ARKit stay running
+    // after the start window closes?).
     private var arkitPeriodicRemaining = 10
     private var arkitPeriodicNextAt: CFAbsoluteTime = 0
-    // M4a.5c-4: Frame-Abschluss nach dem Muster von Vice City. Die Pause wird nur am Schleifen-
-    // anfang entschieden; ein Frame nach queryNextFrame läuft immer bis encodePresent, commit,
-    // endSubmission (Ausstiege nur bei predictTiming nil und leerer Drawable-Liste). Ein Frame,
-    // der mittendrin verlassen wurde, blieb entweder in Arbeit (BUG IN CLIENT «more than 3 frames
-    // in flight» beim nächsten queryNextFrame, Absturz M5 2026-10-25) oder liess ein bezogenes
-    // Drawable ohne Present zurück (GPU-Timeout des nächsten Host-Buffers, rund 5 s).
-    // Diese Notiz hält fest, wo das Hintergrund-Flag im Frame zuerst gesehen wurde.
+    // Frame completion: the pause is decided only at the top of the loop; a frame after
+    // queryNextFrame always runs through to encodePresent, commit, endSubmission (exits only
+    // with predictTiming nil and an empty drawable list). A frame that was left halfway either
+    // stayed in flight (BUG IN CLIENT "more than 3 frames in flight" at the next queryNextFrame,
+    // crash on the M5 on 2026-10-25) or left an acquired drawable without a present (GPU timeout
+    // of the next host buffer, about 5 s). This note records where the background flag was
+    // first seen in the frame.
     private struct PauseFrameNote {
         var frameIndex: UInt64
         var flagSeen: String      // before-update | after-update | after-render
-        var tickSkipped: Bool     // kein celeste_update in diesem Frame
-        var renderSkipped: Bool   // Update lief, celeste_render_frame entfiel (M4b.1)
+        var tickSkipped: Bool     // no celeste_update in this frame
+        var renderSkipped: Bool   // the update ran, celeste_render_frame was skipped
         var committed: Bool
         var presented: Bool
     }
     private var pauseFrameNote: PauseFrameNote?
-    // Nach dem Fortsetzen: die ersten drei Frames mit dem Status ihres Command Buffers.
+    // After resuming: the first three frames with the status of their command buffer.
     private var resumeFramesToLog = 0
-    // Frame, dessen Host-Buffer bei gesetztem Flag committet wurde (hinter cmdErrLock); dessen
-    // BackgroundExecutionNotPermitted ist erwartet und zählt nicht als Fehler.
+    // Frame whose host buffer was committed with the flag set (behind cmdErrLock); its
+    // BackgroundExecutionNotPermitted is expected and does not count as an error.
     private var backgroundCommitFrame: UInt64?
     private var cmdErrExpectedTotal = 0
-    // M4a.5c-2: Ton-Zustand, nur vom Render-Thread (FMOD: Suspend und Resume paarweise auf
-    // demselben Thread, kein zweites Suspend ohne Resume).
+    // Audio state, render thread only (FMOD: suspend and resume in pairs on the same thread,
+    // no second suspend without a resume).
     private var audioSuspended = false {
         didSet { CelesteProbe.pauseState.setMixerSuspended(audioSuspended) }
     }
@@ -87,15 +89,15 @@ nonisolated final class Renderer: @unchecked Sendable {
     private var nextAudioRetryAt: CFAbsoluteTime = 0
     private var audioFallbackTried = false
     private var cmdSkippedTotal = 0
-    // Ticks bleiben aus, solange der Mixer angehalten ist (Celestes Tick ruft FMOD: Audio.Update,
-    // Events; FMOD: kein Aufruf zwischen mixerSuspend und mixerResume). Die Schleife präsentiert
-    // weiter die Leinwand mit dem letzten Bild.
+    // Ticks stay off while the mixer is suspended (Celeste's tick calls FMOD: Audio.Update,
+    // events; FMOD: no call between mixerSuspend and mixerResume). The loop keeps presenting
+    // the canvas with the last image.
     private var ticksHeldForAudio = false
     private var ticksSkippedForAudio = 0
 
-    /// Pause gewünscht: Layer nicht running oder App im Hintergrund (Flag vom Hauptthread). Der
-    /// Layer meldet .paused erst 150 bis 200 ms nach willResignActive; bis dahin würden Ticks und
-    /// Commits im Hintergrund laufen (IOGPUMetalError in der Konsole).
+    /// Pause wanted: layer not running or app in the background (flag from the main thread). The
+    /// layer reports .paused only 150 to 200 ms after willResignActive; until then ticks and
+    /// commits would run in the background (IOGPUMetalError in the console).
     private var shouldPause: Bool {
         layerRenderer.state != .running || CelesteProbe.pauseState.isBackground
     }
@@ -104,24 +106,24 @@ nonisolated final class Renderer: @unchecked Sendable {
         "layer=\(Self.name(layerRenderer.state)) background=\(CelesteProbe.pauseState.isBackground ? 1 : 0)"
     }
 
-    /// Eine Zeile je Pause: wo das Hintergrund-Flag zuerst gesehen wurde (vor dem Frame, im
-    /// Frame vor dem Tick, im Frame nach dem Tick), Tick ausgelassen, committet, präsentiert.
+    /// One line per pause: where the background flag was first seen (before the frame, in the
+    /// frame before the tick, in the frame after the tick), tick skipped, committed, presented.
     private func logPauseFrameNote() {
         if let note = pauseFrameNote {
             c64Record("[c64-pause-frame] tMs=\(LaunchClock.tMs) frame=\(note.frameIndex) flagSeen=\(note.flagSeen) tickSkipped=\(note.tickSkipped ? 1 : 0) renderSkipped=\(note.renderSkipped ? 1 : 0) committed=\(note.committed ? 1 : 0) presented=\(note.presented ? 1 : 0)")
         } else {
-            c64Record("[c64-pause-frame] tMs=\(LaunchClock.tMs) frame=\(lastFrameIndex.map { "\($0)" } ?? "-") flagSeen=before-frame tickSkipped=0 renderSkipped=0 committed=0 presented=0 (kein Frame in Arbeit, letzter abgeschlossener Frame)")
+            c64Record("[c64-pause-frame] tMs=\(LaunchClock.tMs) frame=\(lastFrameIndex.map { "\($0)" } ?? "-") flagSeen=before-frame tickSkipped=0 renderSkipped=0 committed=0 presented=0 (no frame in progress, last completed frame)")
         }
         pauseFrameNote = nil
     }
 
-    // MARK: Pause (M4a.5c-2)
+    // MARK: Pause
 
-    /// Pausenzweig der Schleife. Vor dem ersten Frame (Layer startet .paused) nur warten, ohne
-    /// Suspend und ohne Pausenanfrage. Sonst: Ticks stehen, Mixer einmal suspendieren, warten,
-    /// bis der Layer running ist und die App im Vordergrund (didBecomeActive gesehen, App active,
-    /// Szene foregroundActive); dann Session aktivieren, nur bei Erfolg mixerResume, Pausenanfrage,
-    /// Ticks weiter. Kehrt bei .invalidated zurück, der Schleifenkopf beendet dann.
+    /// Pause branch of the loop. Before the first frame (the layer starts .paused) only wait,
+    /// without suspend and without a pause request. Otherwise: ticks stop, suspend the mixer
+    /// once, wait until the layer is running and the app in the foreground (didBecomeActive
+    /// seen, app active, scene foregroundActive); then activate the session, mixerResume only on
+    /// success, pause request, ticks go on. Returns on .invalidated, the loop head then ends.
     private func pauseBranch() {
         let initial = totalFrames == 0 && !CelesteProbe.pauseState.isBackground
         c64Record("[c64-loop] tMs=\(LaunchClock.tMs) layer paused, waiting; \(pauseReasonText) provider=\(Self.name(worldTracking.state)) frames=\(totalFrames) initial=\(initial ? 1 : 0)")
@@ -140,8 +142,8 @@ nonisolated final class Renderer: @unchecked Sendable {
             CelesteProbe.tickState.pause(reason: "pause \(pauseReasonText)")
         }
         if game, !audioSuspended, !audioResumePending {
-            // Genau ein Suspend je Pause; ein offener Resume-Versuch (Session war nicht aktiv)
-            // lässt FMOD suspendiert, dann kein zweites Suspend.
+            // Exactly one suspend per pause; an open resume attempt (session was not active)
+            // leaves FMOD suspended, then no second suspend.
             if CelesteProbe.suspendAudio(true) {
                 audioSuspended = true
             }
@@ -149,8 +151,8 @@ nonisolated final class Renderer: @unchecked Sendable {
             c64Record("[c64-audio] tMs=\(LaunchClock.tMs) mixer stays suspended (no second suspend)")
         }
 
-        // Warten, bis beides erfüllt ist. waitUntilRunning kehrt bei running oder invalidated
-        // zurück; das Hintergrund-Flag wird alle 20 ms geprüft.
+        // Wait until both hold. waitUntilRunning returns on running or invalidated; the
+        // background flag is checked every 20 ms.
         var loggedRunningInBackground = false
         while true {
             let state = layerRenderer.state
@@ -174,8 +176,8 @@ nonisolated final class Renderer: @unchecked Sendable {
         }
         c64Record("[c64-loop] tMs=\(LaunchClock.tMs) resuming; \(pauseReasonText) provider=\(Self.name(worldTracking.state))")
         CelesteProbe.AliveProbe.shared.end(resumeMs: LaunchClock.elapsedMs)
-        // M4b.4: Bezugspunkt O nach dem Fortsetzen neu, sobald die Pose ruhig ist
-        CelesteProbe.StereoOrigin.shared.requestSettle("Fortsetzen")
+        // reference O anew after resuming, as soon as the pose is still
+        CelesteProbe.StereoOrigin.shared.requestSettle("resume")
 
         if game {
             resumeAudioIfPossible(trigger: "resume")
@@ -188,9 +190,9 @@ nonisolated final class Renderer: @unchecked Sendable {
         lastPredictedPresentation = nil
     }
 
-    /// Ticks wieder zulassen, sobald der Mixer läuft: Pausenanfrage ans Spiel, dann
-    /// tickState.resume. Bei angehaltenem Mixer bleibt es bei einer Logzeile; der nächste
-    /// erfolgreiche Resume-Versuch (serviceAudioRetry) ruft erneut.
+    /// Allow ticks again once the mixer runs: pause request to the game, then tickState.resume.
+    /// With the mixer suspended it stays at one log line; the next successful resume attempt
+    /// (serviceAudioRetry) calls again.
     private func resumeTicksIfAudioRunning(reason: String) {
         guard ticksHeldForAudio else { return }
         if audioSuspended {
@@ -212,12 +214,12 @@ nonisolated final class Renderer: @unchecked Sendable {
         lastPredictedPresentation = nil
     }
 
-    /// Ton nach einer Pause: Session aktivieren, nur bei Erfolg mixerResume (FMOD-Beispiel
-    /// common_platform.mm:211-236). Scheitert die Session, bleibt der Mixer suspendiert, die
-    /// Ticks laufen ohne Ton, und der Versuch wiederholt sich bei einem Signal (Session
-    /// didBecomeActive, resumptionRecommendation) oder spätestens nach einer Sekunde. Scheitert
-    /// mixerResume trotz aktiver Session, folgt einmal FMODs Rückfall für eine gestörte Ausgabe
-    /// (Media Services Reset, common_platform.mm:195-196): Suspend und Resume als Paar.
+    /// Audio after a pause: activate the session, mixerResume only on success (FMOD example
+    /// common_platform.mm:211-236). If the session fails, the mixer stays suspended, the ticks
+    /// run without sound, and the attempt repeats on a signal (session didBecomeActive,
+    /// resumptionRecommendation) or after one second at the latest. If mixerResume fails despite
+    /// an active session, FMOD's fallback for a broken output follows once (media services
+    /// reset, common_platform.mm:195-196): suspend and resume as a pair.
     private func resumeAudioIfPossible(trigger: String, mediaServicesReset: Bool = false) {
         let now = CFAbsoluteTimeGetCurrent()
         if mediaServicesReset, !audioSuspended {
@@ -250,13 +252,13 @@ nonisolated final class Renderer: @unchecked Sendable {
                 return
             }
         }
-        // Annahme: nach einem gescheiterten Resume ist FMOD weiterhin suspendiert.
+        // Assumption: after a failed resume FMOD is still suspended.
         audioResumePending = true
         nextAudioRetryAt = now + 1
         c64Record("[c64-audio] tMs=\(LaunchClock.tMs) resume pending: mixerResume failed, next attempt in 1 s (trigger=\(trigger))")
     }
 
-    /// Schleifenkopf bei laufendem Spiel: offene Ton-Versuche und Bitten des Hauptthreads.
+    /// Loop head with the game running: open audio attempts and requests from the main thread.
     private func serviceAudioRetry() {
         guard CelesteProbe.gameEnabled else { return }
         if let request = CelesteProbe.pauseState.takeAudioRetry() {
@@ -275,14 +277,14 @@ nonisolated final class Renderer: @unchecked Sendable {
     }
 
     #if DEBUG
-    // Stall-Probe (C64_STALL_SEQ)
+    // Stall probe (C64_STALL_SEQ)
     private let stallPlan: [TimeInterval]
     private var stallIndex = 0
     private var nextStallAt: CFAbsoluteTime = 0
     private static let stallSpacing: TimeInterval = 10
     #endif
 
-    // Frame-Statistik (nur vom Render-Thread berührt)
+    // Frame statistics (touched by the render thread only)
     private var statWindowStart: CFAbsoluteTime = 0
     private var statFrames = 0
     private var statFramesWithoutAnchor = 0
@@ -291,23 +293,23 @@ nonisolated final class Renderer: @unchecked Sendable {
     private var statIntervalSum = 0.0
     private var statIntervalCount = 0
     private var statGaps: UInt64 = 0
-    private var statCancelled = 0          // queryDrawables lieferte eine leere Liste (Frame vom System abgebrochen)
-    private var statNoCmdBuf = 0           // makeCommandBuffer lieferte nil
-    private var statDrawablesMin = Int.max // Drawables pro Frame im Fenster
+    private var statCancelled = 0          // queryDrawables returned an empty list (frame cancelled by the system)
+    private var statNoCmdBuf = 0           // makeCommandBuffer returned nil
+    private var statDrawablesMin = Int.max // drawables per frame in the window
     private var statDrawablesMax = 0
     private var lastNoCmdBufLog: CFAbsoluteTime = 0
-    private var lastTargets: [UInt32]?     // Zielmenge des letzten Frames, für [c64-targets]
+    private var lastTargets: [UInt32]?     // target set of the last frame, for [c64-targets]
     private var lastPresentationTime: TimeInterval?
     private var lastFrameIndex: UInt64?
     private var totalFrames: UInt64 = 0
-    // M4b Leistung N3: Raster-Intervall für presentGaps (Mittel des letzten Fensters) und die
-    // einmalige Zeile zur Zeitbasis von gpuEndTime gegen die Compositor-Uhr.
+    // Grid interval for presentGaps (mean of the last window) and the one-off line on the time
+    // base of gpuEndTime against the compositor clock.
     private var presentRasterInterval: TimeInterval = 1.0 / 90.0
     private var timebaseLogged = false
-    // M4b P1: letzte [c64-mem]-Zeile (alle 10 s)
+    // last [c64-mem] line (every 10 s)
     private var lastMemLog: CFAbsoluteTime = 0
-    // M4b L5: Vorlauf der Submission vor optimalInputTime (C64_EARLY_MS, Standard 5 ms), einmal
-    // geloggt; letzte Pose für das Halten bei verweigertem Anker
+    // Lead of the submission before optimalInputTime (C64_EARLY_MS, default 5 ms), logged once;
+    // last pose for holding when the anchor is refused
     private static let earlySubmitSeconds: TimeInterval = {
         let ms = HostEnvironment.string("C64_EARLY_MS").flatMap { Double($0) } ?? 5
         return max(0, min(ms, 20)) / 1000
@@ -315,37 +317,37 @@ nonisolated final class Renderer: @unchecked Sendable {
     private var earlyLogged = false
     private var lastDeviceAnchor: DeviceAnchor?
 
-    // Wanduhr-Intervall zwischen aufeinanderfolgenden Rückkehren von queryNextFrame.
-    // Zeigt den Block, weil es am Render-Thread misst, nicht am Frame-Zähler des Compositors.
+    // Wall clock interval between consecutive returns of queryNextFrame. Shows the block,
+    // because it measures at the render thread, not at the compositor's frame counter.
     private var lastQueryReturn: CFAbsoluteTime?
-    // M4b.4-N2: vorhergesagte Präsentationszeit des Vorframes; das Spiel-Delta ist die Differenz
-    // der Präsentationszeiten (festes Raster des Compositors), nicht die Wanduhr
+    // predicted presentation time of the previous frame; the game delta is the difference of
+    // the presentation times (fixed grid of the compositor), not the wall clock
     private var lastPredictedPresentation: TimeInterval?
     private var predictedPresentation: TimeInterval?
-    // M4b.2: Near-Ebene des Layers einmal an Celeste gemeldet (vor dem ersten Update auf dem Render-Thread).
+    // Near plane of the layer reported to Celeste once (before the first update on the render thread).
     private var depthNearSent = false
     private var statWallMin = Double.greatestFiniteMagnitude
     private var statWallMax = 0.0
     private var statWallSum = 0.0
     private var statWallCount = 0
 
-    // Verspätung pro Frame: presentationTime minus Compositor-Uhr unmittelbar vor encodePresent,
-    // gleiche Zeitbasis (Mach-Zeit, frame_timing.h:67-68). Negativ = die Präsentationszeit ist
-    // beim Encodieren schon vorbei.
+    // Lateness per frame: presentationTime minus the compositor clock right before encodePresent,
+    // same time base (Mach time, frame_timing.h:67-68). Negative = the presentation time has
+    // already passed when encoding.
     private var statLateMin = Double.greatestFiniteMagnitude
     private var statLateMax = -Double.greatestFiniteMagnitude
     private var statLateFrames = 0
 
     #if DEBUG
-    // Die ersten drei Frames nach einem Stall-Block: frameIndex, presentationTime relativ zur
-    // Compositor-Uhr beim Erhalt der Drawables, Verspätung vor encodePresent.
+    // The first three frames after a stall block: frameIndex, presentationTime relative to the
+    // compositor clock when the drawables were received, lateness before encodePresent.
     private var postStallWanted = 0
     private var postStallBlock = 0
     private var postStallSamples: [(index: UInt64, relative: Double, late: Double)] = []
     #endif
 
-    // Foveation-Sonde (P0b): Form der Drawables und Rate Maps als Zahlen; die Zeile [c64-fov]
-    // nur bei einer Änderung (der Text entsteht erst dann, nicht je Frame).
+    // Foveation probe: shape of the drawables and rate maps as numbers; the line [c64-fov] only
+    // on a change (the text is built only then, not per frame).
     private struct FovSignature: Equatable {
         var maps: Int
         var screenWidth: Int, screenHeight: Int
@@ -358,83 +360,83 @@ nonisolated final class Renderer: @unchecked Sendable {
     private var renderQualityApplied = false
 
     #if DEBUG
-    // Testszene (P0b-2, Schalter C64_TESTSCENE=1): lazy erzeugt auf dem Render-Thread.
+    // Test scene (switch C64_TESTSCENE=1): created lazily on the render thread.
     private let testSceneRequested = TestScene.isRequested
     private var testScene: TestScene?
     private var testSceneFailed = false
     #endif
 
-    // Leinwand (M4a.2): Textur vom Host, Szene lazy auf dem Render-Thread. Der Grund-Pass cleart
-    // die Tiefe auf 0,0001 (1000 m, hinter der Leinwand in 500 m) statt 0 («kein Inhalt»), damit
-    // der Rand eigenes Schwarz ist und nicht Durchsicht.
+    // Canvas: texture from the host, scene lazily on the render thread. The base pass clears the
+    // depth to 0.0001 (1000 m, behind the canvas at 500 m) instead of 0 ("no content"), so the
+    // border is the app's own black and not passthrough.
     private let canvasTexture: MTLTexture?
     private var canvasScene: CanvasScene?
     private var canvasFailed = false
     private static let canvasClearDepth = 0.0001
 
-    // GPU-Zeit der Gerüst-Command-Buffer (gpuEndTime − gpuStartTime) aus dem Completed-Handler,
-    // hinter cmdErrLock; der Render-Thread liest und nullt pro Sekunde.
+    // GPU time of the host command buffers (gpuEndTime − gpuStartTime) from the completed
+    // handler, behind cmdErrLock; the render thread reads and resets it once per second.
     private var gpuTimeSum = 0.0
     private var gpuTimeMax = 0.0
     private var gpuTimeCount = 0
 
-    // Fehlerstatus der Command Buffer. Der Completed-Handler läuft auf einem Metal-Thread,
-    // deshalb hinter einem Lock; der Render-Thread liest und nullt den Zähler pro Sekunde.
+    // Error state of the command buffers. The completed handler runs on a Metal thread, hence
+    // behind a lock; the render thread reads and resets the counter once per second.
     private let cmdErrLock = NSLock()
     private var cmdErrCount = 0
     private var cmdErrTotal = 0
     private var lastCmdErrLog: CFAbsoluteTime = 0
 
-    // Bildrate über den ganzen Lauf (Intervalle aus presentationTime), für die Zusammenfassung.
+    // Frame rate over the whole run (intervals from presentationTime), for the summary.
     private var intervalTotalSum = 0.0
     private var intervalTotalCount = 0
-    private var footprintStartMB = 0.0        // phys_footprint beim Start der Schleife
-    private var availableStartMB = 0.0        // os_proc_available_memory beim Start der Schleife
-    // Letzter Stand von Drawable und Map für die Zusammenfassung (Render Quality 1,0: Texturen für
-    // maxRenderQuality, Map wächst während des Übergangs).
+    private var footprintStartMB = 0.0        // phys_footprint at the start of the loop
+    private var availableStartMB = 0.0        // os_proc_available_memory at the start of the loop
+    // Last state of drawable and map for the summary (render quality 1.0: textures for
+    // maxRenderQuality, the map grows during the transition).
     private var lastDrawableSize: (width: Int, height: Int) = (0, 0)
     private var lastMapSizes: (screenW: Int, screenH: Int, physW: Int, physH: Int) = (0, 0, 0, 0)
     private var cancelledTotal = 0
 
     #if DEBUG
-    // Kit-Stufe K1b (C64_KIT=import): SDL_GPU-Device auf Device und Queue dieses Gerüsts, das in
-    // jedem Frame die Drawable-Texturen importiert und löscht. Nur vom Render-Thread berührt.
+    // Kit stage import (C64_KIT=import): SDL_GPU device on the device and queue of this host,
+    // importing and clearing the drawable textures in every frame. Render thread only.
     private var kitImportSession: OpaquePointer?
-    private var kitImportFailed = false       // Sitzung liess sich nicht anlegen: Gerüst löscht selbst
-    // Kit-Stufe K2 (C64_KIT=multiview): SDL_GPU-Device mit Pipeline view_count 2; pro Frame Import
-    // und ein Pass mit Clear und Schachbrett für beide Augen. Nur vom Render-Thread berührt.
+    private var kitImportFailed = false       // session could not be created: the host clears itself
+    // Kit stage multiview (C64_KIT=multiview): SDL_GPU device with a pipeline of view_count 2;
+    // per frame an import and one pass with clear and checkerboard for both eyes. Render thread only.
     private var kitMultiviewSession: OpaquePointer?
     private var kitQuad = KitQuadPlacement()
-    // K3 (C64_KIT=multiview mit C64_FOVEATION=1): Messbild gegen die Compositor-Map einmal pro
-    // Sekunde; maximale Abweichung in physischen Pixeln über den Lauf.
+    // Foveation measurement (C64_KIT=multiview with C64_FOVEATION=1): measurement image against
+    // the compositor map once per second; maximum deviation in physical pixels over the run.
     private var fovMeasureLast: CFAbsoluteTime = 0
     private var fovMeasureCount = 0
     private var fovMaxDevPx: Float = 0
     private var fovMeanDevSum: Double = 0
     private var fovMeasureMsSum: Double = 0
-    private var statSdlFail = 0               // Frames im Fenster, in denen SDL scheiterte
+    private var statSdlFail = 0               // frames in the window in which SDL failed
     private var sdlFailTotal = 0
-    // K1b-Diagnose (C64_KIT_VERIFY): SDLs Rücklesewert dieses Frames und die Drawable-Textur,
-    // aus der das Gerüst unmittelbar vor encodePresent dieselbe Stelle nochmals liest.
+    // Import diagnostics (C64_KIT_VERIFY): SDL's read-back value of this frame and the drawable
+    // texture from which the host reads the same spot again right before encodePresent.
     private var pendingVerify: (afterSDL: [UInt8], color: MTLTexture)?
     private static let importClearColor: (Float, Float, Float, Float) = (0.0, 0.1, 0.3, 1.0)
-    // K1b: Tiefenwert des SDL-Clears. Der Compositor zeigt nur Pixel mit Alpha > 0 und Tiefe > 0
-    // (WWDC24, Session 10092 «Render Metal with passthrough in visionOS»; Messung K1b am
-    // 2026-10-17: Tiefe 0 schwarz, Tiefe 0.001 blau, bei identischem Texturinhalt). Reverse-Z mit
-    // unendlicher Far-Ebene: Abstand = near / Tiefe; 0.001 bei near 0,1 m sind 100 m, also ein
-    // «vorhandener» leerer Hintergrund. C64_KIT_DEPTH=0 bleibt als Gegenprobe möglich.
+    // Depth value of the SDL clear. The compositor shows only pixels with alpha > 0 and depth > 0
+    // (WWDC24, session 10092 "Render Metal with passthrough in visionOS"; measured on the device
+    // on 2026-10-17: depth 0 black, depth 0.001 blue, with identical texture content). Reverse-Z
+    // with an infinite far plane: distance = near / depth; 0.001 at near 0.1 m is 100 m, so a
+    // "present" empty background. C64_KIT_DEPTH=0 remains possible as the counter-check.
     private static let importClearDepthDefault: Float = 0.001
     private let importClearDepth: Float = Float(HostEnvironment.string("C64_KIT_DEPTH") ?? "") ?? Renderer.importClearDepthDefault
     private var importDepthLogged = false
-    // K4a (C64_KIT_MSAA=<Samples>, Standard aus): Kantenglättung im Kit-Pass; die Sitzung rendert in
-    // MSAA-Texturen in Drawable-Grösse und löst Farbe und Tiefe in die Drawable-Schichten auf.
+    // C64_KIT_MSAA=<samples> (default off): anti-aliasing in the kit pass; the session renders into
+    // MSAA textures of drawable size and resolves colour and depth into the drawable layers.
     private let kitMsaaSamples: Int = Int(HostEnvironment.string("C64_KIT_MSAA") ?? "") ?? 0
-    // K4b (C64_KIT_MEMORYLESS=1, Standard aus): MSAA-Ziele memoryless (nur Tile-Speicher).
+    // C64_KIT_MEMORYLESS=1 (default off): MSAA targets memoryless (tile memory only).
     private let kitMemoryless: Bool = HostEnvironment.string("C64_KIT_MEMORYLESS") == "1"
-    // K4c (C64_KIT_DEPTH_STORE=store|dontcare, Standard nicht gesetzt): store_op der privaten
-    // MSAA-Tiefe im Kit-Pass und Tiefenprobe (zweiter Pass in eigene 1x-Zweischichttexturen,
-    // Rücklesen beider Schichten, step=depth-probe). Verlangt C64_KIT_MSAA und, bei store,
-    // C64_KIT_MEMORYLESS aus; unbekannte Werte werden geloggt und ignoriert.
+    // C64_KIT_DEPTH_STORE=store|dontcare (default unset): store_op of the private MSAA depth in
+    // the kit pass and depth probe (second pass into its own 1x two-layer textures, read-back
+    // of both layers, step=depth-probe). Requires C64_KIT_MSAA and, with store, C64_KIT_MEMORYLESS
+    // off; unknown values are logged and ignored.
     private let kitDepthStore: String? = HostEnvironment.string("C64_KIT_DEPTH_STORE")
     #endif
 
@@ -443,9 +445,9 @@ nonisolated final class Renderer: @unchecked Sendable {
         self.layerRenderer = layerRenderer
         self.appModel = appModel
         self.device = layerRenderer.device
-        // M4a: hat der Host schon Device und Queue (Spiel gestartet), nimmt der Renderer dieselbe
-        // Queue; dann laufen SDLs Command Buffer (Celestes Bild) und die Gerüst-Buffer in
-        // Commit-Reihenfolge, und der Leinwand-Pass liest das fertige Bild.
+        // If the host already has device and queue (game started), the renderer takes the same
+        // queue; SDL's command buffers (Celeste's image) and the host buffers then run in commit
+        // order, and the canvas pass reads the finished image.
         if let shared = CelesteProbe.commandQueue {
             let hostDevice = CelesteProbe.device
             let same = hostDevice.map { $0 === layerRenderer.device } ?? false
@@ -467,11 +469,11 @@ nonisolated final class Renderer: @unchecked Sendable {
         #endif
     }
 
-    /// Render Quality des Produkts (M4a.5b): 1,0 mit Foveation; C64_RENDERQUALITY überschreibt.
+    /// Render quality of the product: 1.0 with foveation; C64_RENDERQUALITY overrides.
     static let defaultRenderQuality: Float = 1.0
 
-    /// Einstieg aus dem CompositorLayer-Closure (Hauptthread). Startet ARKit und dann die
-    /// Renderschleife auf einem eigenen Thread.
+    /// Entry from the CompositorLayer closure (main thread). Starts ARKit and then the render
+    /// loop on its own thread.
     @MainActor
     static func start(layerRenderer: LayerRenderer, appModel: AppModel) {
         let renderer = Renderer(layerRenderer: layerRenderer, appModel: appModel)
@@ -482,11 +484,11 @@ nonisolated final class Renderer: @unchecked Sendable {
         }
     }
 
-    /// Startet die Session mit dem WorldTrackingProvider und beobachtet ihre Ereignisse
-    /// (M4a.5b-2: beim Start direkt in den Raum blieb der Provider ohne sichtbaren Grund nicht
-    /// im Zustand running, der Device Anchor kam nie). Jede Zustandsänderung geht in die
-    /// Probe-Datei; endet der Provider mit Fehler, folgt ein neuer Versuch mit einem neuen
-    /// Provider (höchstens arMaxRunAttempts, 1 s Abstand).
+    /// Starts the session with the WorldTrackingProvider and watches its events (when launching
+    /// straight into the space the provider once did not stay running for no visible reason,
+    /// the device anchor never came). Every state change goes into the probe file; if the
+    /// provider ends with an error, a new attempt with a new provider follows (at most
+    /// arMaxRunAttempts, 1 s apart).
     private func startARSession() async {
         Task { [self] in
             for await event in arSession.events {
@@ -528,7 +530,7 @@ nonisolated final class Renderer: @unchecked Sendable {
             c64Record("[c64-arkit] run attempt \(attempt) returned (\(reason)) state=\(Self.name(provider.state)) supported=\(WorldTrackingProvider.isSupported)")
             CelesteProbe.AliveProbe.shared.setProviderState(Self.name(provider.state))
         } catch {
-            // Ohne Pose wird trotzdem präsentiert (Schwarz ohne Anker); das Log zeigt es.
+            // Without a pose the loop still presents (black without an anchor); the log shows it.
             c64Error("[c64-arkit] run attempt \(attempt) failed (\(reason)): \(error)")
         }
     }
@@ -552,10 +554,10 @@ nonisolated final class Renderer: @unchecked Sendable {
         thread.start()
     }
 
-    // MARK: Startzeile
+    // MARK: Start line
 
-    /// [c64-ctx]: der gelesene Zustand des Prozesses, nicht der angenommene; dazu die Schalter
-    /// des Hosts (Debug-Builds hängen ihre Testschalter an).
+    /// [c64-ctx]: the process state as read, not as assumed; plus the host's switches (Debug
+    /// builds append their test switches).
     private func logContext() {
         let config = layerRenderer.configuration
         let layout = ProbeLayerConfiguration.name(config.layout)
@@ -597,13 +599,13 @@ nonisolated final class Renderer: @unchecked Sendable {
         c64Record(line)
     }
 
-    // MARK: Schleife
+    // MARK: Loop
 
     private func renderLoop() {
         let start = CFAbsoluteTimeGetCurrent()
         statWindowStart = start
         c64Record("[c64-loop] tMs=\(LaunchClock.tMs) render loop started, thread=\(Thread.current.name ?? "?")")
-        // M4a.5c-6: Layer-Zustand für die Lebenszeichen-Sonde (cp_layer_renderer_get_state, ohne Lock).
+        // Layer state for the alive probe (cp_layer_renderer_get_state, no lock).
         CelesteProbe.AliveProbe.shared.setLayerStateReader { [layerRenderer] in Self.name(layerRenderer.state) }
         if CelesteProbe.gameEnabled {
             CelesteProbe.tickState.resume(reason: "render loop started")
@@ -611,24 +613,24 @@ nonisolated final class Renderer: @unchecked Sendable {
 
         #if DEBUG
         nextStallAt = start + Self.stallSpacing
-        // Kit-Stufe K1a (C64_KIT=inject): einmal vor dem ersten Frame, mit dem Device des
-        // Layer-Renderers und der Queue dieses Gerüsts. SDL_Init lief im Hauptthread (GameStartup).
+        // Kit stage inject (C64_KIT=inject): once before the first frame, with the layer renderer's
+        // device and the queue of this host. SDL_Init ran on the main thread (GameStartup).
         if KitProbe.mode == .inject {
             runKitInjectProbe()
         }
         #endif
-        // Speicher am Anfang der Schleife (Vergleichswert für die Zusammenfassung).
+        // Memory at the start of the loop (reference value for the summary).
         footprintStartMB = ProbeContext.physFootprintMB
         availableStartMB = ProbeContext.availableMemoryMB
         c64Record("[c64-loop] footprintStartMB=\(String(format: "%.1f", footprintStartMB)) availableMB=\(String(format: "%.1f", availableStartMB))")
         #if DEBUG
-        // Kit-Stufe K1b (C64_KIT=import): Sitzung für die ganze Schleife.
+        // Kit stage import (C64_KIT=import): session for the whole loop.
         if KitProbe.mode == .import {
             kitImportSession = KitProbe.beginImport(device: device, queue: commandQueue)
             kitImportFailed = (kitImportSession == nil)
             c64Record("[c64-kit] import session=\(kitImportSession == nil ? "MISSING, scaffold clears itself" : "ok")")
         }
-        // Kit-Stufe K2 (C64_KIT=multiview): Sitzung mit Pipeline view_count 2 für die ganze Schleife.
+        // Kit stage multiview (C64_KIT=multiview): session with a pipeline of view_count 2 for the whole loop.
         if KitProbe.mode == .multiview {
             kitMultiviewSession = KitProbe.beginMultiview(device: device, queue: commandQueue, msaaSamples: kitMsaaSamples, memoryless: kitMemoryless,
                                                           depthStore: kitDepthStore)
@@ -643,9 +645,9 @@ nonisolated final class Renderer: @unchecked Sendable {
                 c64Record("[c64-loop] layer invalidated, loop ends after \(totalFrames) frames")
                 logLoopSummary()
                 if CelesteProbe.gameEnabled {
-                    // M4a.5a: der geschlossene Raum (Digital Crown) beendet die App sauber:
-                    // Ticks stoppen, celeste_end auf dem Hauptthread, exit(0). Ohne Fensterszene
-                    // gäbe es sonst keinen sauberen Neustart, solange Celeste im Prozess lebt.
+                    // The closed space (Digital Crown) ends the app cleanly: stop the ticks,
+                    // celeste_end on the main thread, exit(0). Without a window scene there would
+                    // be no clean restart otherwise while Celeste lives in the process.
                     CelesteProbe.requestExit(reason: "layer invalidated")
                 }
                 Task { @MainActor [appModel] in
@@ -655,18 +657,18 @@ nonisolated final class Renderer: @unchecked Sendable {
             default:
                 break
             }
-            // M4a.5c-2: Pause, wenn der Layer nicht läuft oder die App im Hintergrund ist.
+            // Pause when the layer is not running or the app is in the background.
             if shouldPause {
                 pauseBranch()
                 continue
             }
-            // Flag war im letzten Frame kurz gesetzt, aber am Schleifenanfang schon wieder weg:
-            // Notiz verwerfen, sonst würde sie der nächsten Pause zugeschrieben.
+            // The flag was set briefly in the last frame but gone again at the top of the loop:
+            // drop the note, otherwise it would be attributed to the next pause.
             pauseFrameNote = nil
             serviceAudioRetry()
 
             #if DEBUG
-            // Stall-Probe: VOR queryNextFrame, also ohne angefangenen Frame.
+            // Stall probe: BEFORE queryNextFrame, so without a started frame.
             stallIfDue()
             #endif
             if arkitPeriodicRemaining > 0 {
@@ -685,31 +687,31 @@ nonisolated final class Renderer: @unchecked Sendable {
     }
 
     #if DEBUG
-    /// K1a: SDL_GPU-Device auf dem geteilten Device und der geteilten Queue, dann Clear-Pass mit
-    /// Rücklesen, SDL_DestroyGPUDevice und ein leerer Command Buffer auf der Host-Queue. Danach
-    /// läuft die Schleife normal weiter; die ersten [c64-frame]-Zeilen zeigen, ob cmdErr=0 bleibt.
+    /// Inject: SDL_GPU device on the shared device and the shared queue, then a clear pass with
+    /// read-back, SDL_DestroyGPUDevice and an empty command buffer on the host queue. The loop
+    /// then continues normally; the first [c64-frame] lines show whether cmdErr stays 0.
     private func runKitInjectProbe() {
         let result = KitProbe.runInject(device: device, queue: commandQueue)
         c64Record("[c64-kit] inject \(result == 0 ? "passed (shared device and queue)" : "failed at step \(result)")")
     }
 
-    /// K1b: SDL importiert Farb- und Tiefentextur des Drawables und löscht alle Schichten
-    /// (dunkelblau, Tiefe 0). SDL committet seinen Command Buffer dabei synchron auf der geteilten
-    /// Queue; der Gerüst-Buffer mit encodePresent wird danach committet und läuft deshalb danach
-    /// (MTLCommandQueue ist seriell, Ausführung in Commit-Reihenfolge). false: das Gerüst löscht
-    /// selbst und präsentiert trotzdem.
+    /// Import: SDL imports colour and depth texture of the drawable and clears all layers (dark
+    /// blue, depth from importClearDepth). SDL commits its command buffer synchronously on the
+    /// shared queue; the host buffer with encodePresent is committed afterwards and therefore
+    /// runs afterwards (MTLCommandQueue is serial, execution in commit order). false: the host
+    /// clears itself and presents anyway.
     private func kitImportClear(drawable: LayerRenderer.Drawable) -> Bool {
         guard let session = kitImportSession else { return false }
-        // Bei .layered nutzen alle Views dieselbe Array-Textur; bei .dedicated eine pro View.
+        // With .layered all views share one array texture; with .dedicated one per view.
         var textureIndices: [Int] = []
         for view in drawable.views where !textureIndices.contains(view.textureMap.textureIndex) {
             textureIndices.append(view.textureMap.textureIndex)
         }
         if !importDepthLogged {
             importDepthLogged = true
-            // depthRange: x = far, y = near, in Metern (drawable.h:317-320).
+            // depthRange: x = far, y = near, in metres (drawable.h:317-320).
             let range = drawable.depthRange
-            let distance = importClearDepth > 0 ? String(format: "%.1f m", range.y / importClearDepth) : "unendlich (kein Inhalt für den Compositor)"
+            let distance = importClearDepth > 0 ? String(format: "%.1f m", range.y / importClearDepth) : "infinite (no content for the compositor)"
             c64Record(String(format: "[c64-kit] step=import-depth clear=%.4f depthRange far=%.3f near=%.3f corresponds to distance %@",
                              importClearDepth, range.x, range.y, distance))
         }
@@ -724,9 +726,9 @@ nonisolated final class Renderer: @unchecked Sendable {
         return true
     }
 
-    /// K2: Farb- und Tiefentextur importieren, ein Pass mit view_count 2: Clear (dunkelblau, Tiefe
-    /// aus importClearDepth) und das Schachbrett für beide Augen, Matrizen wie TestScene
-    /// (Projektion · inverse(deviceAnchor · view.transform)). Ohne Pose nur der Clear.
+    /// Multiview: import colour and depth texture, one pass with view_count 2: clear (dark blue,
+    /// depth from importClearDepth) and the checkerboard for both eyes, matrices like TestScene
+    /// (projection · inverse(deviceAnchor · view.transform)). Without a pose only the clear.
     private func kitMultiviewFrame(drawable: LayerRenderer.Drawable, deviceAnchor: DeviceAnchor?) -> Bool {
         guard let session = kitMultiviewSession, let firstView = drawable.views.first else { return false }
         let index = firstView.textureMap.textureIndex
@@ -740,7 +742,7 @@ nonisolated final class Renderer: @unchecked Sendable {
                 matrices[slot] = drawable.computeProjection(viewIndex: slot) * (anchorTransform * view.transform).inverse
             }
         }
-        // K3: Map des Compositors an den SDL-Pass, wenn Foveation an ist (sonst wie K2).
+        // the compositor's map to the SDL pass when foveation is on (otherwise the plain multiview pass).
         let rateMap = layerRenderer.configuration.isFoveationEnabled ? drawable.rasterizationRateMaps.first : nil
         let ok = KitProbe.multiviewFrame(session: session,
                                          color: drawable.colorTextures[index],
@@ -756,8 +758,8 @@ nonisolated final class Renderer: @unchecked Sendable {
         return ok
     }
 
-    /// K3: einmal pro Sekunde das Messbild gegen die Compositor-Map (eigene Textur, kostet einen
-    /// Pass plus Rücklesen mit Warten); erste Messung ausführlich mit allen Stichproben.
+    /// Once per second the measurement image against the compositor map (own texture, costs one
+    /// pass plus a read-back with waiting); the first measurement verbose with all samples.
     private func measureFoveationIfDue(session: OpaquePointer, rateMap: MTLRasterizationRateMap) {
         let now = CFAbsoluteTimeGetCurrent()
         guard now - fovMeasureLast >= 1.0 else { return }
@@ -780,9 +782,9 @@ nonisolated final class Renderer: @unchecked Sendable {
     }
     #endif
 
-    /// Zusammenfassung am Ende der Schleife, in jedem Modus: Frames, cmdErr, Speicher am Anfang und
-    /// Ende. Im Modus import zusätzlich sdlFail, Wrapper und Rotation; im Modus multiview Pässe und
-    /// Draws pro Frame und die CPU-Zeit des SDL-Teils; die Sitzung wird geschlossen.
+    /// Summary at the end of the loop, in every mode: frames, cmdErr, memory at start and end. In
+    /// mode import also sdlFail, wrappers and rotation; in mode multiview passes and draws per
+    /// frame and the CPU time of the SDL part; the session is closed.
     private func logLoopSummary() {
         var kitPart = ""
         var mode = "-"
@@ -802,14 +804,14 @@ nonisolated final class Renderer: @unchecked Sendable {
             kitPart = String(format: " sdlFail=%d passesPerFrame=%.2f drawsPerFrame=%.2f sdl(ms) mean=%.3f max=%.3f wrappers created=%lu released=%lu",
                              sdlFailTotal, Double(stats.passes_total) / Double(frames), Double(stats.draws_total) / Double(frames),
                              meanMs, stats.total_max_ms, stats.wrappers_created, stats.wrappers_released)
-            // K4a: GPU-Zeit der SDL-Command-Buffer (Completed-Rückruf, ohne die ersten 90 Frames:
-            // Mittel, p95, Maximum) und MSAA-Stand.
+            // GPU time of the SDL command buffers (completion callback, without the first 90
+            // frames: mean, p95, maximum) and MSAA state.
             var gpuCount: UInt32 = 0
             var gpuMean = 0.0, gpuP95 = 0.0, gpuMax = 0.0
             kit_multiview_gpu_percentiles(session, &gpuCount, &gpuMean, &gpuP95, &gpuMax)
             let filterNames = ["sample0", "min", "max"]
             let filter = Int(stats.depth_filter) < filterNames.count ? filterNames[Int(stats.depth_filter)] : "?"
-            kitPart += String(format: " gpu(ms, ab Frame 91) n=%u mean=%.3f p95=%.3f max=%.3f untagged=%lu gpuErr=%lu msaa=%u memoryless=%u msaaTextures=%ux%ux%u msaaNominalMB=%.1f msaaAllocatedMB=%@ measureMsaaNominalMB=%.1f depthResolveFilter=%@ depthStore=%@ depthProbes=%lu",
+            kitPart += String(format: " gpu(ms, from frame 91) n=%u mean=%.3f p95=%.3f max=%.3f untagged=%lu gpuErr=%lu msaa=%u memoryless=%u msaaTextures=%ux%ux%u msaaNominalMB=%.1f msaaAllocatedMB=%@ measureMsaaNominalMB=%.1f depthResolveFilter=%@ depthStore=%@ depthProbes=%lu",
                               gpuCount, gpuMean, gpuP95, gpuMax,
                               stats.gpu_untagged, stats.gpu_errors, stats.msaa_samples, stats.memoryless, stats.msaa_width, stats.msaa_height, stats.msaa_layers,
                               Double(stats.msaa_nominal_bytes) / (1024 * 1024),
@@ -837,11 +839,11 @@ nonisolated final class Renderer: @unchecked Sendable {
         let cmdSkipped = cmdSkippedTotal
         let cmdErrExpected = cmdErrExpectedTotal
         cmdErrLock.unlock()
-        // Bildrate über den Lauf: mittleres Intervall aus presentationTime und daraus Hz.
+        // Frame rate over the run: mean interval from presentationTime and Hz from it.
         let meanInterval = intervalTotalCount > 0 ? intervalTotalSum / Double(intervalTotalCount) : 0
         let hz = meanInterval > 0 ? 1.0 / meanInterval : 0
-        // Render Quality: angefordert (Schalter), Obergrenze der Konfiguration, tatsächlich am Ende;
-        // dazu Drawable- und Map-Grösse des letzten Frames und der verfügbare Speicher.
+        // Render quality: requested (switch), upper limit of the configuration, actual at the end;
+        // plus drawable and map size of the last frame and the available memory.
         let requestedQuality = HostEnvironment.text("C64_RENDERQUALITY")
         let qualityPart = String(format: " renderQuality{requested=%@ max=%.3f end=%.3f} drawable=%dx%d map{screen=%dx%d physical=%dx%d}",
                                  requestedQuality, layerRenderer.configuration.maxRenderQuality.rawValue, layerRenderer.renderQuality.rawValue,
@@ -855,9 +857,9 @@ nonisolated final class Renderer: @unchecked Sendable {
     }
 
     #if DEBUG
-    /// K1b-Diagnose: dieselbe Stelle, die SDL nach seinem Clear zurückgelesen hat, im Gerüst-Buffer
-    /// unmittelbar vor encodePresent nochmals lesen (Blit des Mittelpixels von Schicht 0 und 1 in
-    /// einen geteilten Puffer); geloggt im Completed-Handler mit beiden Werten.
+    /// Import diagnostics: read the same spot SDL read back after its clear once more in the host
+    /// buffer right before encodePresent (blit of the centre pixel of layers 0 and 1 into a
+    /// shared buffer); logged in the completed handler with both values.
     private func encodeVerifyBeforePresent(commandBuffer: MTLCommandBuffer, frameIndex: UInt64) {
         guard let pending = pendingVerify else { return }
         pendingVerify = nil
@@ -892,23 +894,23 @@ nonisolated final class Renderer: @unchecked Sendable {
         let now = CFAbsoluteTimeGetCurrent()
         guard now >= nextStallAt else { return }
 
-        let soll = stallPlan[stallIndex]
-        let nummer = stallIndex + 1
-        let sollMs = Int((soll * 1000).rounded())
-        c64Record("[c64-stall] before block \(nummer)/\(stallPlan.count) soll=\(sollMs) ms frames=\(totalFrames)")
+        let target = stallPlan[stallIndex]
+        let number = stallIndex + 1
+        let targetMs = Int((target * 1000).rounded())
+        c64Record("[c64-stall] before block \(number)/\(stallPlan.count) target=\(targetMs) ms frames=\(totalFrames)")
         let t0 = CFAbsoluteTimeGetCurrent()
-        Thread.sleep(forTimeInterval: soll)
-        let ist = CFAbsoluteTimeGetCurrent() - t0
-        c64Record(String(format: "[c64-stall] after block %d/%d soll=%d ms ist=%.1f ms layerState=%@",
-                         nummer, stallPlan.count, sollMs, ist * 1000, Self.name(layerRenderer.state)))
+        Thread.sleep(forTimeInterval: target)
+        let actual = CFAbsoluteTimeGetCurrent() - t0
+        c64Record(String(format: "[c64-stall] after block %d/%d target=%d ms actual=%.1f ms layerState=%@",
+                         number, stallPlan.count, targetMs, actual * 1000, Self.name(layerRenderer.state)))
 
         stallIndex += 1
         nextStallAt = CFAbsoluteTimeGetCurrent() + Self.stallSpacing
-        // Das Intervall über den Block hinweg bleibt in der Statistik: lastPresentationTime und
-        // lastQueryReturn werden nicht zurückgesetzt, damit die [c64-frame]-Zeile der
-        // Block-Sekunde den Sprung zeigt (max ≈ Block + ein Takt).
+        // The interval across the block stays in the statistics: lastPresentationTime and
+        // lastQueryReturn are not reset, so the [c64-frame] line of the block's second shows
+        // the jump (max ≈ block + one tick).
         postStallWanted = 3
-        postStallBlock = nummer
+        postStallBlock = number
         postStallSamples.removeAll()
         if stallIndex == stallPlan.count {
             c64Record("[c64-stall] sequence finished, all \(stallPlan.count) blocks survived")
@@ -918,14 +920,14 @@ nonisolated final class Renderer: @unchecked Sendable {
 
     // MARK: Frame
 
-    // MARK: Stereo-Weltpass (M4b.3a)
+    // MARK: Stereo world pass
 
-    /// Frame-Daten für celeste_render_frame_vr aus dem Drawable: Farb- und Tiefentextur (eine
-    /// 2D-Array-Textur für beide Views, Layout .layered), die Rate Map des Compositors mit
-    /// logischer und physischer Grösse, die Projektion je View aus computeProjection (16 Floats,
-    /// Spaltenreihenfolge wie simd; Celeste setzt ihre Near-Ebene in Einheiten selbst), die
-    /// View-Transformationen (für M4b.4) und die Near-Ebene des Layers. false, wenn das Drawable
-    /// nicht die Form hat (weniger als zwei Views oder keine Array-Textur).
+    /// Frame data for celeste_render_frame_vr from the drawable: colour and depth texture (one 2D
+    /// array texture for both views, layout .layered), the compositor's rate map with logical and
+    /// physical size, the projection per view from computeProjection (16 floats, column order
+    /// like simd; Celeste sets its near plane in units itself), the view transforms (for the
+    /// head pose) and the near plane of the layer. false when the drawable does not have the
+    /// shape (fewer than two views or no array texture).
     private static func fillVRFrame(_ frame: inout celeste_vr_frame, drawable: LayerRenderer.Drawable, layerFrame: LayerRenderer.Frame,
                                     deviceAnchor: DeviceAnchor?, configuration: LayerRenderer.Configuration) -> Bool {
         let views = drawable.views
@@ -956,9 +958,9 @@ nonisolated final class Renderer: @unchecked Sendable {
             frame.physical_width = frame.width
             frame.physical_height = frame.height
         }
-        // M4b.4: Kopf und Augen relativ zum Bezugspunkt O (StereoOrigin); ohne Pose Identität
-        // (Celeste nimmt dann die Spielkamera für beide Augen). Culling-Matrix des Compositors
-        // für beide Augen mit weiteren Tangenten, Tiefenbereich weiter als beim Rendern.
+        // Head and eyes relative to the reference O (StereoOrigin); identity without a pose
+        // (Celeste then takes the game camera for both eyes). The compositor's culling matrix
+        // for both eyes with wider tangents, depth range wider than when rendering.
         var relativeHead = matrix_identity_float4x4
         var originReset = false
         if let deviceAnchor {
@@ -989,7 +991,7 @@ nonisolated final class Renderer: @unchecked Sendable {
 
     private var lastHeadLog: CFAbsoluteTime = 0
 
-    /// [c64-head] einmal pro Sekunde: Versatz und Gieren zu O.
+    /// [c64-head] once per second: offset and yaw relative to O.
     private func logHeadIfDue() {
         let now = CFAbsoluteTimeGetCurrent()
         guard now - lastHeadLog >= 1.0 else { return }
@@ -1000,7 +1002,7 @@ nonisolated final class Renderer: @unchecked Sendable {
     private var lastStereoRc: Int32 = -3
     private var stereoWorldFrames = 0
 
-    /// [c64-stereo]: der erste Welt-Frame und jeder Wechsel zwischen Welt (1) und Leinwand (0).
+    /// [c64-stereo]: the first world frame and every switch between world (1) and canvas (0).
     private func noteStereoFrame(rc: Int32, frame: celeste_vr_frame, frameIndex: UInt64) {
         if rc == 1 { stereoWorldFrames += 1 }
         guard rc != lastStereoRc else { return }
@@ -1008,8 +1010,8 @@ nonisolated final class Renderer: @unchecked Sendable {
         c64Record("[c64-stereo] tMs=\(LaunchClock.tMs) frame=\(frameIndex) rc=\(rc) (\(rc == 1 ? "world in drawable" : rc == 0 ? "canvas" : "no render")) drewWorld=\(frame.drew_world) flushes=\(frame.flushes) texture=\(frame.width)x\(frame.height) logical=\(frame.logical_width)x\(frame.logical_height) physical=\(frame.physical_width)x\(frame.physical_height) srgb=\(frame.color_srgb) map=\(frame.rasterization_rate_map != nil ? 1 : 0) near=\(String(format: "%.3f", frame.near_meters)) worldFrames=\(stereoWorldFrames)")
     }
 
-    /// M4b.2: Near-Ebene der Layer-Konfiguration (defaultDepthRange: x = far, y = near, Meter,
-    /// layer_renderer_configuration.h:386-414, Reverse-Z) an Celeste.
+    /// Near plane of the layer configuration (defaultDepthRange: x = far, y = near, metres,
+    /// layer_renderer_configuration.h:386-414, reverse-Z) to Celeste.
     private func sendDepthNear() {
         let range = layerRenderer.configuration.defaultDepthRange
         let rc = celeste_set_depth_near(Double(range.y))
@@ -1019,12 +1021,12 @@ nonisolated final class Renderer: @unchecked Sendable {
 
     private func renderFrame() {
         guard let frame = layerRenderer.queryNextFrame() else {
-            // Kein Frame verfügbar (pausiert, invalidiert oder zu viele in Arbeit): kurz warten.
+            // No frame available (paused, invalidated or too many in flight): wait briefly.
             Thread.sleep(forTimeInterval: 0.001)
             return
         }
 
-        // Wanduhr-Intervall seit der letzten Rückkehr von queryNextFrame.
+        // Wall clock interval since the last return of queryNextFrame.
         let queryReturn = CFAbsoluteTimeGetCurrent()
         var frameInterval: TimeInterval?
         if let last = lastQueryReturn {
@@ -1037,12 +1039,11 @@ nonisolated final class Renderer: @unchecked Sendable {
         }
         lastQueryReturn = queryReturn
 
-        // Update-Phase: Celestes Update (M1a.5), die Render-Hälfte folgt nach dem Device Anchor;
-        // Delta ist der Frame-Takt.
-        // M4b.4-N2: Präsentationszeit dieses Frames vor dem Update (predictTiming darf jederzeit
-        // vor queryDrawables gerufen werden, frame.h:57-69); Delta = Differenz zum Vorframe,
-        // verlorene Frames geben 22,2 ms, die Obergrenze 1/30 s setzt der Tick. Nach Start und
-        // Fortsetzen (Bezug nil) nimmt der Tick 1/90 s wie bisher.
+        // Update phase: Celeste's update, the render half follows after the device anchor. The
+        // delta is the difference of the predicted presentation times: this frame's presentation
+        // time before the update (predictTiming may be called any time before queryDrawables,
+        // frame.h:57-69) minus the previous frame's; lost frames give 22.2 ms, the tick caps it at
+        // 1/30 s. After start and resume (no reference) the tick takes 1/90 s as before.
         var presentationDelta: TimeInterval?
         predictedPresentation = nil
         if let predicted = frame.predictTiming() {
@@ -1055,25 +1056,25 @@ nonisolated final class Renderer: @unchecked Sendable {
         }
 
         frame.startUpdate()
-        // M4b.1: nur die Update-Hälfte (celeste_update); die Render-Hälfte folgt nach dem Device
-        // Anchor (renderCelesteThisFrame). M4a.5c-4: Ist die App beim Erreichen des Updates schon
-        // im Hintergrund, entfällt der Tick dieses Frames (SDL würde zwei Command Buffer im
-        // Hintergrund committen); der Frame wird trotzdem mit der Leinwand des letzten Bildes
-        // fertig präsentiert, die Pause folgt am Schleifenanfang.
+        // Only the update half (celeste_update); the render half follows after the device anchor
+        // (renderCelesteThisFrame). If the app is already in the background when the update is
+        // reached, this frame's tick is skipped (SDL would commit two command buffers in the
+        // background); the frame is still presented with the canvas of the last image, the pause
+        // follows at the top of the loop.
         var renderCelesteThisFrame = false
         let backgroundAtTick = CelesteProbe.pauseState.isBackground
         if backgroundAtTick {
             pauseFrameNote = PauseFrameNote(frameIndex: frame.frameIndex, flagSeen: "before-update", tickSkipped: true, renderSkipped: true, committed: false, presented: false)
         } else if audioSuspended {
-            // M4a.5c-2: kein celeste_tick bei angehaltenem Mixer; der Frame wird trotzdem
-            // präsentiert (Leinwand mit dem letzten Bild).
+            // no celeste_tick with the mixer suspended; the frame is still presented (canvas
+            // with the last image).
             ticksSkippedForAudio += 1
             if ticksSkippedForAudio == 1 {
                 c64Record("[c64-celeste] tMs=\(LaunchClock.tMs) tick skipped, mixer suspended; loop keeps presenting")
             }
         } else if CelesteProbe.gameEnabled {
-            // M4b.2: vor dem ersten Update auf diesem Thread die Near-Ebene des Layers an Celeste
-            // (celeste_set_depth_near, Meter); Celeste rechnet sie an einer Stelle in Einheiten um.
+            // before the first update on this thread the layer's near plane to Celeste
+            // (celeste_set_depth_near, metres); Celeste converts it to units at one place.
             if !depthNearSent {
                 depthNearSent = true
                 sendDepthNear()
@@ -1083,15 +1084,15 @@ nonisolated final class Renderer: @unchecked Sendable {
         frame.endUpdate()
 
         guard let timing = frame.predictTiming() else { return }
-        // M4b L4: Wartezeit bis optimalInputTime (negativ, wenn das Update schon später fertig war)
+        // wait time until optimalInputTime (negative when the update finished later already)
         let optimalInput = timing.optimalInputTime.timeInterval
         let waitOpt = optimalInput - LayerRenderer.Clock().now.timeInterval
-        // M4b L5: früher einreichen. Compositor Services legt optimalInputTime aus unserer
-        // CPU-Zeit zwischen startSubmission und endSubmission (3 ms) fest und weiss nichts von den
-        // 5–9 ms GPU danach; L4 mass 6–7 ms Warten je Frame und Termine, die die GPU um 1–2 ms
-        // reisst. Wir beginnen C64_EARLY_MS (Standard 5) vor optimalInputTime: der GPU-Start rückt
-        // um diese Zeit vor, die Pose für denselben Präsentationszeitpunkt wird entsprechend
-        // früher vorhergesagt (Drehung korrigiert der Compositor beim Anzeigen).
+        // Submit earlier. Compositor Services derives optimalInputTime from our CPU time between
+        // startSubmission and endSubmission (3 ms) and knows nothing about the 5–9 ms of GPU work
+        // after it; measurements showed 6–7 ms of waiting per frame and deadlines the GPU missed
+        // by 1–2 ms. We start C64_EARLY_MS (default 5) before optimalInputTime: the GPU start
+        // moves forward by that time, the pose for the same presentation time is predicted
+        // correspondingly earlier (the compositor corrects rotation when displaying).
         let early = Self.earlySubmitSeconds
         if !earlyLogged {
             earlyLogged = true
@@ -1103,14 +1104,13 @@ nonisolated final class Renderer: @unchecked Sendable {
             LayerRenderer.Clock().wait(until: timing.optimalInputTime)
         }
 
-        // M4b L5b: erst die Drawables, dann startSubmission, wie Apples Vorlage und Klepton
-        // (KleptonCompositor.swift, renderFrame). Eine leere Liste heisst, der Frame ist vom System
-        // abgebrochen und darf nicht mehr angefasst werden (frame.h:109-110 zu
-        // cp_frame_query_drawables: "If array count is 0, the frame has been cancelled ... and is
-        // invalid to access"); bis L5 stand startSubmission davor, und dieser Ausstieg liess eine
-        // begonnene Submission ohne endSubmission zurück, was Compositor Services als Client-Fehler
-        // (__BUG_IN_CLIENT__) mit Abbruch quittieren kann. Dauer von queryDrawables gemessen:
-        // blockierte es bis optimalInputTime, wäre der Vorlauf wirkungslos und hier sichtbar.
+        // First the drawables, then startSubmission, as in Apple's template. An empty list means
+        // the frame was cancelled by the system and must not be touched any more (frame.h:109-110
+        // on cp_frame_query_drawables: "If array count is 0, the frame has been cancelled ... and
+        // is invalid to access"); earlier startSubmission came first, and this exit left a begun
+        // submission without endSubmission, which Compositor Services can answer as a client error
+        // (__BUG_IN_CLIENT__) with an abort. The duration of queryDrawables is measured: if it
+        // blocked until optimalInputTime, the lead would be ineffective and visible here.
         let queryStart = LayerRenderer.Clock().now.timeInterval
         let drawables = frame.queryDrawables()
         let queryDrawablesSeconds = LayerRenderer.Clock().now.timeInterval - queryStart
@@ -1119,10 +1119,10 @@ nonisolated final class Renderer: @unchecked Sendable {
             cancelledTotal += 1
             return
         }
-        // M4b L6: auch der Command Buffer kommt vor startSubmission (wie bei Klepton und Apples
-        // Vorlage). Fehlt er, wird der Frame ohne begonnene Submission verlassen; ein endSubmission
-        // ohne präsentiertes Drawable gilt Compositor Services als Client-Fehler
-        // (__BUG_IN_CLIENT__, KleptonCompositor.swift renderFrame). Zeile höchstens einmal pro Sekunde.
+        // The command buffer too comes before startSubmission (as in Apple's template). If it is
+        // missing, the frame is left without a begun submission; an endSubmission without a
+        // presented drawable counts as a client error for Compositor Services (__BUG_IN_CLIENT__).
+        // Line at most once per second.
         guard let commandBuffer = commandQueue.makeCommandBuffer() else {
             statNoCmdBuf += 1
             let now = CFAbsoluteTimeGetCurrent()
@@ -1133,7 +1133,7 @@ nonisolated final class Renderer: @unchecked Sendable {
             return
         }
         commandBuffer.label = "c64-frame \(frame.frameIndex)"
-        // Ab hier ist der Frame in Arbeit und wird in jedem Fall abgeschlossen (encodePresent,
+        // From here on the frame is in flight and is completed in every case (encodePresent,
         // commit, endSubmission).
         frame.startSubmission()
 
@@ -1142,19 +1142,19 @@ nonisolated final class Renderer: @unchecked Sendable {
         logFoveationIfChanged(drawables)
         rememberSizes(drawables)
 
-        // Pose und Timing aus dem Drawable für das eingebaute Display (target builtIn,
-        // drawable.h:36-44, Vorrang laut drawable.h:428-429), Rückfall auf das erste.
-        // Fehlt die Pose (ARKit noch nicht bereit), wird trotzdem Schwarz präsentiert, nur
-        // ohne Anker. Der Anker wird auf alle Drawables gesetzt.
+        // Pose and timing from the drawable for the built-in display (target builtIn,
+        // drawable.h:36-44, precedence per drawable.h:428-429), fallback to the first one.
+        // Without a pose (ARKit not ready yet) black is still presented, only without an
+        // anchor. The anchor is set on all drawables.
         let primary = drawables.first(where: { $0.target == .builtIn }) ?? drawables[0]
         let presentationTime = primary.frameTiming.presentationTime.timeInterval
 
-        // M4b Leistung N3: Termin des Frames (frame_timing.h:45-56, «finish all CPU and GPU work
-        // by the returned time») an den Completed-Handler des Host-Buffers, der als letzter Buffer
-        // des Frames auf der seriellen Queue das GPU-Ende markiert. Zeitbasis einmal belegen:
-        // gpuEndTime liegt in der Basis von CACurrentMediaTime (Host-Zeit, Mach), die Compositor-
-        // Uhr zählt Mach-Ticks seit ihrer Epoche (cp_types.h:27-33); der Versatz wird gemessen
-        // und beim Vergleich abgezogen, die Zeile zeigt, ob er praktisch 0 ist.
+        // Deadline of the frame (frame_timing.h:45-56, "finish all CPU and GPU work by the
+        // returned time") to the completed handler of the host buffer, which as the last buffer
+        // of the frame on the serial queue marks the GPU end. Establish the time base once:
+        // gpuEndTime is in the base of CACurrentMediaTime (host time, Mach), the compositor
+        // clock counts Mach ticks since its epoch (cp_types.h:27-33); the offset is measured
+        // and subtracted in the comparison, the line shows whether it is practically 0.
         let renderingDeadline = primary.frameTiming.renderingDeadline.timeInterval
         if !timebaseLogged {
             timebaseLogged = true
@@ -1165,23 +1165,23 @@ nonisolated final class Renderer: @unchecked Sendable {
             }
         }
         let frameIndexForHandler = frame.frameIndex
-        // M4b P1: Frame-Nummer der Pass-Statistik, vor Celestes Render (prepare/settle tragen sie)
-        // und für den Host-Buffer, der die Etiketten dieses Frames abschliesst.
+        // Frame number of the pass statistics, before Celeste's render (prepare/settle carry it)
+        // and for the host buffer that closes this frame's labels.
         let gpuFrame = CelesteProbe.celesteGpuPasses.beginFrame()
-        // M4a.5c-4: nach dem Fortsetzen die ersten drei Frames mit Buffer-Status loggen.
+        // after resuming log the first three frames with the buffer status.
         let logResume = resumeFramesToLog > 0
         if logResume { resumeFramesToLog -= 1 }
         commandBuffer.addCompletedHandler { [weak self] buffer in
             self?.noteCommandBufferCompletion(buffer, frameIndex: frameIndexForHandler, renderingDeadline: renderingDeadline, gpuFrame: gpuFrame, logResume: logResume)
         }
-        // M4b.4-N2: Vorhersage gegen die Präsentationszeit des Drawables (Statistik)
+        // prediction against the drawable's presentation time (statistics)
         if let predictedPresentation {
             CelesteProbe.tickState.notePresentation(predicted: predictedPresentation, actual: presentationTime)
         }
-        // presentationTime relativ zur Compositor-Uhr beim Erhalt der Drawables (gleiche Zeitbasis).
+        // presentationTime relative to the compositor clock when the drawables were received (same time base).
         let relativeToNow = presentationTime - LayerRenderer.Clock().now.timeInterval
-        // Nur ein laufender Provider liefert Anker; sonst ohne Abfrage (keine Konsolenfehler),
-        // der Frame zählt als noAnchor, und eine Zeile je Zustandswechsel zeigt den Grund.
+        // Only a running provider delivers anchors; otherwise no query (no console errors), the
+        // frame counts as noAnchor, and one line per state change shows the reason.
         let provider = worldTracking
         let providerState = provider.state
         if providerState != lastLoggedProviderState {
@@ -1189,10 +1189,9 @@ nonisolated final class Renderer: @unchecked Sendable {
             c64Record("[c64-arkit] render thread sees provider state=\(Self.name(providerState)) frame=\(totalFrames)")
         }
         var deviceAnchor = providerState == .running ? provider.queryDeviceAnchor(atTimestamp: presentationTime) : nil
-        // M4b L5: queryDeviceAnchor verweigert Zeitpunkte, zu denen es nicht vorhersagt (Klepton:
-        // ein Hänger, der die Präsentationszeit hinausschiebt, reicht). Dann die letzte Pose
-        // halten statt ohne Anker zu präsentieren: die Identität würde die Welt vor dem Gesicht
-        // festkleben. Gezählt als anchorHeld.
+        // queryDeviceAnchor refuses times it does not predict for (a stall that pushes the
+        // presentation time out is enough). Then hold the last pose instead of presenting
+        // without an anchor: the identity would glue the world to the face. Counted as anchorHeld.
         var anchorHeld = false
         if deviceAnchor == nil, providerState == .running, let held = lastDeviceAnchor {
             deviceAnchor = held
@@ -1201,24 +1200,24 @@ nonisolated final class Renderer: @unchecked Sendable {
             lastDeviceAnchor = fresh
         }
         if let deviceAnchor {
-            // M4b.1b: letzte Kopfpose für die [c64-recenter]-Zeile (Diagnose, Vorbereitung M4b.4).
+            // last head pose for the [c64-recenter] line (diagnostics).
             CelesteProbe.headPose.set(anchor: deviceAnchor.originFromAnchorTransform)
         }
 
-        // M4b.1: Celestes Render-Hälfte nach dem Device Anchor, unmittelbar vor dem Encodieren;
-        // SDL committet seine Buffer auf der gemeinsamen Queue vor dem Host-Buffer. Kein Render
-        // ohne Update in diesem Frame (Pause, Mixer angehalten, Flag gesetzt).
-        // M4b.3a: mit Stereo-Weltpass bekommt Celeste das Drawable (Texturen, Map, Projektionen
-        // je Auge); Rückgabe 1 heisst, die Welt steht im Drawable, das Gerüst löscht und zeichnet
-        // dort nichts mehr. Rückgabe 0: Leinwand wie bisher.
+        // Celeste's render half after the device anchor, right before encoding; SDL commits its
+        // buffers on the shared queue before the host buffer. No render without an update in
+        // this frame (pause, mixer suspended, flag set).
+        // With the stereo world pass Celeste gets the drawable (textures, map, projections per
+        // eye); return 1 means the world is in the drawable, the host clears and draws nothing
+        // there any more. Return 0: canvas as before.
         var celesteRenderedThisFrame = false
         var worldDrawnThisFrame = false
         var toFirstCommit: TimeInterval?
         if renderCelesteThisFrame {
             if CelesteProbe.pauseState.isBackground {
-                // Flag kam zwischen Update und Render: Celestes Render entfällt (keine
-                // SDL-Buffer im Hintergrund), die Leinwand zeigt das letzte Bild, der Frame
-                // wird fertig präsentiert.
+                // The flag came between update and render: Celeste's render is skipped (no SDL
+                // buffers in the background), the canvas shows the last image, the frame is
+                // presented to completion.
                 pauseFrameNote = PauseFrameNote(frameIndex: frame.frameIndex, flagSeen: "after-update", tickSkipped: false, renderSkipped: true, committed: false, presented: false)
             } else {
                 celesteRenderedThisFrame = true
@@ -1227,21 +1226,21 @@ nonisolated final class Renderer: @unchecked Sendable {
                     let renderCall = LayerRenderer.Clock().now.timeInterval
                     let rc = CelesteProbe.tickState.renderVR(&worldFrame)
                     worldDrawnThisFrame = rc == 1
-                    // M4b L4: optimalInputTime bis zum Commit des Welt-Buffers (Celeste meldet die
-                    // Mikrosekunden vom Aufruf bis zum Commit in reserved2)
+                    // optimalInputTime to the commit of the world buffer (Celeste reports the
+                    // microseconds from the call to the commit in reserved2)
                     if rc == 1, worldFrame.reserved2 > 0 {
                         toFirstCommit = (renderCall - optimalInput) + Double(worldFrame.reserved2) / 1_000_000
                     }
                     noteStereoFrame(rc: rc, frame: worldFrame, frameIndex: frame.frameIndex)
                     if rc == 1 { logHeadIfDue() }
                 } else {
-                    // Drawable ohne die erwartete Form (zwei Views, Array-Textur): Leinwand für alles
+                    // drawable without the expected shape (two views, array texture): canvas for everything
                     CelesteProbe.tickState.render()
                 }
             }
         }
-        // Frame ohne Celeste-Render (Laden, Pause, Flag): Drawable opak schwarz nach der
-        // Frame-Regel, nie alter Inhalt und keine Leinwand mit altem Bild.
+        // Frame without a Celeste render (loading, pause, flag): drawable opaque black per the
+        // frame rule, never old content and no canvas with an old image.
         let blackOnly = CelesteProbe.gameEnabled && !celesteRenderedThisFrame
         let primaryColor = primary.colorTextures.first
 
@@ -1250,14 +1249,13 @@ nonisolated final class Renderer: @unchecked Sendable {
                 drawable.deviceAnchor = anchor
             }
             if worldDrawnThisFrame, let primaryColor, drawable.colorTextures.first === primaryColor {
-                // Celeste hat dieses Drawable geschrieben (beide Schichten, Tiefe kopiert)
+                // Celeste wrote this drawable (both layers, depth copied)
                 continue
             }
             #if DEBUG
-            // K1b: zuerst SDL (importiert und löscht, committet auf der geteilten Queue), dann
-            // der Gerüst-Buffer mit nur encodePresent. Scheitert SDL, zählt das Gerüst sdlFail und
-            // löscht selbst: Schwarz mit Tiefe 0, also bewusst «leer» für den Compositor (Alpha > 0
-            // und Tiefe > 0 wären Inhalt); der Frame wird trotzdem präsentiert.
+            // Kit import: first SDL (imports and clears, commits on the shared queue), then the
+            // host buffer with only encodePresent. If SDL fails, the host counts sdlFail and
+            // clears itself (encodeClearPasses); the frame is presented anyway.
             if kitMultiviewSession != nil {
                 if kitMultiviewFrame(drawable: drawable, deviceAnchor: deviceAnchor) {
                     continue
@@ -1266,8 +1264,8 @@ nonisolated final class Renderer: @unchecked Sendable {
                 sdlFailTotal += 1
             } else if kitImportSession != nil || kitImportFailed {
                 if kitImportClear(drawable: drawable) {
-                    // Diagnose: hat SDL in diesem Frame zurückgelesen, liest das Gerüst vor dem
-                    // Present dieselbe Stelle (erste Textur des Drawables).
+                    // Diagnostics: if SDL read back in this frame, the host reads the same spot
+                    // before the present (first texture of the drawable).
                     if let session = kitImportSession, let afterSDL = KitProbe.lastVerify(session: session),
                        let firstView = drawable.views.first {
                         pendingVerify = (afterSDL, drawable.colorTextures[firstView.textureMap.textureIndex])
@@ -1281,23 +1279,23 @@ nonisolated final class Renderer: @unchecked Sendable {
             encodeClearPasses(drawable: drawable, commandBuffer: commandBuffer, deviceAnchor: deviceAnchor, blackOnly: blackOnly)
         }
 
-        // Verspätung unmittelbar vor encodePresent: Präsentationszeit minus jetzt, gleiche
-        // Zeitbasis. Negativ heisst, der Frame wird nach seiner Präsentationszeit abgeschickt.
+        // Lateness right before encodePresent: presentation time minus now, same time base.
+        // Negative means the frame is submitted after its presentation time.
         let lateness = presentationTime - LayerRenderer.Clock().now.timeInterval
 
         #if DEBUG
-        // K1b-Diagnose: Rücklesen im Gerüst-Buffer, als letzter Inhalt vor encodePresent.
+        // Import diagnostics: read-back in the host buffer, as the last content before encodePresent.
         encodeVerifyBeforePresent(commandBuffer: commandBuffer, frameIndex: frame.frameIndex)
         #endif
 
-        // encodePresent zuletzt, nach allen Inhalts-Pässen.
+        // encodePresent last, after all content passes.
         for drawable in drawables {
             drawable.encodePresent(commandBuffer: commandBuffer)
         }
-        // M4a.5c-4: immer committen und präsentieren, auch im Hintergrund (Vice City). Ein
-        // Present ohne Commit liess das Drawable hängen, der nächste Host-Buffer lief in den
-        // GPU-Timeout. Der eine Host-Buffer im Hintergrund darf vom System abgelehnt werden
-        // (BackgroundExecutionNotPermitted), das zählt als erwartet.
+        // Always commit and present, even in the background. A present without a commit left the
+        // drawable hanging, the next host buffer ran into the GPU timeout. The one host buffer in
+        // the background may be rejected by the system (BackgroundExecutionNotPermitted), that
+        // counts as expected.
         if CelesteProbe.pauseState.isBackground {
             if pauseFrameNote == nil {
                 pauseFrameNote = PauseFrameNote(frameIndex: frame.frameIndex, flagSeen: "after-render", tickSkipped: false, renderSkipped: false, committed: false, presented: false)
@@ -1308,9 +1306,9 @@ nonisolated final class Renderer: @unchecked Sendable {
         }
         commandBuffer.commit()
         frame.endSubmission()
-        // M4b L4: Apples Frist gilt für die CPU: Command Buffer committet und endSubmission vor
-        // renderingDeadline. cpuMargin = Frist minus jetzt; dazu die Wartezeit und der Weg zum
-        // ersten Commit dieses Frames. Nur Zeitstempel, keine Synchronisation.
+        // Apple's deadline applies to the CPU: command buffer committed and endSubmission before
+        // renderingDeadline. cpuMargin = deadline minus now; plus the wait time and the way to
+        // the first commit of this frame. Timestamps only, no synchronisation.
         CelesteProbe.frameTiming.noteCpu(waitOpt: waitOpt, toFirstCommit: toFirstCommit,
                                          cpuMargin: renderingDeadline - LayerRenderer.Clock().now.timeInterval,
                                          queryDrawables: queryDrawablesSeconds, anchorHeld: anchorHeld)
@@ -1339,8 +1337,8 @@ nonisolated final class Renderer: @unchecked Sendable {
                     drawableCount: drawables.count)
     }
 
-    /// [c64-targets]: das Ziel jedes Drawables, beim ersten Frame und bei jeder Änderung der
-    /// Zielmenge (etwa Start und Ende einer Bildschirmaufnahme). Auch in die Fortschrittsdatei.
+    /// [c64-targets]: the target of every drawable, at the first frame and at every change of the
+    /// target set (such as start and end of a screen recording). Also into the progress file.
     private func logTargetsIfChanged(_ drawables: [LayerRenderer.Drawable]) {
         let targets = drawables.map { $0.target.rawValue }
         guard targets != lastTargets else { return }
@@ -1351,26 +1349,26 @@ nonisolated final class Renderer: @unchecked Sendable {
         c64Record("[c64-targets] drawables=\(drawables.count) \(names) frames=\(totalFrames)")
     }
 
-    /// Clear-Pässe: Farbe Schwarz, Alpha 1, Tiefe 0 (Reverse-Z, 0 = fern). Keine Draws. Für den
-    /// Compositor ist das bewusst «leer»: Er zeigt nur Pixel mit Alpha > 0 und Tiefe > 0 (WWDC24,
-    /// Session 10092; Messung K1b), Tiefe 0 heisst unendlich fern. Das Gerüst präsentiert damit
-    /// einen gültigen Frame ohne Inhalt; das ist auch der Rückfall, wenn SDL im Modus import scheitert.
+    /// Base pass of the host for a drawable Celeste did not write: colour black, alpha 1, depth
+    /// canvasClearDepth (0.0001 = 1000 m on the reverse-Z path), then the canvas with the game's
+    /// 2D image and, in Debug builds, the test scene; with blackOnly just the clear. The
+    /// compositor shows only pixels with alpha > 0 and depth > 0 (WWDC24, session 10092; measured
+    /// on the device), so the clear is the app's own black and not passthrough. This is also the
+    /// fallback when SDL fails in the kit modes.
     ///
-    /// Layout .layered (Standard): **ein** Pass über alle Schichten mit
-    /// `renderTargetArrayLength = Anzahl Views` (MTLRenderPass.h:321-324, „number of active
-    /// layers“), Slice = kleinster sliceIndex der Views. Das ist der Pass, den Celeste später
-    /// mit Vertex Amplification fährt; Clear und Rate Map laufen damit genau dort, wo sie im
-    /// Port laufen werden. Rate Map: `rasterizationRateMaps[0]`, eine Map mit `layerCount ==
-    /// Schichten` (Metal-Doku MTLRasterizationRateMap: „one layer map for each layer“; Vice City
-    /// misst für .layered eine Map mit layerCount 2, angle-stereo-multiview.md Abschnitt 2).
+    /// Layout .layered (default): **one** pass over all layers with
+    /// `renderTargetArrayLength = number of views` (MTLRenderPass.h:321-324, "number of active
+    /// layers"), slice = smallest sliceIndex of the views; canvas and test scene draw both layers
+    /// with vertex amplification 2. Rate map: `rasterizationRateMaps[0]`, one map with
+    /// `layerCount == layers` (Metal documentation MTLRasterizationRateMap: "one layer map for
+    /// each layer"; .layered delivers one map with layerCount 2).
     ///
-    /// Layout .dedicated oder .shared: ein Pass pro View auf dessen Textur. Rate Map: die Map
-    /// mit dem Index der View-Textur, falls so viele Maps vorhanden sind, sonst die erste.
-    /// Dass bei .dedicated eine Map pro Textur kommt, ist nicht dokumentiert; [c64-fov] loggt
-    /// die tatsächliche Anzahl.
+    /// Layout .dedicated or .shared: one pass per view on its texture. Rate map: the map with the
+    /// index of the view texture if that many maps exist, otherwise the first. That .dedicated
+    /// delivers one map per texture is not documented; [c64-fov] logs the actual number.
     private func encodeClearPasses(drawable: LayerRenderer.Drawable, commandBuffer: MTLCommandBuffer, deviceAnchor: DeviceAnchor?, blackOnly: Bool = false) {
-        // M4b.3a, blackOnly: nur der opake schwarze Clear (Tiefe 1000 m, eigener Inhalt), keine
-        // Leinwand und keine Testszene (Frame ohne Celeste-Render auf dem Stereo-Pfad)
+        // blackOnly: only the opaque black clear (depth 1000 m, own content), no canvas and no
+        // test scene (frame without a Celeste render on the stereo path)
         #if DEBUG
         let scene = blackOnly ? nil : currentTestScene()
         #endif
@@ -1396,7 +1394,7 @@ nonisolated final class Renderer: @unchecked Sendable {
                 return
             }
             encoder.label = "c64-clear layered x\(views.count)"
-            // Testszene und Leinwand: beide Schichten in einem Draw, Amplification 2, Map bleibt am Pass.
+            // Test scene and canvas: both layers in one draw, amplification 2, the map stays on the pass.
             #if DEBUG
             scene?.encode(encoder: encoder, drawable: drawable, views: Array(views.prefix(2)),
                           viewIndices: Array(0..<min(views.count, 2)), deviceAnchor: deviceAnchor)
@@ -1420,7 +1418,7 @@ nonisolated final class Renderer: @unchecked Sendable {
                 continue
             }
             encoder.label = "c64-clear view\(viewIndex)"
-            // Testszene und Leinwand bei .dedicated/.shared: pro View ein Draw ohne Amplification.
+            // Test scene and canvas with .dedicated/.shared: one draw per view without amplification.
             #if DEBUG
             scene?.encode(encoder: encoder, drawable: drawable, views: [view],
                           viewIndices: [viewIndex], deviceAnchor: deviceAnchor)
@@ -1431,7 +1429,7 @@ nonisolated final class Renderer: @unchecked Sendable {
         }
     }
 
-    /// Leinwand beim ersten Bedarf erzeugen (Render-Thread); scheitert sie, bleibt sie aus.
+    /// Create the canvas on first use (render thread); if it fails, it stays off.
     private func currentCanvasScene() -> CanvasScene? {
         guard !canvasFailed else { return nil }
         if let canvasScene { return canvasScene }
@@ -1454,7 +1452,7 @@ nonisolated final class Renderer: @unchecked Sendable {
     }
 
     #if DEBUG
-    /// Testszene beim ersten Bedarf erzeugen (Render-Thread); scheitert sie, bleibt sie aus.
+    /// Create the test scene on first use (render thread); if it fails, it stays off.
     private func currentTestScene() -> TestScene? {
         guard testSceneRequested, !testSceneFailed else { return nil }
         if let testScene { return testScene }
@@ -1485,19 +1483,19 @@ nonisolated final class Renderer: @unchecked Sendable {
         depth.slice = slice
         depth.loadAction = .clear
         depth.storeAction = .store
-        depth.clearDepth = clearDepth   // 0 = «kein Inhalt» (Leerframe), mit Leinwand 0,0001 = 1000 m eigenes Schwarz
+        depth.clearDepth = clearDepth   // the caller passes canvasClearDepth (0.0001 = 1000 m, own black); 0 would be "no content"
         return descriptor
     }
 
-    // MARK: Foveation-Sonde (P0b)
+    // MARK: Foveation probe
 
-    /// Render Quality zur Laufzeit setzen, einmal nach dem ersten Drawable. Nur mit Foveation
-    /// und gesetzter Obergrenze; der Wert wird auf maxRenderQuality geklemmt, weil ein höherer
-    /// Wert CompositorServices abbrechen lässt.
+    /// Set the render quality at run time, once after the first drawable. Only with foveation and
+    /// a set upper limit; the value is clamped to maxRenderQuality, because a higher value makes
+    /// CompositorServices abort.
     private func applyRenderQualityIfRequested() {
         guard !renderQualityApplied else { return }
         renderQualityApplied = true
-        // Standard 1,0 (M4a.5b), Schalter C64_RENDERQUALITY überschreibt.
+        // default 1.0, the switch C64_RENDERQUALITY overrides.
         let wanted = HostEnvironment.string("C64_RENDERQUALITY").flatMap({ Float($0) }) ?? Self.defaultRenderQuality
         let config = layerRenderer.configuration
         guard config.isFoveationEnabled else {
@@ -1511,8 +1509,8 @@ nonisolated final class Renderer: @unchecked Sendable {
                          before, layerRenderer.renderQuality.rawValue, wanted, config.maxRenderQuality.rawValue))
     }
 
-    /// Drawable- und Map-Grösse des Frames merken (für die Zusammenfassung; mit Render Quality
-    /// ändert sich die Map in den ersten Frames, die Texturen bleiben bei maxRenderQuality).
+    /// Remember the drawable and map size of the frame (for the summary; with render quality the
+    /// map changes during the first frames, the textures stay at maxRenderQuality).
     private func rememberSizes(_ drawables: [LayerRenderer.Drawable]) {
         guard let drawable = drawables.first(where: { $0.target == .builtIn }) ?? drawables.first,
               let texture = drawable.colorTextures.first else { return }
@@ -1525,12 +1523,11 @@ nonisolated final class Renderer: @unchecked Sendable {
         }
     }
 
-    /// [c64-fov]: Rate Maps (Anzahl, layerCount, screenSize, physicalSize pro Layer,
-    /// Granularität) und pro View die Farb- und Tiefentextur (Typ, Grösse, arrayLength,
-    /// Format), Viewport, Slice- und Texturindex. Beim ersten Frame und bei jeder Änderung,
-    /// höchstens einmal pro Sekunde (während eines Render-Quality-Übergangs ändert sich die
-    /// physicalSize über mehrere Frames). Je Frame nur der Zahlenvergleich; der Text entsteht
-    /// bei einer Änderung.
+    /// [c64-fov]: rate maps (count, layerCount, screenSize, physicalSize per layer, granularity)
+    /// and per view the colour and depth texture (type, size, arrayLength, format), viewport,
+    /// slice and texture index. At the first frame and at every change, at most once per second
+    /// (during a render quality transition the physicalSize changes over several frames). Per
+    /// frame only the numeric comparison; the text is built on a change.
     private func logFoveationIfChanged(_ drawables: [LayerRenderer.Drawable]) {
         guard let drawable = drawables.first(where: { $0.target == .builtIn }) ?? drawables.first,
               let firstView = drawable.views.first else { return }
@@ -1571,10 +1568,10 @@ nonisolated final class Renderer: @unchecked Sendable {
                          maps.count, layerRenderer.renderQuality.rawValue, totalFrames, parts.joined(separator: " ")))
     }
 
-    // MARK: Command-Buffer-Fehler
+    // MARK: Command buffer errors
 
-    /// Completed-Handler (Metal-Thread): Status ungleich .completed oder gesetzter Fehler zählt
-    /// als Fehler; Zeile [c64-cmderr] höchstens einmal pro Sekunde, auch in die Datei.
+    /// Completed handler (Metal thread): a status other than .completed or a set error counts as
+    /// an error; line [c64-cmderr] at most once per second, also into the file.
     private func noteCommandBufferCompletion(_ buffer: MTLCommandBuffer, frameIndex: UInt64, renderingDeadline: TimeInterval, gpuFrame: UInt64, logResume: Bool = false) {
         let status = buffer.status
         let error = buffer.error
@@ -1589,22 +1586,22 @@ nonisolated final class Renderer: @unchecked Sendable {
                 gpuTimeCount += 1
                 cmdErrLock.unlock()
             }
-            // M4b Leistung N3: exklusive Zeit des Host-Buffers (schliesst das Frame ab) und
-            // der Termin-Abstand; nur Zahlen, keine Allokation.
+            // exclusive time of the host buffer (closes the frame) and the deadline margin;
+            // numbers only, no allocation.
             CelesteProbe.celesteGpuPasses.recordHost(start: gpuStart, end: gpuEnd, frame: gpuFrame)
             CelesteProbe.frameTiming.noteHostBuffer(gpuEnd: gpuEnd, deadline: renderingDeadline)
         }
         if logResume {
-            // M4a.5c-4: die ersten drei Frames nach dem Fortsetzen, Status und GPU-Zeit.
+            // the first three frames after resuming, status and GPU time.
             let gpuMs = (buffer.gpuEndTime - buffer.gpuStartTime) * 1000
             let errorText = (error as NSError?).map { "\($0.domain) code=\($0.code) \($0.localizedDescription)" } ?? "-"
             c64Record("[c64-resume-frame] tMs=\(LaunchClock.tMs) frame=\(frameIndex) status=\(Self.name(status)) gpuMs=\(String(format: "%.2f", gpuMs)) error=\(errorText)")
         }
         guard status != .completed || error != nil else { return }
-        // M4a.5c-4: der eine Host-Buffer, der bei gesetztem Hintergrund-Flag committet wurde,
-        // darf vom System abgelehnt werden (MTLCommandBufferError.notPermitted, «Insufficient
-        // Permission (to submit GPU work from background)»). Erwartet, eigener Zähler, immer eine
-        // Zeile; Timeout und andere Fehler wie bisher.
+        // The one host buffer that was committed with the background flag set may be rejected
+        // by the system (MTLCommandBufferError.notPermitted, "Insufficient Permission (to submit
+        // GPU work from background)"). Expected, own counter, always one line; timeout and other
+        // errors as before.
         if let nsError = error as NSError?, nsError.domain == MTLCommandBufferErrorDomain,
            nsError.code == MTLCommandBufferError.notPermitted.rawValue {
             cmdErrLock.lock()
@@ -1616,8 +1613,8 @@ nonisolated final class Renderer: @unchecked Sendable {
                 return
             }
         }
-        // M4a.5c-2: ein absichtlich nicht committeter Buffer (Pause vor dem Commit) meldet
-        // notEnqueued ohne Fehler; das ist kein GPU-Fehler.
+        // A deliberately uncommitted buffer (pause before the commit) reports notEnqueued
+        // without an error; that is no GPU error.
         if status == .notEnqueued, error == nil {
             cmdErrLock.lock()
             cmdSkippedTotal += 1
@@ -1640,12 +1637,12 @@ nonisolated final class Renderer: @unchecked Sendable {
         } else {
             errorText = "-"
         }
-        // GPU-Timeouts um eine Pause (Host-Buffer, der beim Wechsel in den Hintergrund in der
-        // GPU lag) werden hier nur notiert: Frame, Zeit, Status.
+        // GPU timeouts around a pause (host buffer that was in the GPU during the switch to the
+        // background) are only noted here: frame, time, status.
         c64Record("[c64-cmderr] tMs=\(LaunchClock.tMs) frame=\(frameIndex) status=\(Self.name(status)) error=\(errorText)")
     }
 
-    /// GPU-Zeit der Gerüst-Buffer im Fenster lesen und nullen (Render-Thread, einmal pro Sekunde).
+    /// Read and reset the GPU time of the host buffers in the window (render thread, once per second).
     private func takeGpuTime() -> (mean: Double, max: Double, count: Int) {
         cmdErrLock.lock()
         defer { cmdErrLock.unlock() }
@@ -1656,7 +1653,7 @@ nonisolated final class Renderer: @unchecked Sendable {
         return result
     }
 
-    /// Zähler lesen und nullen (Render-Thread, einmal pro Sekunde).
+    /// Read and reset the counter (render thread, once per second).
     private func takeCommandBufferErrors() -> Int {
         cmdErrLock.lock()
         defer { cmdErrLock.unlock() }
@@ -1687,7 +1684,7 @@ nonisolated final class Renderer: @unchecked Sendable {
         }
     }
 
-    // MARK: Statistik
+    // MARK: Statistics
 
     private func recordStats(frameIndex: UInt64, presentationTime: TimeInterval, lateness: TimeInterval, hasAnchor: Bool, drawableCount: Int) {
         totalFrames += 1
@@ -1708,8 +1705,8 @@ nonisolated final class Renderer: @unchecked Sendable {
                 statIntervalCount += 1
                 intervalTotalSum += interval
                 intervalTotalCount += 1
-                // M4b Leistung N3: Sprung der presentationTime über 1,5 Raster-Intervalle; das
-                // Raster ist das mittlere Intervall des letzten Fensters (Start 1/90 s).
+                // jump of the presentationTime over 1.5 grid intervals; the grid is the mean
+                // interval of the last window (start 1/90 s).
                 if interval > 1.5 * presentRasterInterval {
                     CelesteProbe.frameTiming.noteGap()
                 }
@@ -1723,7 +1720,7 @@ nonisolated final class Renderer: @unchecked Sendable {
         lastFrameIndex = frameIndex
 
         let now = CFAbsoluteTimeGetCurrent()
-        // M4b P1: Speicher alle 10 s (Plateau der SDL-Kopien von A nach dem ersten Levelstart).
+        // memory every 10 s (plateau of the SDL copies of A after the first level start).
         if now - lastMemLog >= 10.0 {
             lastMemLog = now
             c64Record("[c64-mem] tMs=\(LaunchClock.tMs) " + String(format: "footprintMB=%.1f availableMB=%.1f", ProbeContext.physFootprintMB, ProbeContext.availableMemoryMB))
@@ -1744,11 +1741,11 @@ nonisolated final class Renderer: @unchecked Sendable {
                               lateMin * 1000, lateMax * 1000, statLateFrames,
                               statGaps, drawablesMin, statDrawablesMax, statCancelled, statNoCmdBuf, cmdErr,
                               statFramesWithoutAnchor, ProbeContext.thermalState, totalFrames)
-            // GPU-Zeit der Gerüst-Buffer (Clear, Testszene, Leinwand; nicht SDLs eigene Buffer).
+            // GPU time of the host buffers (clear, test scene, canvas; not SDL's own buffers).
             let gpu = takeGpuTime()
             line += String(format: " hostGpu(ms) mean=%.3f max=%.3f n=%d", gpu.mean * 1000, gpu.max * 1000, gpu.count)
             #if DEBUG
-            // K1b: CPU-Zeit des SDL-Teils (Wrapper, Pässe, Submit, Release) im Fenster.
+            // Kit import: CPU time of the SDL part (wrappers, passes, submit, release) in the window.
             if let session = kitImportSession {
                 let stats = KitProbe.takeImportStats(session: session)
                 let meanMs = stats.frames > 0 ? stats.sum_ms / Double(stats.frames) : 0
@@ -1757,7 +1754,7 @@ nonisolated final class Renderer: @unchecked Sendable {
                 let stats = KitProbe.takeMultiviewStats(session: session)
                 let meanMs = stats.frames > 0 ? stats.sum_ms / Double(stats.frames) : 0
                 line += String(format: " sdl(ms) mean=%.3f max=%.3f sdlFrames=%u sdlFail=%d passes=%lu draws=%lu", meanMs, stats.max_ms, stats.frames, statSdlFail, stats.passes_total, stats.draws_total)
-                // K4a: GPU-Zeit der SDL-Command-Buffer im Fenster (Completed-Rückruf).
+                // GPU time of the SDL command buffers in the window (completion callback).
                 let gpuMean = stats.gpu_frames > 0 ? stats.gpu_sum_ms / Double(stats.gpu_frames) : 0
                 line += String(format: " gpu(ms) mean=%.3f max=%.3f gpuFrames=%u msaa=%u", gpuMean, stats.gpu_max_ms, stats.gpu_frames, stats.msaa_samples)
             } else if kitImportFailed {
@@ -1766,8 +1763,8 @@ nonisolated final class Renderer: @unchecked Sendable {
             statSdlFail = 0
             #endif
             c64Record(line)
-            // M4b Leistung N3: Raster für presentGaps aus dem Fenster; Sprünge drücken das
-            // Mittel nur wenig (ein 22-ms-Sprung unter 90 Frames: +0,12 ms).
+            // grid for presentGaps from the window; jumps move the mean only a little (one
+            // 22 ms jump among 90 frames: +0.12 ms).
             if mean > 0 { presentRasterInterval = mean }
             statWindowStart = now
             statFrames = 0
