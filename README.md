@@ -10,8 +10,8 @@ Celeste team**. It is free and non-commercial.
 
 ## Play
 
-- TestFlight: _link to be added_
-- App Store: later
+- TestFlight: <https://testflight.apple.com/join/bGjuRjfg> (requires Apple Vision Pro and the TestFlight app)
+- App Store: coming soon
 
 ## Requirements
 
@@ -20,7 +20,8 @@ Celeste team**. It is free and non-commercial.
 
 ## Build from source
 
-To play, use TestFlight or the App Store; building from source is only needed for development.
+To play, use the TestFlight link above (App Store coming soon); building from source is only
+needed for development.
 
 A Mac with Xcode 27 (with the visionOS platform installed) and the .NET SDK 10.0.4xx.
 
@@ -81,7 +82,10 @@ AvpCeleste64/
 ```
 
 `scripts/celeste-mac.sh ref|machost` builds the original game and the Mac host for comparing
-images and timings on the Mac. Working rules for contributors and AI agents are in `CLAUDE.md`.
+images and timings on the Mac. The Mac host and `scripts/build-game.sh mac-check` need the
+macOS SDL3 library, which `setup.sh` does not build: run `scripts/build-sdl3.sh macos` once
+(needs cmake); it writes `Frameworks/macos/libSDL3.0.dylib`. Working rules for contributors
+and AI agents are in `CLAUDE.md`.
 
 | Repository | Content | License |
 |---|---|---|

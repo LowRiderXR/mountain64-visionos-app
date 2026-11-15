@@ -1,4 +1,4 @@
-# Symlink to the private docs repo (no trailing slash: git stores symlinks as files)
+# Local notes (symlink), not part of the repository (no trailing slash: git stores symlinks as files)
 /Docs
 # Clones made by setup.sh: Celeste 64, the Foster fork and the SDL fork
 /Source/

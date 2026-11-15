@@ -228,7 +228,7 @@ static int run_bad_options(init_fn celeste_init, tick_fn celeste_tick, end_fn ce
 int main(int argc, char **argv)
 {
     if (argc < 3) {
-        fprintf(stderr, "usage: %s <path to Celeste64.VisionOS.dylib> (<content root> [--dump <base>] [--res <W>x<H>] [--line <N>|auto] [--split] [--reverse-z] [--bad-options] | --bad-content)\n", argv[0]);
+        fprintf(stderr, "usage: %s <path to Celeste64.VisionOS.dylib> (<content root> [--dump <base>] [--res <W>x<H>] [--line <N>|auto] [--split] [--reverse-z] [--vr-frame] [--bad-options] | --bad-content)\n", argv[0]);
         return 64;
     }
     /* Options after the content root. */
