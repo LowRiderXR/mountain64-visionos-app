@@ -2,7 +2,7 @@
 
 Mountain 64 is an unofficial, free fan port of Celeste 64: Fragments of the Mountain to Apple Vision Pro, built on the game's official source release with Foster and SDL3 forks for visionOS. It is not made or endorsed by the Celeste team.
 
-The easiest way to play is the developer's TestFlight build: <https://testflight.apple.com/join/bGjuRjfg>. The steps below build it from source.
+The easiest way to play is the App Store release: <https://apps.apple.com/app/id6832320956>. Beta builds are on TestFlight: <https://testflight.apple.com/join/bGjuRjfg>. The steps below build it from source.
 
 ## Requirements
 
@@ -42,7 +42,7 @@ Start from a checkout of this repository. (The AVP Ports Index gives players a c
 
 ## Controls and known issues
 
-- Play with a connected game controller; the game world surrounds you in a full immersive space and follows your head.
+- Play with a connected game controller; the game world surrounds you in a full immersive space, and the camera follows Madeline and turns with the controller.
 - After changing code, rebuild one framework with `scripts/build-fmod.sh`, `scripts/build-sdl3.sh` or `scripts/build-game.sh`, or all three with `./setup.sh --rebuild`.
 - If you distribute a build, register your project on fmod.com as the FMOD license requires, and keep the FMOD credit line.
 - Report problems in this repository's issues.

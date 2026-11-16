@@ -10,8 +10,8 @@ Celeste team**. It is free and non-commercial.
 
 ## Play
 
-- TestFlight: <https://testflight.apple.com/join/bGjuRjfg> (requires Apple Vision Pro and the TestFlight app)
-- App Store: coming soon
+- App Store: <https://apps.apple.com/app/id6832320956> (requires Apple Vision Pro)
+- TestFlight (beta builds): <https://testflight.apple.com/join/bGjuRjfg> (requires the TestFlight app)
 
 ## Requirements
 
@@ -20,8 +20,8 @@ Celeste team**. It is free and non-commercial.
 
 ## Build from source
 
-To play, use the TestFlight link above (App Store coming soon); building from source is only
-needed for development.
+To play, install the app from the App Store (or a beta build through TestFlight); building from
+source is only needed for development.
 
 A Mac with Xcode 27 (with the visionOS platform installed) and the .NET SDK 10.0.4xx.
 
